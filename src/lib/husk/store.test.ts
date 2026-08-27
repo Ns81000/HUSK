@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateRoomKeyFragment, importRoomKey, seal } from "./crypto";
 import type { ConnectionHandlers } from "./connection";
-import type { ConnectionLike } from "./store";
+import { orderedEntries, type ChatEntry, type ConnectionLike } from "./store";
 import type { SealedBody, SealedEnvelope, ServerMessage } from "./protocol";
 
 const FRAGMENT = generateRoomKeyFragment();
@@ -73,9 +73,15 @@ function lastConn(): FakeConnection {
   return conn;
 }
 
-/** Lets an in-flight async decrypt (and the guard check after it) complete. */
+/**
+ * Lets an in-flight async decrypt (and the guard check after it) complete.
+ * WebCrypto resolves on the host's thread pool rather than the fake-timer
+ * queue, so under load it can take more event-loop turns than the async
+ * timer advances alone guarantee; yield generously (bounded, so a genuinely
+ * broken insert still fails the test instead of masking).
+ */
 async function flushDecrypt(): Promise<void> {
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     await vi.advanceTimersByTimeAsync(1);
   }
 }
@@ -348,5 +354,75 @@ describe("room store", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(FakeConnection.instances.length).toBe(before + 1);
     expect(store.getState().state).toBe("joining");
+  });
+});
+
+describe("message ordering", () => {
+  const entry = (overrides: Partial<ChatEntry>): ChatEntry => ({
+    id: "e",
+    seq: 0,
+    mine: false,
+    senderId: "p2",
+    ts: 0,
+    delivery: "sent",
+    body: null,
+    ...overrides,
+  });
+
+  it("orderedEntries sorts out-of-order input by seq", () => {
+    const scrambled = [
+      entry({ id: "c", seq: 3 }),
+      entry({ id: "a", seq: 1 }),
+      entry({ id: "b", seq: 2 }),
+    ];
+    expect(orderedEntries(scrambled).map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("orderedEntries breaks seq ties with ts", () => {
+    const tied = [entry({ id: "late", seq: 7, ts: 200 }), entry({ id: "early", seq: 7, ts: 100 })];
+    expect(orderedEntries(tied).map((e) => e.id)).toEqual(["early", "late"]);
+  });
+
+  it("orderedEntries always sorts system messages after real messages", () => {
+    // System entries use MAX_SAFE_INTEGER seq regardless of their wall-clock ts.
+    const mixed = [
+      entry({ id: "sys", seq: Number.MAX_SAFE_INTEGER, ts: 1, system: "left" }),
+      entry({ id: "m9", seq: 9, ts: 999 }),
+      entry({ id: "m2", seq: 2, ts: 2 }),
+    ];
+    expect(orderedEntries(mixed).map((e) => e.id)).toEqual(["m2", "m9", "sys"]);
+  });
+
+  it("out-of-order relays render in seq order", async () => {
+    vi.useFakeTimers();
+    FakeConnection.instances = [];
+    vi.stubEnv("VITE_WORKER_URL", "https://relay.example");
+    vi.resetModules();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = await connectedStore();
+      const conn = lastConn();
+      welcome(conn);
+      const key = await importRoomKey(FRAGMENT);
+      const payload = await seal<SealedBody>(key, { kind: "text", text: "hi", sentAt: 1 });
+
+      // Delivered out of order (network reordering), each fully processed
+      // before the next arrives.
+      peerRelay(conn, payload, { localId: "m3", seq: 3, ts: 3 });
+      await flushDecrypt();
+      peerRelay(conn, payload, { localId: "m1", seq: 1, ts: 1 });
+      await flushDecrypt();
+      peerRelay(conn, payload, { localId: "m2", seq: 2, ts: 2 });
+      await flushDecrypt();
+
+      // Arrival order is insertion order; the render path sorts via
+      // orderedEntries (chat.tsx), which restores server seq order.
+      expect(store.getState().entries.map((e) => e.id)).toEqual(["m3", "m1", "m2"]);
+      expect(orderedEntries(store.getState().entries).map((e) => e.id)).toEqual(["m1", "m2", "m3"]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 });

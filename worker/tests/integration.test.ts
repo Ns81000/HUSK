@@ -152,15 +152,6 @@ function randomBytes(total: number): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-function expectBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
-  expect(actual.byteLength).toBe(expected.byteLength);
-  for (let index = 0; index < expected.length; index += 1) {
-    if (actual[index] !== expected[index]) {
-      throw new Error(`first differing byte at ${index}`);
-    }
-  }
-}
-
 let member = "";
 
 beforeAll(async () => {
@@ -228,7 +219,52 @@ describe("room lifecycle and relay", () => {
 });
 
 describe("chunked file transfer", () => {
-  it("PUTs and GETs a multi-chunk file with byte equality (11 MiB vector)", async () => {
+  /**
+   * Streams the GET response through its pull-based reader and asserts byte
+   * equality chunk-wise (one 1 MiB row at a time). Completing the full
+   * round-trip is the CPU assertion: the streamed GET never buffers the file
+   * server-side, so no "Worker exceeded CPU time" (1102) class failure can
+   * occur, even at the Free plan's 10 ms budget.
+   */
+  async function expectStreamedChunkwiseEqual(
+    response: Response,
+    vector: Uint8Array,
+  ): Promise<void> {
+    expect(response.status).toBe(200);
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      throw new Error("response body is not streamed");
+    }
+    const downloaded = new Uint8Array(vector.byteLength);
+    let offset = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (offset + value.byteLength > downloaded.byteLength) {
+        throw new Error("stream delivered more bytes than uploaded");
+      }
+      downloaded.set(value, offset);
+      offset += value.byteLength;
+    }
+    expect(offset).toBe(vector.byteLength);
+
+    // Row-wise equality: every 1 MiB chunk row matches the uploaded slice.
+    for (let index = 0; index * CHUNK_BYTES < vector.byteLength; index += 1) {
+      const start = index * CHUNK_BYTES;
+      const end = Math.min(start + CHUNK_BYTES, vector.byteLength);
+      const expectedRow = vector.subarray(start, end);
+      const actualRow = downloaded.subarray(start, end);
+      for (let position = 0; position < expectedRow.length; position += 1) {
+        if (actualRow[position] !== expectedRow[position]) {
+          throw new Error(`first differing byte in chunk ${index} at ${position}`);
+        }
+      }
+    }
+  }
+
+  it("PUTs and GETs a multi-chunk file with chunk-wise byte equality (11 MiB vector)", async () => {
     const pin = freshPin();
     await createRoom(pin);
     await joinRoom(pin);
@@ -245,9 +281,8 @@ describe("chunked file transfer", () => {
     const downloaded = await apiAbsolute(
       `http://localhost/room/${pin}/file/${grant.fileId}?exp=${grant.download.exp}&sig=${grant.download.sig}`,
     );
-    expect(downloaded.status).toBe(200);
+    await expectStreamedChunkwiseEqual(downloaded, vector);
     expect(downloaded.headers.get("content-type")).toBe("application/octet-stream");
-    expectBytesEqual(new Uint8Array(await downloaded.arrayBuffer()), vector);
     socket.ws.close();
   });
 
