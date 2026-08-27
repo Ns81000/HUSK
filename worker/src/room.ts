@@ -25,6 +25,7 @@ import {
   MAX_ROOM_FILE_BYTES,
   ROOM_IDLE_TIMEOUT_MS,
   ROOM_MAX_LIFETIME_MS,
+  ROOM_STATE_KEY,
   TICKET_TTL_SECONDS,
 } from "./config";
 import { signTicket, verifyTicket } from "./tickets";
@@ -35,6 +36,18 @@ type Participant = { id: string; joinedAt: number };
 type Attachment = { id: string; joinedAt: number };
 
 type FileMeta = { size: number; chunks: number; createdAt: number };
+
+/**
+ * Lifecycle state that must survive isolate eviction: on the real runtime a
+ * Durable Object is reconstructed from SQLite storage within seconds of going
+ * idle (and for every hibernating-socket wake), so anything held only in a
+ * field is lost. `exists` is the presence of this row.
+ */
+type PersistedRoomState = {
+  createdAt: number;
+  emptySince: number;
+  seq: number;
+};
 
 type ClientFrame =
   | { t: "ping" }
@@ -92,12 +105,37 @@ export class HuskRoom {
     private readonly state: DurableObjectState,
     private readonly env: Env,
   ) {
-    // Load the byte counter before any fetch is served so the room budget
-    // check below is a synchronous read-compare on in-memory state.
+    // Load persisted state before any fetch is served so a reconstructed
+    // instance (isolate eviction, hibernating-socket wake) behaves exactly
+    // like the one that created the room.
     void this.state.blockConcurrencyWhile(async () => {
-      const stored = await this.state.storage.get<number>(FILE_BYTES_USED_KEY);
-      this.bytesUsed = stored ?? 0;
+      await this.restoreVolatileState();
     });
+  }
+
+  /**
+   * Loads every field that would otherwise be lost on eviction. Public to the
+   * test harness (invoked directly to simulate a cold reconstruct).
+   */
+  private async restoreVolatileState(): Promise<void> {
+    const storedBytes = await this.state.storage.get<number>(FILE_BYTES_USED_KEY);
+    this.bytesUsed = storedBytes ?? 0;
+    const persisted = await this.state.storage.get<PersistedRoomState>(ROOM_STATE_KEY);
+    if (persisted !== undefined) {
+      this.exists = true;
+      this.createdAt = persisted.createdAt;
+      this.emptySince = persisted.emptySince;
+      this.seq = persisted.seq;
+    }
+  }
+
+  /** Writes the lifecycle fields that may have changed back to storage. */
+  private persistState(): Promise<void> {
+    return this.state.storage.put(ROOM_STATE_KEY, {
+      createdAt: this.createdAt,
+      emptySince: this.emptySince,
+      seq: this.seq,
+    } satisfies PersistedRoomState);
   }
 
   private participants(): Participant[] {
@@ -149,6 +187,7 @@ export class HuskRoom {
         this.emptySince = Date.now();
         this.recentSends.clear();
         await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
+        await this.persistState();
       }
       if (this.participants().length >= MAX_PARTICIPANTS) {
         return Response.json({ error: "unavailable" }, { status: 403 });
@@ -206,6 +245,7 @@ export class HuskRoom {
       this.state.acceptWebSocket(server);
       server.serializeAttachment({ id, joinedAt } satisfies Attachment);
       this.emptySince = 0;
+      await this.persistState();
 
       server.send(
         JSON.stringify({
@@ -472,6 +512,9 @@ export class HuskRoom {
 
     this.seq += 1;
     this.rememberSend(dedupeKey, this.seq);
+    // The sequence counter must survive eviction, or a reconstructed room
+    // would restart the server sequence mid-conversation.
+    await this.persistState();
     const relay = {
       t: "relay",
       seq: this.seq,
@@ -508,6 +551,7 @@ export class HuskRoom {
     );
     if (remaining.length === 0) {
       this.emptySince = Date.now();
+      await this.persistState();
     }
     this.broadcast({
       t: "presence",
@@ -545,8 +589,12 @@ export class HuskRoom {
       }
       this.exists = false;
       this.seq = 0;
+      this.createdAt = 0;
+      this.emptySince = 0;
       this.bytesUsed = 0;
       this.recentSends.clear();
+      // deleteAll() also removes the persisted room-state row, so a later
+      // reconstruct correctly sees a nonexistent room.
       await this.state.storage.deleteAll();
       return;
     }

@@ -232,11 +232,17 @@ Gotchas found on the live deploy (all resolved in-repo):
 - A `[limits] cpu_ms = 10` block is **rejected by the Free-plan API**
   (error 100328: "CPU limits are not supported for the Free plan") — removed
   from `worker/wrangler.toml`; do not re-add it on Free.
-- One room created seconds after a redeploy did not persist (its re-create
-  returned `ok:true` instead of 409), i.e. the create response committed but
-  the DO write was lost during deployment churn. Not reproducible after the
-  deploy settled (two fresh create→join round-trips verified deterministic);
-  watch for it if you redeploy while users are creating rooms.
+- **CRITICAL post-deploy fix (2026-08-28):** `HuskRoom` held `exists`,
+  `createdAt`, `emptySince`, and `seq` only in isolate memory. On the real
+  runtime a Durable Object is evicted within seconds of going idle (and every
+  hibernating-socket wake reconstructs it), so joins, reconnects, and file
+  grants all 404'd — "Room unavailable" everywhere, file upload broken. Fixed
+  by persisting lifecycle state to SQLite (`room-state` row), restoring it in
+  the constructor, and re-persisting on create/socket-join/last-leave/each
+  message. A regression test simulates the cold reconstruct; verified live
+  with a 75 s idle window: join after eviction, sequence continuity, and a
+  full file round-trip all pass against the deployed Worker. (This was also
+  the real cause of the "one room did not persist" anomaly noted earlier.)
 
 ## Spec Section 8 manual QA checklist (run after first deployment)
 

@@ -35,6 +35,9 @@ export const FILE_ROW_PREFIX = "file:";
 export const FILE_META_PREFIX = "file-meta:";
 export const FILE_BYTES_USED_KEY = "file-bytes-used";
 
+/** Persisted room existence/lifecycle state; survives isolate eviction. */
+export const ROOM_STATE_KEY = "room-state";
+
 /** Chunk upload tickets expire quickly; download tickets live until room expiry. */
 export const TICKET_TTL_SECONDS = 300;
 

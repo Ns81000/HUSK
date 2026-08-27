@@ -216,6 +216,60 @@ describe("room lifecycle and relay", () => {
     expect(eleventh.status).toBe(403);
     expect(eleventh.webSocket).toBeNull();
   });
+
+  it("regression: a room survives isolate eviction (volatile state reloads from storage)", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const first = await openSocket(pin);
+    first.ws.send(JSON.stringify({ t: "send", localId: "m1", payload: { iv: "aXY", ct: "Y3Q" } }));
+    let ack1: Frame = await first.frames.next();
+    while (ack1.t !== "ack") {
+      ack1 = await first.frames.next();
+    }
+    expect(ack1.seq).toBe(1);
+    first.ws.close();
+
+    // Simulate the runtime evicting the isolate: on the real deployment a
+    // Durable Object is reconstructed from SQLite storage within seconds of
+    // going idle (and for every hibernating-socket wake). Wiping the fields
+    // and re-running the restore is exactly that cold reconstruct.
+    const rooms = (env as unknown as { HUSK_ROOMS: DurableObjectNamespace }).HUSK_ROOMS;
+    const stub = rooms.get(rooms.idFromName(pin));
+    await runInDurableObject(stub, async (instance) => {
+      const room = instance as unknown as {
+        exists: boolean;
+        createdAt: number;
+        emptySince: number;
+        seq: number;
+        bytesUsed: number;
+        restoreVolatileState(): Promise<void>;
+      };
+      room.exists = false;
+      room.createdAt = 0;
+      room.emptySince = 0;
+      room.seq = 0;
+      room.bytesUsed = 0;
+      await room.restoreVolatileState();
+    });
+
+    // A join after eviction must still find the room (previously 404).
+    const rejoin = await joinRoom(pin);
+    expect(rejoin.status).toBe(200);
+
+    const second = await openSocket(pin);
+    second.ws.send(JSON.stringify({ t: "send", localId: "m2", payload: { iv: "aXY", ct: "Y3Q" } }));
+    let ack2: Frame = await second.frames.next();
+    while (ack2.t !== "ack" || ack2.localId !== "m2") {
+      ack2 = await second.frames.next();
+    }
+    // The server sequence continues across the eviction instead of restarting.
+    expect(ack2.seq).toBe(2);
+    // Live-member-gated file grants work after eviction too.
+    const grant = await requestGrant(pin, second.member, 1024);
+    expect(grant.status).toBe(200);
+    second.ws.close();
+  });
 });
 
 describe("chunked file transfer", () => {
