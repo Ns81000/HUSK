@@ -1,0 +1,146 @@
+/** Single-weight custom icon set (1.5px stroke, 24px grid). */
+
+type IconProps = { readonly className?: string };
+
+function base(className?: string) {
+  return {
+    width: 20,
+    height: 20,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.5,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+    className,
+  };
+}
+
+export function SendIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4 12 20 4l-3.5 16-4-6.5L4 12Z" />
+    </svg>
+  );
+}
+
+export function AttachIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M17 8.5 9.9 15.6a2.5 2.5 0 0 0 3.5 3.5l7.1-7.1a4.5 4.5 0 0 0-6.4-6.4l-7 7a6.5 6.5 0 0 0 9.2 9.2l5.3-5.3" />
+    </svg>
+  );
+}
+
+export function CopyIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <rect x="9" y="9" width="11" height="11" rx="2.5" />
+      <path d="M15 5.5A2.5 2.5 0 0 0 12.5 3h-6A3.5 3.5 0 0 0 3 6.5v6A2.5 2.5 0 0 0 5.5 15" />
+    </svg>
+  );
+}
+
+export function ShieldIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M12 3 5 6v5.5c0 4.3 2.9 8.1 7 9.5 4.1-1.4 7-5.2 7-9.5V6l-7-3Z" />
+      <path d="M9.5 12.2 11.4 14l3.4-3.6" />
+    </svg>
+  );
+}
+
+export function LeaveIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M14 4h3.5A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5H14" />
+      <path d="M10 8 6 12l4 4" />
+      <path d="M6 12h9" />
+    </svg>
+  );
+}
+
+export function DownloadIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M12 4v10" />
+      <path d="m8 10.5 4 4 4-4" />
+      <path d="M5 19h14" />
+    </svg>
+  );
+}
+
+export function FileIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M13 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V9l-6-6Z" />
+      <path d="M13 3v4.5A1.5 1.5 0 0 0 14.5 9H19" />
+    </svg>
+  );
+}
+
+export function DeleteIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4 7h16" />
+      <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+      <path d="M6.5 7 7.4 19a2 2 0 0 0 2 1.9h5.2a2 2 0 0 0 2-1.9L17.5 7" />
+    </svg>
+  );
+}
+
+/** Abstract mark used for the "waiting for peer" empty state. */
+export function WaitingMark({ className }: IconProps) {
+  return (
+    <svg
+      width="96"
+      height="96"
+      viewBox="0 0 96 96"
+      fill="none"
+      aria-hidden
+      className={className}
+    >
+      <circle cx="34" cy="48" r="17" stroke="currentColor" strokeWidth="1.5" />
+      <circle
+        cx="62"
+        cy="48"
+        r="17"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeDasharray="4 6"
+      />
+      <path d="M48 39v18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ErrorMark({ className }: IconProps) {
+  return (
+    <svg
+      width="96"
+      height="96"
+      viewBox="0 0 96 96"
+      fill="none"
+      aria-hidden
+      className={className}
+    >
+      <rect
+        x="20"
+        y="24"
+        width="56"
+        height="48"
+        rx="8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M48 38v16"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <circle cx="48" cy="60" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}

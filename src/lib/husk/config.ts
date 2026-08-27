@@ -1,0 +1,31 @@
+/**
+ * Shared configuration constants for Husk.
+ *
+ * These values are also mirrored by the Cloudflare Worker (worker/src/config.ts).
+ * Keep the two files in sync; both are intentionally free of magic numbers at
+ * call sites.
+ */
+
+export const PIN_LENGTH = 6;
+export const MAX_PARTICIPANTS = 10;
+
+/** Grace window before a peer disconnect becomes user-visible. */
+export const PEER_GRACE_MS = 8_000;
+
+/** Reconnect backoff bounds for the client WebSocket. */
+export const RECONNECT_MIN_MS = 1_000;
+export const RECONNECT_MAX_MS = 15_000;
+
+/** Files above this size are encrypted and uploaded in chunks. */
+export const FILE_CHUNK_THRESHOLD_BYTES = 5 * 1024 * 1024;
+export const FILE_CHUNK_BYTES = 1 * 1024 * 1024;
+export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+
+/** Room key length in bytes (AES-256). */
+export const ROOM_KEY_BYTES = 32;
+/** AES-GCM IV length in bytes. */
+export const IV_BYTES = 12;
+
+export const WORKER_URL: string = (
+  import.meta.env["VITE_WORKER_URL"] ?? ""
+).replace(/\/$/, "");

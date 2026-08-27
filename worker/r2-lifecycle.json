@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "id": "husk-ephemeral-objects",
+      "enabled": true,
+      "conditions": { "prefix": "" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 3600 }
+      }
+    }
+  ]
+}

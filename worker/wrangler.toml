@@ -1,0 +1,30 @@
+name = "husk"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# Frontend origins allowed to call this Worker. Add your Lovable preview domain
+# and any custom domain, comma separated, no trailing slash.
+[vars]
+ALLOWED_ORIGINS = "http://localhost:8080"
+
+[[durable_objects.bindings]]
+name = "HUSK_ROOMS"
+class_name = "HuskRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["HuskRoom"]
+
+# Created with: wrangler r2 bucket create husk-files
+[[r2_buckets]]
+binding = "HUSK_FILES"
+bucket_name = "husk-files"
+
+# Created with: wrangler kv namespace create HUSK_RATE_LIMIT
+# Paste the returned id below.
+[[kv_namespaces]]
+binding = "HUSK_RATE_LIMIT"
+id = "PASTE_KV_NAMESPACE_ID_HERE"
+
+# Set with: wrangler secret put HUSK_TICKET_SECRET
+# (a long random string; used only to sign short-lived R2 tickets)
