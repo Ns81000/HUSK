@@ -6,29 +6,49 @@
  * relays opaque ciphertext between sockets and can never decrypt anything,
  * because the room key is never sent to the server.
  *
+ * Encrypted file chunks live in this object's SQLite storage as 1 MiB rows
+ * (`file:<fileId>:<n>`), so they die with the room's alarm purge without any
+ * separate bucket or lifecycle rule.
+ *
  * Closure is driven only by the alarm below — never by a client-side cleanup
  * call — so a crashed host cannot leave a room alive.
  */
 
 import {
   ALARM_INTERVAL_MS,
+  FILE_BYTES_USED_KEY,
+  FILE_CHUNK_BYTES,
+  FILE_META_PREFIX,
+  FILE_ROW_PREFIX,
+  MAX_FILE_BYTES,
   MAX_PARTICIPANTS,
+  MAX_ROOM_FILE_BYTES,
   ROOM_IDLE_TIMEOUT_MS,
   ROOM_MAX_LIFETIME_MS,
+  TICKET_TTL_SECONDS,
 } from "./config";
+import { signTicket, verifyTicket } from "./tickets";
 import type { DurableObjectState, Env } from "./types";
 
 type Participant = { id: string; joinedAt: number };
 
 type Attachment = { id: string; joinedAt: number };
 
+type FileMeta = { size: number; chunks: number; createdAt: number };
+
 type ClientFrame =
   | { t: "ping" }
-  | { t: "send"; localId: string; payload: { iv: string; ct: string } };
+  | { t: "send"; localId: string; payload: { iv: string; ct: string } }
+  | { t: "cancel"; fileId: string };
 
 /** Boundary parser for frames arriving from a browser. */
 function parseClientFrame(data: string | ArrayBuffer): ClientFrame | null {
-  let decoded: { t?: string; localId?: string; payload?: { iv?: string; ct?: string } };
+  let decoded: {
+    t?: string;
+    localId?: string;
+    payload?: { iv?: string; ct?: string };
+    fileId?: string;
+  };
   try {
     // SAFETY: every field is validated below before the frame is used.
     decoded = JSON.parse(String(data)) as typeof decoded;
@@ -37,6 +57,13 @@ function parseClientFrame(data: string | ArrayBuffer): ClientFrame | null {
   }
   if (decoded.t === "ping") {
     return { t: "ping" };
+  }
+  if (decoded.t === "cancel") {
+    const fileId = String(decoded.fileId ?? "");
+    if (fileId === "") {
+      return null;
+    }
+    return { t: "cancel", fileId };
   }
   const localId = String(decoded.localId ?? "");
   const iv = String(decoded.payload?.iv ?? "");
@@ -52,11 +79,21 @@ export class HuskRoom {
   private createdAt = 0;
   private emptySince = 0;
   private exists = false;
+  private bytesUsed = 0;
+  /** Serialises every mutation of bytesUsed so the budget check is atomic. */
+  private fileOpQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
-  ) {}
+  ) {
+    // Load the byte counter before any fetch is served so the room budget
+    // check below is a synchronous read-compare on in-memory state.
+    void this.state.blockConcurrencyWhile(async () => {
+      const stored = await this.state.storage.get<number>(FILE_BYTES_USED_KEY);
+      this.bytesUsed = stored ?? 0;
+    });
+  }
 
   private participants(): Participant[] {
     return this.state
@@ -66,6 +103,13 @@ export class HuskRoom {
         return raw === null ? null : { id: raw.id, joinedAt: raw.joinedAt };
       })
       .filter((value): value is Participant => value !== null);
+  }
+
+  /** Membership capability: a participant id of a currently connected socket. */
+  private isLiveMember(memberId: string): boolean {
+    return this.state
+      .getWebSockets()
+      .some((socket) => socket.deserializeAttachment<Attachment>()?.id === memberId);
   }
 
   private broadcast<T>(payload: T, except?: WebSocket): void {
@@ -151,7 +195,209 @@ export class HuskRoom {
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    const initMatch = /^\/room\/([1-9][0-9]{5})\/file$/.exec(url.pathname);
+    if (initMatch && request.method === "POST") {
+      return this.handleFileInit(request, initMatch[1] ?? "");
+    }
+
+    const chunkMatch = /^\/room\/([1-9][0-9]{5})\/file\/([0-9a-f-]{36})\/(\d+)$/.exec(url.pathname);
+    if (chunkMatch && request.method === "PUT") {
+      return this.handleChunkPut(
+        url,
+        request,
+        chunkMatch[1] ?? "",
+        chunkMatch[2] ?? "",
+        Number(chunkMatch[3]),
+      );
+    }
+
+    const getMatch = /^\/room\/([1-9][0-9]{5})\/file\/([0-9a-f-]{36})$/.exec(url.pathname);
+    if (getMatch && request.method === "GET") {
+      return this.handleFileGet(url, getMatch[1] ?? "", getMatch[2] ?? "");
+    }
+
     return new Response("not_found", { status: 404 });
+  }
+
+  private async handleFileInit(request: Request, pin: string): Promise<Response> {
+    // Reserve/cancel mutate the shared byte counter; chaining them keeps the
+    // read-check-write sequence free of interleaved concurrent requests.
+    const run = () => this.reserveFileStorage(request, pin);
+    const result = this.fileOpQueue.then(run, run);
+    this.fileOpQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async reserveFileStorage(request: Request, pin: string): Promise<Response> {
+    if (!this.exists) {
+      return Response.json({ error: "unavailable" }, { status: 404 });
+    }
+    let body: { size?: unknown; member?: unknown };
+    try {
+      // SAFETY: the fields are coerced and validated below before any use.
+      body = (await request.json()) as { size?: unknown; member?: unknown };
+    } catch {
+      return Response.json({ error: "bad_request" }, { status: 400 });
+    }
+    const size = Number(body.size);
+    const member = String(body.member ?? "");
+    if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES) {
+      return Response.json({ error: "bad_request" }, { status: 400 });
+    }
+    if (!this.isLiveMember(member)) {
+      // Only a holder of a live participant id may reserve file storage.
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    if (this.bytesUsed + size > MAX_ROOM_FILE_BYTES) {
+      return Response.json({ error: "room_file_budget" }, { status: 507 });
+    }
+
+    const fileId = crypto.randomUUID();
+    const chunks = Math.max(1, Math.ceil(size / FILE_CHUNK_BYTES));
+    await this.state.storage.put(`${FILE_META_PREFIX}${fileId}`, {
+      size,
+      chunks,
+      createdAt: Date.now(),
+    } satisfies FileMeta);
+    this.bytesUsed += size;
+    await this.state.storage.put(FILE_BYTES_USED_KEY, this.bytesUsed);
+
+    const putExpiresAt = Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS;
+    const chunkSigs: string[] = [];
+    for (let index = 0; index < chunks; index += 1) {
+      chunkSigs.push(
+        await signTicket(
+          this.env.HUSK_TICKET_SECRET,
+          "chunk",
+          `${pin}/${fileId}/${index}`,
+          putExpiresAt,
+        ),
+      );
+    }
+    // The download capability is relayed to peers inside the encrypted message
+    // body, so it can live until the room's own storage is purged.
+    const getExpiresAt = Math.floor(this.expiresAt() / 1000);
+    const getSig = await signTicket(
+      this.env.HUSK_TICKET_SECRET,
+      "get",
+      `${pin}/${fileId}`,
+      getExpiresAt,
+    );
+    return Response.json({
+      fileId,
+      chunks,
+      putExpiresAt,
+      chunkSigs,
+      getExpiresAt,
+      getSig,
+    });
+  }
+
+  private async handleChunkPut(
+    url: URL,
+    request: Request,
+    pin: string,
+    fileId: string,
+    index: number,
+  ): Promise<Response> {
+    const expiresAt = Number(url.searchParams.get("exp"));
+    const signature = url.searchParams.get("sig") ?? "";
+    const valid = await verifyTicket(
+      this.env.HUSK_TICKET_SECRET,
+      "chunk",
+      `${pin}/${fileId}/${index}`,
+      expiresAt,
+      signature,
+      Date.now(),
+    );
+    if (!valid) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    const meta = await this.state.storage.get<FileMeta>(`${FILE_META_PREFIX}${fileId}`);
+    if (meta === undefined || index >= meta.chunks) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    const key = `${FILE_ROW_PREFIX}${fileId}:${index}`;
+    if ((await this.state.storage.get(key)) !== undefined) {
+      // Single-use: an existing row is immutable, so a replay cannot overwrite
+      // bytes. The client treats 409 as success for its own retry path.
+      return Response.json({ error: "chunk_exists" }, { status: 409 });
+    }
+    const body = await request.arrayBuffer();
+    if (body.byteLength === 0 || body.byteLength > FILE_CHUNK_BYTES) {
+      return Response.json({ error: "bad_request" }, { status: 400 });
+    }
+    await this.state.storage.put(key, body);
+    return Response.json({ ok: true });
+  }
+
+  private async handleFileGet(url: URL, pin: string, fileId: string): Promise<Response> {
+    const expiresAt = Number(url.searchParams.get("exp"));
+    const signature = url.searchParams.get("sig") ?? "";
+    const valid = await verifyTicket(
+      this.env.HUSK_TICKET_SECRET,
+      "get",
+      `${pin}/${fileId}`,
+      expiresAt,
+      signature,
+      Date.now(),
+    );
+    if (!valid) {
+      return Response.json({ error: "forbidden" }, { status: 403 });
+    }
+    const meta = await this.state.storage.get<FileMeta>(`${FILE_META_PREFIX}${fileId}`);
+    if (meta === undefined) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    // Pull-based streaming: one 1 MiB row is read from storage per pull, so a
+    // large download never buffers the whole file (Free-plan CPU/memory cap).
+    const storage = this.state.storage;
+    let index = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (index >= meta.chunks) {
+          controller.close();
+          return;
+        }
+        const row = await storage.get<ArrayBuffer>(`${FILE_ROW_PREFIX}${fileId}:${index}`);
+        index += 1;
+        if (row === undefined) {
+          controller.error(new Error("missing chunk"));
+          return;
+        }
+        controller.enqueue(new Uint8Array(row));
+      },
+    });
+    return new Response(stream, {
+      headers: { "content-type": "application/octet-stream" },
+    });
+  }
+
+  private deleteFileRows(fileId: string): Promise<void> {
+    const run = () => this.deleteFileRowsNow(fileId);
+    const result = this.fileOpQueue.then(run, run);
+    this.fileOpQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async deleteFileRowsNow(fileId: string): Promise<void> {
+    const metaKey = `${FILE_META_PREFIX}${fileId}`;
+    const meta = await this.state.storage.get<FileMeta>(metaKey);
+    if (meta === undefined) {
+      return;
+    }
+    const rows = await this.state.storage.list({
+      prefix: `${FILE_ROW_PREFIX}${fileId}:`,
+    });
+    await this.state.storage.delete([...rows.keys(), metaKey]);
+    this.bytesUsed = Math.max(0, this.bytesUsed - meta.size);
+    await this.state.storage.put(FILE_BYTES_USED_KEY, this.bytesUsed);
   }
 
   private expiresAt(): number {
@@ -172,6 +418,12 @@ export class HuskRoom {
 
     const attachment = socket.deserializeAttachment<Attachment>();
     if (attachment === null) {
+      return;
+    }
+
+    if (frame.t === "cancel") {
+      // Interrupted-upload cleanup: drop this file's rows and free the budget.
+      await this.deleteFileRows(frame.fileId);
       return;
     }
 
@@ -210,7 +462,8 @@ export class HuskRoom {
 
   /**
    * The single mechanism that closes a room. Runs regardless of whether any
-   * client behaved well, which is what makes crashed hosts safe.
+   * client behaved well, which is what makes crashed hosts safe. The
+   * deleteAll() also purges every stored file chunk row.
    */
   async alarm(): Promise<void> {
     const now = Date.now();
@@ -231,6 +484,7 @@ export class HuskRoom {
       }
       this.exists = false;
       this.seq = 0;
+      this.bytesUsed = 0;
       await this.state.storage.deleteAll();
       return;
     }

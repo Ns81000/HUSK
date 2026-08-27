@@ -56,19 +56,16 @@ export async function importRoomKey(fragment: string): Promise<CryptoKey> {
     throw new Error("Invalid room key length");
   }
   // SAFETY: raw is a freshly allocated Uint8Array, which is a valid BufferSource.
-  return crypto.subtle.importKey(
-    "raw",
-    raw as BufferSource,
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
 }
 
 export async function sealBytes(
   key: CryptoKey,
   plaintext: Uint8Array,
-): Promise<{ iv: Uint8Array; ciphertext: Uint8Array }> {
+): Promise<{ iv: Uint8Array<ArrayBuffer>; ciphertext: Uint8Array<ArrayBuffer> }> {
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   // SAFETY: both values are Uint8Array instances, which are valid BufferSources.
   const ciphertext = await crypto.subtle.encrypt(
@@ -83,7 +80,7 @@ export async function openBytes(
   key: CryptoKey,
   iv: Uint8Array,
   ciphertext: Uint8Array,
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   try {
     // SAFETY: both values are Uint8Array instances, which are valid BufferSources.
     const plaintext = await crypto.subtle.decrypt(
@@ -110,11 +107,7 @@ export async function seal<T>(key: CryptoKey, payload: T): Promise<Sealed> {
  * "could not be verified" state instead of dropping the message silently.
  */
 export async function open<T>(key: CryptoKey, sealed: Sealed): Promise<T> {
-  const plaintext = await openBytes(
-    key,
-    fromBase64Url(sealed.iv),
-    fromBase64Url(sealed.ct),
-  );
+  const plaintext = await openBytes(key, fromBase64Url(sealed.iv), fromBase64Url(sealed.ct));
   try {
     // SAFETY: the GCM tag verified above, so this plaintext was produced by a
     // holder of the room key and carries the agreed payload shape.

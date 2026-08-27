@@ -1,38 +1,36 @@
 /**
  * Husk edge Worker.
  *
- * Routes requests to the room's Durable Object, rate-limits join attempts and
- * issues short-lived signed R2 tickets. It handles ciphertext only: grep this
- * directory for a variable holding a room key and you will find none, because
- * the key lives exclusively in the browser URL fragment.
+ * Routes requests to the room Durable Objects and to the rate-limit
+ * gatekeeper, and mints the short-lived signed tickets used for chunked file
+ * transfer. It handles ciphertext only: grep this directory for a variable
+ * holding a room key and you will find none, because the key lives
+ * exclusively in the browser URL fragment.
  */
 
-import { MAX_FILE_BYTES, TICKET_TTL_SECONDS } from "./config";
+import { MAX_FILE_BYTES, PIN_PATTERN } from "./config";
 import { checkJoinAllowed } from "./rate-limit";
-import { signTicket, verifyTicket } from "./tickets";
 import type { Env } from "./types";
 
 export { HuskRoom } from "./room";
+export { HuskGatekeeper } from "./gate";
 
-type CorsHeaders = {
-  readonly "Access-Control-Allow-Origin": string;
-  readonly "Access-Control-Allow-Methods": string;
-  readonly "Access-Control-Allow-Headers": string;
-  readonly "Access-Control-Max-Age": string;
-  readonly Vary: string;
-};
+type CorsHeaders = Record<string, string>;
 
 function corsHeaders(request: Request, env: Env): CorsHeaders {
   const origin = request.headers.get("Origin") ?? "";
   const allowed = env.ALLOWED_ORIGINS.split(",").map((value) => value.trim());
-  const match = allowed.includes(origin) ? origin : (allowed[0] ?? "");
-  return {
-    "Access-Control-Allow-Origin": match,
+  const headers: CorsHeaders = {
     "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
-    "Access-Control-Allow-Headers": "content-type,x-husk-chunks",
+    "Access-Control-Allow-Headers": "content-type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
+  // No ACAO header at all for disallowed origins: the browser blocks the read.
+  if (origin !== "" && allowed.includes(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+  return headers;
 }
 
 function json<T>(body: T, status: number, headers: CorsHeaders): Response {
@@ -42,28 +40,37 @@ function json<T>(body: T, status: number, headers: CorsHeaders): Response {
   });
 }
 
-const PIN_PATTERN = /^[1-9][0-9]{5}$/;
+const SOCKET_PATTERN = /^\/room\/([1-9][0-9]{5})\/socket$/;
+const FILE_INIT_PATTERN = /^\/room\/([1-9][0-9]{5})\/file$/;
+const FILE_OBJECT_PATTERN = /^\/room\/([1-9][0-9]{5})\/file\/([0-9a-f-]{36})(?:\/(\d+))?$/;
 
 /** Boundary parsers: request bodies are coerced, then validated by pattern. */
-async function readPin(request: Request): Promise<string> {
+async function readJson(request: Request): Promise<Record<string, unknown>> {
   try {
-    // SAFETY: the value is coerced to a string and pattern-checked by callers.
-    const body = (await request.json()) as { pin?: string };
-    return String(body.pin ?? "");
+    // SAFETY: the value is narrowed by callers before any field is used.
+    return (await request.json()) as Record<string, unknown>;
   } catch {
-    return "";
+    return {};
   }
 }
 
-async function readSize(request: Request): Promise<number> {
-  try {
-    // SAFETY: the value is coerced to a number and range-checked by callers.
-    const body = (await request.json()) as { size?: number };
-    return Number(body.size);
-  } catch {
-    return Number.NaN;
+/** Forwards a response from a Durable Object, adding CORS headers without buffering the body. */
+function forwardWithCors(response: Response, cors: CorsHeaders): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(cors)) {
+    headers.set(key, value);
   }
+  return new Response(response.body, { status: response.status, headers });
 }
+
+type FileGrant = {
+  fileId: string;
+  chunks: number;
+  putExpiresAt: number;
+  chunkSigs: string[];
+  getExpiresAt: number;
+  getSig: string;
+};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -76,7 +83,8 @@ export default {
 
     // POST /room/create  { pin }
     if (url.pathname === "/room/create" && request.method === "POST") {
-      const pin = await readPin(request);
+      const body = await readJson(request);
+      const pin = String(body.pin ?? "");
       if (!PIN_PATTERN.test(pin)) {
         return json({ error: "bad_request" }, 400, cors);
       }
@@ -96,27 +104,18 @@ export default {
 
     // POST /room/join  { pin }
     if (url.pathname === "/room/join" && request.method === "POST") {
-      const pin = await readPin(request);
+      const body = await readJson(request);
+      const pin = String(body.pin ?? "");
       const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      const decision = await checkJoinAllowed(
-        env.HUSK_RATE_LIMIT,
-        [`ip:${ip}`, `pin:${pin}`],
-        Date.now(),
-      );
+      const decision = await checkJoinAllowed(env, [`ip:${ip}`, `pin:${pin}`]);
       if (!decision.allowed) {
-        return json(
-          { error: "rate_limited", retryAfter: decision.retryAfterSeconds },
-          429,
-          cors,
-        );
+        return json({ error: "rate_limited", retryAfter: decision.retryAfterSeconds }, 429, cors);
       }
       if (!PIN_PATTERN.test(pin)) {
         return json({ error: "unavailable" }, 404, cors);
       }
       const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(pin));
-      const joined = await stub.fetch(
-        new Request(`https://room/${pin}/join`, { method: "POST" }),
-      );
+      const joined = await stub.fetch(new Request(`https://room/${pin}/join`, { method: "POST" }));
       if (!joined.ok) {
         // Deliberately generic: does not distinguish missing, full or wrong.
         return json({ error: "unavailable" }, 404, cors);
@@ -124,79 +123,71 @@ export default {
       return json({ ok: true, pin }, 200, cors);
     }
 
-    const socketMatch = /^\/room\/([0-9]{6})\/socket$/.exec(url.pathname);
+    const socketMatch = SOCKET_PATTERN.exec(url.pathname);
     if (socketMatch) {
-      const pin = socketMatch[1] ?? "";
-      const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(pin));
+      const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(socketMatch[1] ?? ""));
       return stub.fetch(request);
     }
 
-    const ticketMatch = /^\/room\/([0-9]{6})\/upload-ticket$/.exec(url.pathname);
-    if (ticketMatch && request.method === "POST") {
-      const pin = ticketMatch[1] ?? "";
-      const size = await readSize(request);
-      if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES) {
+    // POST /room/<pin>/file  { size, member }
+    // Reserves room storage for one encrypted file and returns per-chunk
+    // upload URLs plus the download capability that travels inside the
+    // encrypted relay. The room Durable Object enforces that "member" is a
+    // currently connected participant, so storage cannot be reserved — or
+    // tickets minted — by anyone who has not joined the room.
+    const fileInitMatch = FILE_INIT_PATTERN.exec(url.pathname);
+    if (fileInitMatch && request.method === "POST") {
+      const pin = fileInitMatch[1] ?? "";
+      const body = await readJson(request);
+      const size = Number(body.size);
+      const member = String(body.member ?? "");
+      if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES || member === "") {
         return json({ error: "bad_request" }, 400, cors);
       }
-      const objectKey = `${pin}/${crypto.randomUUID()}`;
-      const expiresAt = Math.floor(Date.now() / 1000) + TICKET_TTL_SECONDS;
-      const putSignature = await signTicket(
-        env.HUSK_TICKET_SECRET,
-        "put",
-        objectKey,
-        expiresAt,
+      const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(pin));
+      const grantResponse = await stub.fetch(
+        new Request(`https://do${url.pathname}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ size, member }),
+        }),
       );
-      const getSignature = await signTicket(
-        env.HUSK_TICKET_SECRET,
-        "get",
-        objectKey,
-        expiresAt,
-      );
+      if (!grantResponse.ok) {
+        return forwardWithCors(grantResponse, cors);
+      }
+      // SAFETY: the Durable Object is our own code and returns this exact shape;
+      // the fields are re-checked before the URLs are built.
+      const grant = (await grantResponse.json()) as Partial<FileGrant>;
+      if (
+        grant.fileId === undefined ||
+        grant.putExpiresAt === undefined ||
+        grant.getExpiresAt === undefined ||
+        grant.getSig === undefined ||
+        !Array.isArray(grant.chunkSigs)
+      ) {
+        return json({ error: "unavailable" }, 503, cors);
+      }
       return json(
         {
-          objectKey,
-          uploadUrl: `${url.origin}/object/${encodeURIComponent(objectKey)}?exp=${expiresAt}&sig=${putSignature}`,
-          downloadUrl: `${url.origin}/object/${encodeURIComponent(objectKey)}?exp=${expiresAt}&sig=${getSignature}`,
+          fileId: grant.fileId,
+          chunkUrls: grant.chunkSigs.map(
+            (signature, index) =>
+              `${url.origin}/room/${pin}/file/${grant.fileId}/${index}?exp=${grant.putExpiresAt}&sig=${signature}`,
+          ),
+          download: { exp: grant.getExpiresAt, sig: grant.getSig },
         },
         200,
         cors,
       );
     }
 
-    const objectMatch = /^\/object\/(.+)$/.exec(url.pathname);
-    if (objectMatch) {
-      const objectKey = decodeURIComponent(objectMatch[1] ?? "");
-      const expiresAt = Number(url.searchParams.get("exp"));
-      const signature = url.searchParams.get("sig") ?? "";
-      const operation = request.method === "PUT" ? "put" : "get";
-      const valid = await verifyTicket(
-        env.HUSK_TICKET_SECRET,
-        operation,
-        objectKey,
-        expiresAt,
-        signature,
-        Date.now(),
-      );
-      if (!valid) {
-        return json({ error: "forbidden" }, 403, cors);
-      }
-
-      if (operation === "put") {
-        if (request.body === null) {
-          return json({ error: "bad_request" }, 400, cors);
-        }
-        await env.HUSK_FILES.put(objectKey, request.body);
-        return json({ ok: true }, 200, cors);
-      }
-
-      const object = await env.HUSK_FILES.get(objectKey);
-      if (object === null || object.body === null) {
-        return json({ error: "not_found" }, 404, cors);
-      }
-      return new Response(object.body, {
-        status: 200,
-        headers: { ...cors, "content-type": "application/octet-stream" },
-      });
+    // PUT /room/<pin>/file/<fileId>/<n>?exp=&sig=   (one encrypted chunk)
+    // GET /room/<pin>/file/<fileId>?exp=&sig=       (streamed ciphertext)
+    const fileObjectMatch = FILE_OBJECT_PATTERN.exec(url.pathname);
+    if (fileObjectMatch) {
+      const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(fileObjectMatch[1] ?? ""));
+      const response = await stub.fetch(request);
+      return forwardWithCors(response, cors);
     }
 
     return json({ error: "not_found" }, 404, cors);

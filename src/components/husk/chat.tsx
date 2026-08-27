@@ -1,7 +1,7 @@
 /** Message list, message composer and file cards. */
 
 import { useEffect, useRef, useState } from "react";
-import { AttachIcon, DownloadIcon, FileIcon, SendIcon, WaitingMark } from "./icons";
+import { AttachIcon, DeleteIcon, DownloadIcon, FileIcon, SendIcon, WaitingMark } from "./icons";
 import { Button, IconButton, useToast } from "./primitives";
 import { tokenize } from "@/lib/husk/linkify";
 import { orderedEntries, useRoomStore, type ChatEntry } from "@/lib/husk/store";
@@ -190,6 +190,7 @@ export function Composer({
 }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [failedFile, setFailedFile] = useState<File | null>(null);
   const sendText = useRoomStore((store) => store.sendText);
   const fileRef = useRef<HTMLInputElement>(null);
   const notify = useToast();
@@ -203,8 +204,40 @@ export function Composer({
     await sendText(value);
   }
 
+  function send(file: File): void {
+    setBusy(true);
+    setFailedFile(null);
+    void onSendFile(file)
+      .then(() => setFailedFile(null))
+      .catch(() => {
+        setFailedFile(file);
+        notify("File could not be sent.", "danger");
+      })
+      .finally(() => setBusy(false));
+  }
+
   return (
     <div className="safe-bottom border-t border-line bg-surface px-4 pt-3 sm:px-6">
+      {failedFile !== null ? (
+        <div className="mb-2 flex items-center gap-3 rounded-md border border-danger bg-surface-raised p-3">
+          <FileIcon className="shrink-0 text-ink-muted" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[14px] font-medium text-ink">{failedFile.name}</p>
+            <p className="text-caption text-danger">Upload failed · not sent</p>
+          </div>
+          <Button
+            tone="quiet"
+            disabled={busy}
+            onClick={() => send(failedFile)}
+            aria-label="Retry file upload"
+          >
+            Retry
+          </Button>
+          <IconButton label="Discard failed upload" onClick={() => setFailedFile(null)}>
+            <DeleteIcon className="text-ink-muted" />
+          </IconButton>
+        </div>
+      ) : null}
       <div className="flex items-end gap-2">
         <input
           ref={fileRef}
@@ -216,10 +249,7 @@ export function Composer({
             if (file === undefined) {
               return;
             }
-            setBusy(true);
-            void onSendFile(file)
-              .catch(() => notify("File could not be sent. Try again.", "danger"))
-              .finally(() => setBusy(false));
+            send(file);
           }}
         />
         <IconButton

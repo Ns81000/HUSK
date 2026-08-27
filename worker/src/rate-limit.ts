@@ -1,9 +1,10 @@
 /**
- * KV-backed join rate limiting.
+ * Join rate limiting logic.
  *
  * Counts attempts per IP and per PIN inside a fixed window and applies
  * exponential backoff once the window budget is exhausted. Only counters and
- * timestamps are stored; no message data of any kind.
+ * timestamps are stored; no message data of any kind. The counters themselves
+ * live in the HuskGatekeeper Durable Object (see gate.ts), not KV.
  */
 
 import {
@@ -12,7 +13,7 @@ import {
   JOIN_MAX_ATTEMPTS,
   JOIN_WINDOW_SECONDS,
 } from "./config";
-import type { KVNamespace } from "./types";
+import type { Env } from "./types";
 
 export type RateRecord = {
   readonly attempts: number;
@@ -27,10 +28,7 @@ export type RateDecision = {
   readonly next: RateRecord;
 };
 
-export function evaluate(
-  record: RateRecord | null,
-  now: number,
-): RateDecision {
+export function evaluate(record: RateRecord | null, now: number): RateDecision {
   const windowMs = JOIN_WINDOW_SECONDS * 1000;
   const base: RateRecord = record ?? {
     attempts: 0,
@@ -79,35 +77,39 @@ export function evaluate(
   };
 }
 
+/** A record can be dropped once neither its window nor penalty can matter again. */
+export function isRecordExpired(record: RateRecord, now: number): boolean {
+  const windowMs = JOIN_WINDOW_SECONDS * 1000;
+  return now >= record.blockedUntil && now - record.windowStart >= windowMs;
+}
+
+/**
+ * Asks the gatekeeper Durable Object for a join decision across every counter
+ * key (per IP and per PIN). Fails closed: an unreachable gatekeeper must not
+ * silently disable the anti-brute-force budget.
+ */
 export async function checkJoinAllowed(
-  kv: KVNamespace,
+  env: Env,
   keys: readonly string[],
-  now: number,
-): Promise<RateDecision> {
-  let blocked: RateDecision | null = null;
-  let allowedDecision: RateDecision | null = null;
-
-  for (const key of keys) {
-    const raw = await kv.get(key);
-    // SAFETY: this key namespace is written only by this module, with this shape.
-    const record = raw === null ? null : (JSON.parse(raw) as RateRecord);
-    const decision = evaluate(record, now);
-    await kv.put(key, JSON.stringify(decision.next), {
-      expirationTtl: JOIN_WINDOW_SECONDS + JOIN_BACKOFF_MAX_SECONDS,
-    });
-    if (decision.allowed) {
-      allowedDecision = allowedDecision ?? decision;
-    } else if (blocked === null || decision.retryAfterSeconds > blocked.retryAfterSeconds) {
-      blocked = decision;
-    }
-  }
-
-  return (
-    blocked ??
-    allowedDecision ?? {
-      allowed: true,
-      retryAfterSeconds: 0,
-      next: { attempts: 1, windowStart: now, strikes: 0, blockedUntil: 0 },
-    }
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  const gate = env.HUSK_GATE.get(env.HUSK_GATE.idFromName("gate"));
+  const response = await gate.fetch(
+    new Request("https://gate/check", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keys }),
+    }),
   );
+  if (!response.ok) {
+    return { allowed: false, retryAfterSeconds: 30 };
+  }
+  // SAFETY: this route is served only by our own gatekeeper with this shape.
+  const decision = (await response.json()) as {
+    allowed?: unknown;
+    retryAfterSeconds?: unknown;
+  };
+  return {
+    allowed: decision.allowed === true,
+    retryAfterSeconds: Number(decision.retryAfterSeconds ?? 0),
+  };
 }

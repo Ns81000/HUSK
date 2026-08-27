@@ -105,6 +105,18 @@ export class RoomConnection {
     return false;
   }
 
+  /**
+   * Sends a control frame (never ciphertext) on the live socket only. A cancel
+   * for a failed upload has no meaning once disconnected, so it is dropped.
+   */
+  sendControl(frame: Extract<ClientMessage, { t: "cancel" }>): boolean {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(frame));
+      return true;
+    }
+    return false;
+  }
+
   close(): void {
     this.disposed = true;
     if (this.timer !== null) {

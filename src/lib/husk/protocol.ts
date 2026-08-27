@@ -12,6 +12,7 @@ export type SealedEnvelope = {
 
 export type ClientMessage =
   | { readonly t: "send"; readonly localId: string; readonly payload: SealedEnvelope }
+  | { readonly t: "cancel"; readonly fileId: string }
   | { readonly t: "ping" };
 
 export type Participant = {
@@ -61,22 +62,21 @@ export type SealedBody =
       readonly name: string;
       readonly size: number;
       readonly mime: string;
-      readonly objectKey: string;
+      /** Server-side id of the stored ciphertext. */
+      readonly fileId: string;
       readonly chunks: number;
       readonly ivs: readonly string[];
       readonly lengths: readonly number[];
+      /**
+       * Signed download capability for the stored ciphertext. It travels only
+       * inside this encrypted body and expires when the room's storage does.
+       */
+      readonly exp: number;
+      readonly sig: string;
       readonly sentAt: number;
     };
 
-const SERVER_TAGS = [
-  "welcome",
-  "relay",
-  "presence",
-  "ack",
-  "pong",
-  "closed",
-  "error",
-] as const;
+const SERVER_TAGS = ["welcome", "relay", "presence", "ack", "pong", "closed", "error"] as const;
 
 /**
  * Boundary parser for frames arriving from the relay. Returns null for

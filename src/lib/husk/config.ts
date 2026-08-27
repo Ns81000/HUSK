@@ -16,16 +16,17 @@ export const PEER_GRACE_MS = 8_000;
 export const RECONNECT_MIN_MS = 1_000;
 export const RECONNECT_MAX_MS = 15_000;
 
-/** Files above this size are encrypted and uploaded in chunks. */
-export const FILE_CHUNK_THRESHOLD_BYTES = 5 * 1024 * 1024;
+/**
+ * Files are encrypted and uploaded in fixed 1 MiB chunks; each chunk is one
+ * storage row in the room's Durable Object. Mirrors worker/src/config.ts.
+ */
 export const FILE_CHUNK_BYTES = 1 * 1024 * 1024;
-export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_ROOM_FILE_BYTES = 100 * 1024 * 1024;
 
 /** Room key length in bytes (AES-256). */
 export const ROOM_KEY_BYTES = 32;
 /** AES-GCM IV length in bytes. */
 export const IV_BYTES = 12;
 
-export const WORKER_URL: string = (
-  import.meta.env["VITE_WORKER_URL"] ?? ""
-).replace(/\/$/, "");
+export const WORKER_URL: string = (import.meta.env["VITE_WORKER_URL"] ?? "").replace(/\/$/, "");

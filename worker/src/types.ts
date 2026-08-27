@@ -4,27 +4,6 @@
  * package into the frontend build.
  */
 
-export type KVNamespace = {
-  get(key: string, type?: "text"): Promise<string | null>;
-  put(
-    key: string,
-    value: string,
-    options?: { expirationTtl?: number },
-  ): Promise<void>;
-  delete(key: string): Promise<void>;
-};
-
-export type R2Object = {
-  body: ReadableStream | null;
-  size: number;
-};
-
-export type R2Bucket = {
-  put(key: string, value: ReadableStream | ArrayBuffer): Promise<void>;
-  get(key: string): Promise<R2Object | null>;
-  delete(key: string): Promise<void>;
-};
-
 export type DurableObjectId = { toString(): string };
 
 export type DurableObjectStub = {
@@ -36,11 +15,20 @@ export type DurableObjectNamespace = {
   get(id: DurableObjectId): DurableObjectStub;
 };
 
+export type DurableObjectStorageListOptions = {
+  prefix?: string;
+  limit?: number;
+  startAfter?: string;
+};
+
 export type DurableObjectStorage = {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  delete(keys: string | readonly string[]): Promise<boolean | number>;
+  list<T>(options?: DurableObjectStorageListOptions): Promise<Map<string, T>>;
   deleteAll(): Promise<void>;
   setAlarm(scheduledTime: number): Promise<void>;
+  getAlarm(): Promise<number | null>;
 };
 
 export type DurableObjectState = {
@@ -52,8 +40,7 @@ export type DurableObjectState = {
 
 export type Env = {
   HUSK_ROOMS: DurableObjectNamespace;
-  HUSK_FILES: R2Bucket;
-  HUSK_RATE_LIMIT: KVNamespace;
+  HUSK_GATE: DurableObjectNamespace;
   HUSK_TICKET_SECRET: string;
   ALLOWED_ORIGINS: string;
 };

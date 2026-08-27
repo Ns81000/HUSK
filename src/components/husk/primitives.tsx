@@ -29,8 +29,7 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 const toneClass = {
   primary:
     "bg-accent text-accent-ink hover:bg-accent-hover disabled:bg-line disabled:text-ink-faint",
-  quiet:
-    "bg-surface text-ink border border-line hover:bg-surface-sunken disabled:text-ink-faint",
+  quiet: "bg-surface text-ink border border-line hover:bg-surface-sunken disabled:text-ink-faint",
   danger:
     "bg-surface text-danger border border-line hover:bg-surface-sunken disabled:text-ink-faint",
 } satisfies Record<ButtonTone, string>;
@@ -76,12 +75,7 @@ export function Panel({
   readonly className?: string;
 }) {
   return (
-    <section
-      className={cn(
-        "rounded-lg border border-line bg-surface p-6 shadow-panel",
-        className,
-      )}
-    >
+    <section className={cn("rounded-lg border border-line bg-surface p-6 shadow-panel", className)}>
       {children}
     </section>
   );
@@ -188,9 +182,7 @@ export function Modal({
 
 type Toast = { readonly id: string; readonly text: string; readonly tone: "info" | "danger" };
 
-const ToastContext = createContext<((text: string, tone?: "info" | "danger") => void) | null>(
-  null,
-);
+const ToastContext = createContext<((text: string, tone?: "info" | "danger") => void) | null>(null);
 
 export function ToastProvider({ children }: { readonly children: ReactNode }) {
   const [toasts, setToasts] = useState<readonly Toast[]>([]);

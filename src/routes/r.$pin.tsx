@@ -4,7 +4,12 @@ import { Composer, MessageList } from "@/components/husk/chat";
 import { ErrorMark } from "@/components/husk/icons";
 import { Button, Modal, Panel, useToast } from "@/components/husk/primitives";
 import { ConnectionIndicator, RoomInfo } from "@/components/husk/room-info";
-import { downloadAndDecrypt, encryptAndUpload, requestUploadTicket } from "@/lib/husk/files";
+import {
+  UploadFailedError,
+  downloadAndDecrypt,
+  encryptAndUpload,
+  requestFileUpload,
+} from "@/lib/husk/files";
 import { importRoomKey } from "@/lib/husk/crypto";
 import { isTerminal, type RoomState } from "@/lib/husk/room-machine";
 import { useRoomStore } from "@/lib/husk/store";
@@ -71,9 +76,11 @@ function RoomScreen() {
   const state = useRoomStore((store) => store.state);
   const status = useRoomStore((store) => store.status);
   const participants = useRoomStore((store) => store.participants);
+  const selfId = useRoomStore((store) => store.selfId);
   const connect = useRoomStore((store) => store.connect);
   const leave = useRoomStore((store) => store.leave);
   const sendFileMessage = useRoomStore((store) => store.sendFileMessage);
+  const cancelFile = useRoomStore((store) => store.cancelFile);
 
   useEffect(() => {
     const fragment = window.location.hash.slice(1);
@@ -94,22 +101,32 @@ function RoomScreen() {
         return;
       }
       const key = await importRoomKey(keyFragment);
-      const ticket = await requestUploadTicket(pin, file.size);
-      const uploaded = await encryptAndUpload(key, file, ticket, () => undefined);
-      const body: SealedBody = {
-        kind: "file",
-        name: file.name,
-        size: file.size,
-        mime: file.type === "" ? "application/octet-stream" : file.type,
-        objectKey: uploaded.objectKey,
-        chunks: uploaded.chunks,
-        ivs: uploaded.ivs,
-        lengths: uploaded.lengths,
-        sentAt: Date.now(),
-      };
-      await sendFileMessage(body);
+      try {
+        const grant = await requestFileUpload(pin, selfId, file.size);
+        const uploaded = await encryptAndUpload(key, file, grant, () => undefined);
+        const body: SealedBody = {
+          kind: "file",
+          name: file.name,
+          size: file.size,
+          mime: file.type === "" ? "application/octet-stream" : file.type,
+          fileId: uploaded.fileId,
+          chunks: uploaded.chunks,
+          ivs: uploaded.ivs,
+          lengths: uploaded.lengths,
+          exp: uploaded.exp,
+          sig: uploaded.sig,
+          sentAt: Date.now(),
+        };
+        await sendFileMessage(body);
+      } catch (error) {
+        // Free the reserved storage of a half-uploaded file before surfacing.
+        if (error instanceof UploadFailedError && error.fileId !== null) {
+          cancelFile(error.fileId);
+        }
+        throw error;
+      }
     },
-    [keyFragment, pin, sendFileMessage],
+    [keyFragment, pin, selfId, sendFileMessage, cancelFile],
   );
 
   const onDownload = useCallback(
@@ -118,15 +135,7 @@ function RoomScreen() {
         return;
       }
       const key = await importRoomKey(keyFragment);
-      const blob = await downloadAndDecrypt(
-        key,
-        pin,
-        body.objectKey,
-        body.ivs,
-        body.lengths,
-        body.mime,
-        () => undefined,
-      );
+      const blob = await downloadAndDecrypt(key, pin, body, body.mime, () => undefined);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -151,11 +160,7 @@ function RoomScreen() {
   if (isTerminal(state)) {
     const copy = closedCopyFor(state);
     return (
-      <ClosedScreen
-        title={copy.title}
-        body={copy.body}
-        onHome={() => void navigate({ to: "/" })}
-      />
+      <ClosedScreen title={copy.title} body={copy.body} onHome={() => void navigate({ to: "/" })} />
     );
   }
 

@@ -37,6 +37,7 @@ type RoomStore = {
   sendText: (text: string) => Promise<void>;
   sendFileMessage: (body: SealedBody) => Promise<void>;
   markFailed: (id: string) => void;
+  cancelFile: (fileId: string) => void;
   leave: () => void;
 };
 
@@ -106,9 +107,7 @@ export const useRoomStore = create<RoomStore>((set, get) => {
       case "ack": {
         set((current) => ({
           entries: current.entries.map((entry) =>
-            entry.id === message.localId
-              ? { ...entry, seq: message.seq, delivery: "sent" }
-              : entry,
+            entry.id === message.localId ? { ...entry, seq: message.seq, delivery: "sent" } : entry,
           ),
         }));
         break;
@@ -261,6 +260,10 @@ export const useRoomStore = create<RoomStore>((set, get) => {
           entry.id === id ? { ...entry, delivery: "failed" } : entry,
         ),
       }));
+    },
+
+    cancelFile(fileId) {
+      connection?.sendControl({ t: "cancel", fileId });
     },
 
     leave() {

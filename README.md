@@ -11,16 +11,25 @@ room closes, the conversation is gone.
   browsers never send to a server.
 - Every message and file chunk is encrypted before it leaves the tab. The relay
   sees ciphertext, an IV, and a room PIN — never plaintext, never the key.
-- Relay state lives in memory inside a Cloudflare Durable Object. There is no
-  database. An idle alarm closes the room server-side and drops all state.
-- File chunks go to R2 through short-lived, single-use, HMAC-signed tickets and
-  are deleted by an R2 lifecycle rule.
+- Relay state and encrypted file chunks live in SQLite-backed Cloudflare
+  Durable Objects. There is no database and no bucket. An idle alarm closes the
+  room server-side and purges every row, files included.
+- File chunks move through short-lived HMAC-signed URLs. Upload URLs are
+  single-use (each chunk row is write-once) and are only minted for
+  participants with a live WebSocket in the room.
+
+## Capacity limits (Workers Free plan)
+
+- 25 MB per file, encrypted in 1 MiB chunks (one storage row each).
+- 100 MB of live files per room; a transfer is refused beyond that.
+- Account-wide SQLite storage is ~5 GB (roughly 200 concurrent max-size files
+  across all rooms). Everything is purged when rooms close.
 
 ## Frontend
 
 ```sh
-npm i
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Set the relay URL for the frontend (`.env` / Lovable environment variable):
@@ -36,62 +45,51 @@ Lovable cannot provision Cloudflare resources for you. Run these yourself:
 1. Install and authenticate Wrangler.
 
    ```sh
-   npm install -g wrangler
+   pnpm add -g wrangler
    wrangler login
    ```
 
-2. Create the R2 bucket for encrypted file chunks.
-
-   ```sh
-   wrangler r2 bucket create husk-files
-   ```
-
-3. Apply the lifecycle rule so uploads expire automatically.
-
-   ```sh
-   wrangler r2 bucket lifecycle add husk-files --file worker/r2-lifecycle.json
-   ```
-
-4. Create the KV namespace used for PIN/IP rate limiting and copy the returned
-   `id` into `worker/wrangler.toml` (`HUSK_RATE_LIMIT`).
-
-   ```sh
-   wrangler kv namespace create HUSK_RATE_LIMIT
-   ```
-
-5. Set the ticket signing secret (any long random string).
+2. Set the ticket signing secret (any long random string).
 
    ```sh
    cd worker
-   wrangler secret put HUSK_TICKET_SECRET
+   pnpm wrangler secret put HUSK_TICKET_SECRET
    ```
 
-6. Set `ALLOWED_ORIGINS` in `worker/wrangler.toml` to your frontend origins,
+   No other resources are needed: both Durable Objects (rooms and the
+   rate-limit gatekeeper) use the SQLite storage backend available on the
+   Workers Free plan and are created by `wrangler deploy` itself.
+
+3. Set `ALLOWED_ORIGINS` in `worker/wrangler.toml` to your frontend origins,
    comma separated, without trailing slashes.
 
-7. Deploy the relay.
+4. Deploy the relay.
 
    ```sh
    cd worker
-   wrangler deploy
+   pnpm deploy
    ```
 
-8. Put the deployed Worker URL into `VITE_WORKER_URL` for the frontend and
+5. Put the deployed Worker URL into `VITE_WORKER_URL` for the frontend and
    redeploy the site.
 
 ## Verification
 
 ```sh
-npm run test        # crypto, room state machine, rate limiting, protocol
-npx tsgo -p tsconfig.json
-npx tsgo -p worker/tsconfig.json
-npx oxlint
+pnpm test                                # unit tests (crypto, PIN, state machine, rate limiting)
+cd worker && pnpm test                   # integration tests through the real routes in workerd
+pnpm exec tsc --noEmit -p tsconfig.json
+pnpm exec tsc --noEmit -p worker/tsconfig.json
+pnpm lint
 ```
 
 ## Security notes
 
 - The room key never appears in a request line, header, body, or log.
 - The relay stores no message content, no history, and no user identity.
-- Upload and download tickets are single-use, scoped to one object key, and
-  expire in minutes.
-- Join attempts are rate limited per IP and per PIN with exponential backoff.
+- File storage lives inside the room's own Durable Object and only a
+  participant with a live WebSocket can reserve it; chunk uploads are
+  write-once and ticket-scoped; downloads require a signed capability that is
+  only ever relayed inside the encrypted message body.
+- Join attempts (including WebSocket connects) are rate limited per IP and per
+  PIN with exponential backoff.

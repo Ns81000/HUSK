@@ -11,20 +11,18 @@ ALLOWED_ORIGINS = "http://localhost:8080"
 name = "HUSK_ROOMS"
 class_name = "HuskRoom"
 
+# Join rate-limit counters live in a single HuskGatekeeper instance instead of
+# KV, so deployment needs no manually created namespace.
+[[durable_objects.bindings]]
+name = "HUSK_GATE"
+class_name = "HuskGatekeeper"
+
+# Both classes use the SQLite storage backend — the only Durable Object backend
+# available on the Workers Free plan. File chunks are stored as 1 MiB rows in
+# the room's own storage and die with the room's alarm purge.
 [[migrations]]
 tag = "v1"
-new_classes = ["HuskRoom"]
-
-# Created with: wrangler r2 bucket create husk-files
-[[r2_buckets]]
-binding = "HUSK_FILES"
-bucket_name = "husk-files"
-
-# Created with: wrangler kv namespace create HUSK_RATE_LIMIT
-# Paste the returned id below.
-[[kv_namespaces]]
-binding = "HUSK_RATE_LIMIT"
-id = "PASTE_KV_NAMESPACE_ID_HERE"
+new_sqlite_classes = ["HuskRoom", "HuskGatekeeper"]
 
 # Set with: wrangler secret put HUSK_TICKET_SECRET
-# (a long random string; used only to sign short-lived R2 tickets)
+# (a long random string; used only to sign short-lived file transfer tickets)
