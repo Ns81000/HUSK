@@ -3,9 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
 # Frontend origins allowed to call this Worker. Add your Lovable preview domain
-# and any custom domain, comma separated, no trailing slash.
+# and any custom domain, comma separated, no trailing slash. 3000 is the dev
+# server port (8080 is inside a Windows-reserved port range on some machines).
 [vars]
-ALLOWED_ORIGINS = "http://localhost:8080"
+ALLOWED_ORIGINS = "http://localhost:8080,http://localhost:3000"
 
 [[durable_objects.bindings]]
 name = "HUSK_ROOMS"

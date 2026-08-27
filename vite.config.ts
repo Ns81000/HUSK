@@ -12,4 +12,12 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  vite: {
+    server: {
+      // Windows (WinNAT) reserves 8015-8114, so the wrapper's default dev port
+      // 8080 fails to bind with EACCES on this machine. 3000 is outside every
+      // excluded range; the relay Worker's dev ALLOWED_ORIGINS covers it.
+      port: 3000,
+    },
+  },
 });
