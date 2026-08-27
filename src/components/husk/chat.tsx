@@ -22,6 +22,19 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Enter submits; Shift+Enter is a newline; and Enter that merely commits an
+ * IME composition (isComposing, incl. the keyCode-229 path some browsers
+ * emit) must never submit the half-converted text.
+ */
+export function shouldSubmitOnEnter(event: {
+  key: string;
+  shiftKey: boolean;
+  nativeEvent: { isComposing?: boolean | undefined };
+}): boolean {
+  return event.key === "Enter" && !event.shiftKey && event.nativeEvent.isComposing !== true;
+}
+
 function MessageText({ text }: { readonly text: string }) {
   return (
     <p className="whitespace-pre-wrap break-words text-[15px]">
@@ -138,9 +151,7 @@ const MessageItem = memo(function MessageItem({
   readonly onRetry: (id: string) => void;
 }) {
   if (entry.system !== undefined) {
-    return (
-      <p className="text-center text-caption text-ink-faint">{entry.system}</p>
-    );
+    return <p className="text-center text-caption text-ink-faint">{entry.system}</p>;
   }
   if (entry.delivery === "unverified") {
     return (
@@ -320,7 +331,7 @@ export function Composer({
           aria-label="Message"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (shouldSubmitOnEnter(event)) {
               event.preventDefault();
               void submit();
             }

@@ -11,6 +11,7 @@ class FakeConnection implements ConnectionLike {
   static instances: FakeConnection[] = [];
   readonly sent: { localId: string; payload: SealedEnvelope }[] = [];
   closed = false;
+  resetBackoffCalls = 0;
 
   constructor(
     readonly pin: string,
@@ -43,6 +44,7 @@ class FakeConnection implements ConnectionLike {
   }
 
   resetBackoff(): void {
+    this.resetBackoffCalls += 1;
     this.handlers.onStatus("open");
   }
 
@@ -319,5 +321,32 @@ describe("room store", () => {
     conn.handlers.onMalformed();
     conn.handlers.onMalformed();
     expect(store.getState().malformedCount).toBe(2);
+  });
+
+  it("an offline event marks the store offline", async () => {
+    const store = await connectedStore();
+    expect(store.getState().online).toBe(true);
+    store.getState().notifyOffline();
+    expect(store.getState().online).toBe(false);
+  });
+
+  it("coming back online resets the connection backoff immediately", async () => {
+    const store = await connectedStore();
+    const conn = lastConn();
+    store.getState().notifyOffline();
+    store.getState().notifyOnline();
+    expect(store.getState().online).toBe(true);
+    expect(conn.resetBackoffCalls).toBe(1);
+  });
+
+  it("coming back online reconnects a room that ended as disconnected", async () => {
+    const store = await connectedStore();
+    lastConn().handlers.onEnded("attempts_exhausted");
+    expect(store.getState().state).toBe("closed_disconnected");
+    const before = FakeConnection.instances.length;
+    store.getState().notifyOnline();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeConnection.instances.length).toBe(before + 1);
+    expect(store.getState().state).toBe("joining");
   });
 });

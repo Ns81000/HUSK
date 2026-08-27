@@ -40,10 +40,7 @@ export type ConnectionLike = {
   sendControl(frame: { t: "cancel"; fileId: string }): boolean;
 };
 
-export type ConnectionSpawner = (
-  pin: string,
-  handlers: ConnectionHandlers,
-) => ConnectionLike;
+export type ConnectionSpawner = (pin: string, handlers: ConnectionHandlers) => ConnectionLike;
 
 type RoomStore = {
   state: RoomState;
@@ -60,6 +57,8 @@ type RoomStore = {
   error: string | null;
   connect: (pin: string, keyFragment: string) => Promise<void>;
   retry: () => Promise<void>;
+  notifyOnline: () => void;
+  notifyOffline: () => void;
   sendText: (text: string) => Promise<void>;
   sendFileMessage: (body: SealedBody) => Promise<void>;
   markFailed: (id: string) => void;
@@ -353,25 +352,12 @@ export function createRoomStore(
     }
   }
 
-  function handleOffline(): void {
-    store.setState({ online: false });
-  }
-
-  function handleOnline(): void {
-    store.setState({ online: true });
-    // Back online: drop the backoff budget and reconnect immediately.
-    connection?.resetBackoff();
-  }
-
-  if (typeof window !== "undefined") {
-    window.addEventListener("offline", handleOffline);
-    window.addEventListener("online", handleOnline);
-  }
-
   const store = create<RoomStore>((set, get) => ({
     state: "idle",
     status: "closed",
-    online: typeof navigator === "undefined" ? true : navigator.onLine,
+    // Node 21+ exposes a `navigator` without `onLine`; a missing flag counts
+    // as online so tests and SSR never start in a phantom-offline state.
+    online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
     pin: "",
     selfId: "",
     participants: [],
@@ -393,7 +379,10 @@ export function createRoomStore(
       try {
         roomKey = await importRoomKey(fragment);
       } catch {
-        store.setState({ state: "closed_not_found", error: "This link is missing a valid room key." });
+        store.setState({
+          state: "closed_not_found",
+          error: "This link is missing a valid room key.",
+        });
         return;
       }
       keyFragment = fragment;
@@ -414,7 +403,9 @@ export function createRoomStore(
         onEnded: handleEnded,
         onMalformed: () => {
           store.setState((current) => ({ malformedCount: current.malformedCount + 1 }));
-          console.warn(`Husk: dropped a malformed relay frame (total ${store.getState().malformedCount}).`);
+          console.warn(
+            `Husk: dropped a malformed relay frame (total ${store.getState().malformedCount}).`,
+          );
         },
         fetchJoinToken: () => joinRoom(pin),
       });
@@ -428,6 +419,21 @@ export function createRoomStore(
         return;
       }
       await store.getState().connect(pin, fragment);
+    },
+
+    notifyOffline() {
+      store.setState({ online: false });
+    },
+
+    notifyOnline() {
+      store.setState({ online: true });
+      // Back online: drop the backoff budget and reconnect immediately.
+      connection?.resetBackoff();
+      // A connection that already reached its terminal state never retries on
+      // its own; coming back online is exactly the moment to try again.
+      if (store.getState().state === "closed_disconnected") {
+        void store.getState().retry();
+      }
     },
 
     async sendText(text) {
@@ -453,7 +459,12 @@ export function createRoomStore(
 
     async retryMessage(id) {
       const entry = store.getState().entries.find((candidate) => candidate.id === id);
-      if (entry === undefined || !entry.mine || entry.delivery !== "failed" || entry.body === null) {
+      if (
+        entry === undefined ||
+        !entry.mine ||
+        entry.delivery !== "failed" ||
+        entry.body === null
+      ) {
         return;
       }
       const key = roomKey;
@@ -496,6 +507,16 @@ export function createRoomStore(
       });
     },
   }));
+
+  // Browser connectivity signal. The default store is a page-lifetime
+  // singleton, so these listeners intentionally live for the page's lifetime;
+  // test stores run under Node, where `window` is undefined and nothing is
+  // registered (same guard covers SSR).
+  if (typeof window !== "undefined") {
+    window.addEventListener("offline", () => store.getState().notifyOffline());
+    window.addEventListener("online", () => store.getState().notifyOnline());
+  }
+
   return store;
 }
 

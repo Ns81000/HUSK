@@ -144,7 +144,9 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
+    // Dev serves unbundled sources; a controlling service worker there would
+    // shadow HMR. Registration is a production-only, progressive enhancement.
+    if (import.meta.env.PROD && "serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {
         // Offline support is progressive; registration failure is not fatal.
       });
