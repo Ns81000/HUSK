@@ -2,11 +2,11 @@ name = "husk"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
-# Frontend origins allowed to call this Worker. Add your Lovable preview domain
-# and any custom domain, comma separated, no trailing slash. 3000 is the dev
-# server port (8080 is inside a Windows-reserved port range on some machines).
+# Frontend origins allowed to call this Worker. Comma separated, no trailing
+# slash. 3000 is the dev server port (8080 sits in a Windows-reserved port
+# range); the workers.dev entry is the deployed frontend.
 [vars]
-ALLOWED_ORIGINS = "http://localhost:8080,http://localhost:3000"
+ALLOWED_ORIGINS = "http://localhost:8080,http://localhost:3000,https://ns81000-husk.ns8pc1.workers.dev"
 
 [[durable_objects.bindings]]
 name = "HUSK_ROOMS"
@@ -27,11 +27,8 @@ new_sqlite_classes = ["HuskRoom", "HuskGatekeeper"]
 
 # Set with: wrangler secret put HUSK_TICKET_SECRET
 # (a long random string; used only to sign short-lived file transfer tickets)
-
-# Workers Free plan CPU budget per request (10 ms is the plan default,
-# declared explicitly to document the deployment target; raise when moving to
-# a paid plan). NOTE: local workerd (wrangler dev / vitest-pool-workers) does
-# not meter CPU, so the integration suite's CPU evidence is the completing
-# streamed round-trip itself, not a locally enforced limit.
-[limits]
-cpu_ms = 10
+#
+# NOTE: do NOT add a [limits] cpu_ms block here — the Free plan API rejects
+# declaring CPU limits entirely (error 100328). The Free plan already applies
+# its 10 ms default; local workerd doesn't meter CPU, so the integration
+# suite's CPU evidence is the streamed round-trip itself (see phase-6-log.md).

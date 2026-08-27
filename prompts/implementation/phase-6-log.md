@@ -14,15 +14,17 @@
   assertion: the server never buffers the file, so per-request work stays
   bounded to one row per pull. The superseded whole-buffer helper
   (`expectBytesEqual`) was removed.
-- **CPU-limit enforcement experiment (honest negative result):** `[limits]
-cpu_ms = 10` was added to `worker/wrangler.toml` (Free-plan default, declared
-  explicitly; raise on a paid plan). An empirical check showed the local
+- **CPU-limit enforcement experiment (honest negative result, amended after
+  the live deploy):** `[limits] cpu_ms = 10` was added to `worker/wrangler.toml`
+  as deployment-target documentation. An empirical check showed the local
   harness does **not** meter CPU: with `cpu_ms = 1` the entire suite passes
   identically, i.e. `vitest-pool-workers` does not wire wrangler's `[limits]`
-  into workerd's CPU limiter. The `[limits]` block is kept as
-  deployment-target documentation; the suite's CPU evidence is the completing
-  streamed round-trip itself, not a locally enforced limit. On a real Free-plan
-  deployment, `cpu_ms = 10` is the plan default, so semantics are unchanged.
+  into workerd's CPU limiter. **Amendment (live deploy, 2026-08-28):** the
+  Free-plan API rejects declaring CPU limits at all (error 100328: "CPU limits
+  are not supported for the Free plan"), so the block was removed before the
+  successful deploy. The suite's CPU evidence is the completing streamed
+  round-trip itself; the Free plan applies its 10 ms default server-side
+  without any declaration.
 
 ### 2. Missing unit tests added (audit MEDIUM)
 
@@ -131,8 +133,8 @@ mobile") is moot.
   blocks are the same swept components). The summary claims exactly this scope.
 - Local workerd does not meter CPU (`cpu_ms = 1` experiment), so the CPU-bound
   proof rests on the completing streamed round-trip plus the streaming design,
-  not a locally enforced limit; the deployed Free-plan limit (10 ms) is now
-  declared in `worker/wrangler.toml`.
+  not a locally enforced limit; the Free plan applies its 10 ms default
+  server-side (declaring `[limits] cpu_ms` is rejected on Free — error 100328).
 - Reconnect-after-network-drop lacks a real mid-stream socket-drop E2E; the
   client lifecycle (termination, budgets, terminal states, recovery) is pinned
   at unit/store level and the server side by token/throttle tests.

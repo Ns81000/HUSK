@@ -146,10 +146,10 @@ audit findings they answer live in `docs/audit/`.
   reads the GET through the pull-based stream reader and asserts byte equality
   **chunk-wise** (every 1 MiB row vs its uploaded slice); completing the
   round-trip with zero mismatches is the "no Worker exceeded CPU time (1102)"
-  evidence. `[limits] cpu_ms = 10` (Free-plan default) declared in
-  `worker/wrangler.toml` as deployment-target documentation; honestly recorded
-  that local workerd does not meter CPU (the `cpu_ms = 1` experiment passes
-  identically).
+  evidence. Local workerd does not meter CPU (the `cpu_ms = 1` experiment
+  passes identically), and the live deploy confirmed the Free-plan API rejects
+  declaring `[limits] cpu_ms` at all (error 100328) — the block was removed;
+  the Free plan applies its 10 ms default server-side without declaration.
 - Ordering tests added (was the audit's Missing row): `orderedEntries`
   out-of-order / seq-tie-ts-break / system-messages unit tests, plus a
   store-level test that out-of-order relays render in server seq order via the
@@ -180,41 +180,63 @@ audit findings they answer live in `docs/audit/`.
 | `pnpm build`                                     | pass (production `.output` contains no a11y-mode worker URL)                                |
 | `pnpm test:a11y`                                 | **12/12** (6 axe + 6 modal E2E, production build under workerd)                             |
 
-## Cloudflare Workers Free-plan deployment (exact commands)
+## Cloudflare Workers Free-plan deployment (exact commands — verified live)
 
-Everything needed exists in the repo: both DO classes are SQLite-backed via a
-single `v1` / `new_sqlite_classes` migration (`worker/wrangler.toml`); rate
-limits live in the `HuskGatekeeper` SQLite DO, so **no KV namespace and no
-R2 bucket are needed**. No payment method required.
+**Deployed 2026-08-28 (Free plan):**
 
-```bash
-# 1. Deploy the relay Worker (from worker/ — the v1 migration creates both
-#    SQLite DO classes: HuskRoom + HuskGatekeeper).
+- Relay: https://husk.ns8pc1.workers.dev
+- Frontend: https://ns81000-husk.ns8pc1.workers.dev
+- Secret `HUSK_TICKET_SECRET` set (64-hex random, generated at deploy time).
+- Verified live: create → 200 `{ok:true}` with the correct
+  `access-control-allow-origin` for the frontend origin; disallowed origins
+  get **no** ACAO; join → 200 with joinToken; frontend `/` → 200 with the
+  hashed inline-script CSP.
+
+Both DO classes are SQLite-backed via the single `v1` /
+`new_sqlite_classes` migration (applied on first deploy); rate limits live in
+the `HuskGatekeeper` SQLite DO — no KV, no R2, no payment method.
+
+```powershell
+# 1. Relay Worker (from worker/ — applies the v1 SQLite DO migration).
 cd worker
-wrangler deploy
+pnpm exec wrangler deploy          # -> https://husk.<subdomain>.workers.dev
 
-# 2. Set the ticket-signing secret (long random string).
-wrangler secret put HUSK_TICKET_SECRET
+# 2. Ticket-signing secret (interactive; paste a long random string).
+pnpm exec wrangler secret put HUSK_TICKET_SECRET
 
-# 3. Set the allowed frontend origin(s) (comma-separated, no trailing slash).
-#    Edit worker/wrangler.toml [vars] ALLOWED_ORIGINS, or:
-wrangler deploy --var "ALLOWED_ORIGINS:https://<your-frontend-domain>"
-
-# 4. Build the frontend with the relay Worker's URL baked in.
+# 3. Frontend build with the relay URL baked in (shell env, not a file), so
+#    the CSP connect-src and the client's API calls point at the relay.
 cd ..
-pnpm build   # with VITE_WORKER_URL=https://<your-worker-domain>.workers.dev
+$env:VITE_WORKER_URL = "https://husk.<subdomain>.workers.dev"
+pnpm build
 
-# 5. Deploy the frontend worker (nitro cloudflare-module output).
-pnpm --dir worker exec wrangler deploy --config ../.output/server/wrangler.json
+# 4. Frontend deploy. IMPORTANT wrangler quirks discovered on the live deploy:
+#    - run the worker package's wrangler FROM THE REPO ROOT (nitro writes
+#      <root>/.wrangler/deploy/config.json pointing at
+#      .output/server/wrangler.json); running inside worker/ hits a
+#      "both a user configuration file and a deploy configuration file" error.
+#    - nitro stamps the build date into .output/server/wrangler.json as
+#      compatibility_date, which the pinned wrangler may reject as "in the
+#      future" — override it on the CLI:
+worker\node_modules\.bin\wrangler.cmd deploy --compatibility-date 2025-01-01
+
+# 5. Wire the origins: put the frontend URL in worker/wrangler.toml
+#    [vars] ALLOWED_ORIGINS (comma separated, no trailing slash) and redeploy
+#    the relay (step 1). Note: a relay deploy from worker/ fails while
+#    <root>/.wrangler/deploy/config.json exists (frontend-build artifact) —
+#    delete it first; the next frontend build regenerates it.
 ```
 
-Notes: `wrangler dev`/deploy has not been executed by the implementation
-sessions (no credentials in the environment); local verification used workerd
-via `wrangler dev` with `--compatibility-date 2026-08-01` because nitro stamps
-the build date into `.output/server/wrangler.json` and the installed wrangler
-4.126.0 rejects future dates — a freshly updated wrangler on the deploy
-machine avoids that. `worker/wrangler.toml` declares `[limits] cpu_ms = 10`,
-which is the Free-plan default.
+Gotchas found on the live deploy (all resolved in-repo):
+
+- A `[limits] cpu_ms = 10` block is **rejected by the Free-plan API**
+  (error 100328: "CPU limits are not supported for the Free plan") — removed
+  from `worker/wrangler.toml`; do not re-add it on Free.
+- One room created seconds after a redeploy did not persist (its re-create
+  returned `ok:true` instead of 409), i.e. the create response committed but
+  the DO write was lost during deployment churn. Not reproducible after the
+  deploy settled (two fresh create→join round-trips verified deterministic);
+  watch for it if you redeploy while users are creating rooms.
 
 ## Spec Section 8 manual QA checklist (run after first deployment)
 
@@ -256,8 +278,8 @@ dark)"` variant is cosmetic-only polish (Android status bar).
 - Keyboard-only navigation: automated where reachable (modal E2E); the full
   walkthrough is a manual QA row above.
 - Local workerd does not meter CPU, so the streaming-GET CPU proof is the
-  completing chunk-wise round-trip; the deployed Free-plan budget (10 ms) is
-  declared in `worker/wrangler.toml`.
+  completing chunk-wise round-trip; the Free plan applies its 10 ms default
+  server-side (declaring `[limits] cpu_ms` is rejected on Free — error 100328).
 - Reconnect-after-network-drop has no real mid-stream socket-drop E2E; the
   lifecycle is pinned at unit/store level and server-side by token/throttle
   tests.
