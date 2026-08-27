@@ -1,14 +1,15 @@
-# HUSK — Implementation Prompt (Session 5: Phase 5 only, then hand off)
+# HUSK — Implementation Prompt (Session 6: Phase 6 only, then final summary)
 
 You are continuing the phased hardening of the Husk project (ephemeral,
 end-to-end encrypted chat and file sharing; React + TanStack Start frontend;
 Cloudflare Workers + SQLite Durable Objects backend).
 
-Implementation Phases 1–4 are complete and were re-tested immediately before
-this hand-off. **This session's scope is Implementation Phase 5 only.** Do not
-implement Phase 6 in this session. When Phase 5 is complete, write its log,
-create the Phase 6-only hand-off prompt by rewriting this file, and commit all
-Phase 5 changes plus the new hand-off prompt.
+Implementation Phases 1–5 are complete and were re-tested immediately before
+this hand-off. **This session's scope is Implementation Phase 6 only.** Phase 6
+is the final phase: performance verification, remaining test-coverage gaps, and
+the cross-phase summary. When Phase 6 is complete, write its log, produce the
+top-level `docs/implementation/SUMMARY.md`, and commit all Phase 6 changes
+plus the summary.
 
 ## Read these files FIRST, in full
 
@@ -20,6 +21,7 @@ C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-1-log.md
 C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-2-log.md
 C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-3-log.md
 C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-4-log.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-5-log.md
 
 C:\Users\Ns8pc\Pictures\HUSK\docs\audit\IMPLEMENTATION_PROMPT.md
 C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-1-backend-architecture.md
@@ -36,18 +38,22 @@ duplicate it or silently omit it.
 
 ## Verified baseline before this hand-off
 
-These commands were run successfully at the end of the Phase 4 session:
+These commands were run successfully at the end of the Phase 5 session:
 
-- `pnpm test` — 13 test files, **95/95 pass** (including the workerd project).
+- `pnpm test` — 14 test files, **100/100 pass** (including the workerd project;
+  95 prior + 5 new contrast tests).
 - `cd worker && pnpm test` — **19/19 pass**.
 - `pnpm exec tsc --noEmit -p tsconfig.json` — pass.
 - `pnpm exec tsc --noEmit -p worker/tsconfig.json` — pass.
 - `cd worker && pnpm typecheck` — pass.
-- `pnpm build` — pass (no missing-asset warnings; the Inter font warning is gone).
-- The production build was served locally under wrangler dev (workerd) and the
-  PWA/CSP checks recorded in `docs/implementation/phase-4-log.md` were performed.
+- `pnpm build` — pass; production `.output` verified free of any a11y-mode
+  worker URL (the `.env.a11y` build input only applies to `--mode a11y`).
+- `pnpm test:a11y` — **12/12 pass**: the production build served under
+  wrangler/workerd, axe zero-violation sweeps of the landing / PIN-entry /
+  room screens in both themes, plus 6 modal E2E specs (Tab trap, wrap at both
+  ends, Escape/scrim close with focus restoration) in both themes.
 
-## What is already implemented
+## What is already implemented and carried forward
 
 ### Phase 1 — backend/storage
 
@@ -137,6 +143,65 @@ These commands were run successfully at the end of the Phase 4 session:
 - 404/error screens and message rendering (`memo`-ized `MessageItem`,
   near-bottom-only auto-scroll) were verified token-clean and intact.
 
+### Phase 5 — design system & accessibility
+
+- **AA contrast (fixed + pinned by CI):** light `--warn` → `oklch(0.5 0.09 78)`
+  (canvas 5.65 / surface 6.08 / raised 5.99 / sunken 5.33), light
+  `--ink-faint` → **`oklch(0.535 0.006 250)`** (canvas 4.81 / surface 5.17 /
+  raised 5.09 / sunken 4.53 — a deliberate deviation from the audit's ~0.56
+  sketch, which computes to only 4.33:1 on canvas), dark `--ink-faint` →
+  `oklch(0.64 0.005 250)` (worst pair 4.83 on `surface-raised`).
+- **Contrast test:** `src/lib/husk/contrast.test.ts` (5 tests) parses the
+  `:root`/`.dark` blocks out of `src/styles.css` itself, converts oklch →
+  linear sRGB, and asserts ≥4.5:1 for `ink`/`ink-muted`/`ink-faint`/`warn`/
+  `danger`/`ok`/`info` on `canvas`/`surface`/`surface-raised`/
+  `surface-sunken`, plus `accent-ink` on `accent`/`accent-hover`, in both
+  themes; a third test pins the three fixed values. Disabled-state text is
+  exempt (WCAG 1.4.3 inactive components).
+- **Modal focus management** (`src/components/husk/primitives.tsx`): Tab is
+  trapped in the dialog and wraps at both ends (and out-of-dialog focus is
+  pulled back in); focus is restored to the invoking element on close via the
+  open-effect cleanup; Escape cancels through a `cancelRef` (so a re-rendered
+  `onCancel` never restarts the effect); scrim click closes (panel stops
+  propagation). Confirming genuinely leaves the room, so focus-restore is
+  contractually scoped to the dismissive closes (Escape/scrim).
+- **`--scrim` token:** `--scrim: oklch(0 0 0 / 0.45)` (same both themes),
+  mapped as `--color-scrim`; Modal backdrop is `bg-scrim` (raw oklch literal
+  removed).
+- **Spacing decision — BLESSED as named tokens:** `--spacing-touch: 44px` and
+  `--spacing-touch-lg: 56px` in `@theme inline`; `touch-target` utility reads
+  `var(--spacing-touch)`. All off-scale numeric hits replaced: composer
+  `min-h-11` → `min-h-touch`, keypad `h-14` → `h-touch-lg` (×3), `PinDisplay`
+  `h-14 w-11` → `h-touch-lg w-touch`, Switch track `w-11` → `w-touch`. No
+  untracked off-scale spacing remains in shipped Husk components.
+- **Axe/E2E harness:** `@playwright/test` + `playwright` + `@axe-core/playwright`
+  (all at 1.62.x/4.13.0); `playwright.config.ts` serves the real production
+  nitro output under wrangler/workerd on port 8787; `.env.a11y` +
+  `build:a11y` (`vite build --mode a11y`) bake the app's own origin as
+  `VITE_WORKER_URL`; `pnpm test:a11y` = `build:a11y && playwright test`
+  (deliberately NOT part of `pnpm test`). `e2e/a11y.spec.ts`: zero axe
+  violations (`wcag2a/2aa/21a/21aa`) on landing, PIN-entry (keypad) and
+  room screens, light + dark (6 specs). `e2e/modal.spec.ts`: the real Modal
+  driven through the real app with relay endpoints intercepted via
+  `page.route`/`routeWebSocket` (6 specs). The harness found and the phase
+  fixed two extra defects: `PinDisplay`'s `aria-label` on a bare `<div>` (now
+  `role="group"`) and the `sr-only` file input's missing accessible name (now
+  `aria-label="File to send"`).
+- **CRITICAL regression fix (discovered by the harness, `src/server.ts`):**
+  TanStack Start serializes literal U+0000 characters into the
+  `$tsr-stream-barrier` inline script; the HTML tokenizer replaces NUL with
+  U+FFFD (WHATWG parse-error rule), so the browser-executed script text never
+  matched the Phase 2 hash-CSP computed from raw response bytes → the
+  framework's hydration bootstrap was CSP-blocked and every page blanked
+  after hydration, in every browser, since Phase 2. `stabilizeInlineScriptBytes()`
+  re-encodes NUL as the lossless JS escape `\u0000` before hashing and
+  emitting; verified in Chromium (hydration completes, zero CSP violations).
+  Husk's own code is not the source of the NULs (no loaders, no
+  `params.parse` — they are framework-internal dehydrated match IDs).
+- **Incidental:** `public/_headers` comment block converted from `/* … */`
+  (invalid in the `_headers` format; wrangler warned about 4 invalid rules on
+  every serve) to `#` lines; the 7 real rules are unchanged.
+
 ### Manual/browser verification performed in Phase 4
 
 - The built `.output/public` contains `sw.js`, `manifest.webmanifest`,
@@ -151,10 +216,22 @@ These commands were run successfully at the end of the Phase 4 session:
 
 - `worker/src/room.ts` still polls its alarm every 60 seconds rather than
   scheduling only the next meaningful deadline. Carry to Phase 6 (final
-  hardening) unless the user explicitly expands Phase 5's scope.
+  hardening) unless the user explicitly expands Phase 6's scope.
 - The outbox drops its oldest frame silently when capped; it does not create
   the audit's suggested plaintext system note because unsent plaintext is not
-  retained. Preserve this as a documented residual for the later phase.
+  retained. Preserve this as a documented residual for the final summary.
+- **Phase 5 CSP residual:** the NUL→`\u0000` escape in `src/server.ts` is a
+  verified mitigation of a TanStack Start serialization property, not an
+  upstream fix. The cleaner long-term architecture is `ssr.nonce`-based CSP
+  (`createStart` middleware + `getGlobalStartContext()` +
+  `router.options.ssr.nonce`; nonce plumbing for the barrier script confirmed
+  present in our versions via TanStack/router#5511/#5522/#5870). Out of Phase
+  5 scope; Phase 6 may scope it or record it in the summary as future work.
+  Also recommended hygiene: `@tanstack/react-router` 1.170.18 → 1.170.32+.
+- **Axe coverage is bounded:** landing, PIN-entry, room-no-key screens and the
+  open-modal room state, both themes. Not swept: message list with content,
+  toasts, remaining closed states. Do not claim "every screen axe-clean" in
+  the summary; claim exactly what `e2e/a11y.spec.ts` covers.
 - `wrangler dev`/Cloudflare deployment has not been performed (no
   credentials); local serving used workerd via wrangler dev with
   `--compatibility-date 2026-08-01`, because nitro stamps the build date into
@@ -165,34 +242,19 @@ These commands were run successfully at the end of the Phase 4 session:
 - PWA offline fallback serves the last-cached landing shell; room pages are
   never cached (deliberate). There is no custom install-prompt UI.
 - The `theme-color` meta is statically light; a dark `media=` variant is
-  optional polish, not a Phase 5 requirement.
-
-## Current Phase 5 groundwork present in the tree (verify before editing)
-
-- `src/styles.css` has the full dual-theme token palettes. The audit's
-  failing pairs are still at their old values: light `--warn`
-  oklch(0.6 0.09 78), light `--ink-faint` oklch(0.64 0.006 250), dark
-  `--ink-faint` oklch(0.58 0.005 250). Radius/spacing/type tokens are
-  documented in the same file.
-- `src/components/husk/primitives.tsx` `Modal` (~lines 121–181) still has no
-  focus trap, no focus restoration, and no scrim click; its backdrop is the
-  raw literal `bg-[oklch(0_0_0/0.45)]` — the `--scrim` finding is still open.
-- Off-scale spacing is still present: `min-h-11` (composer textarea in
-  `chat.tsx`), `h-14` keypad keys, `touch-target` (44px) utilities, and any
-  `h-11`/`w-11` hits.
-- No `@axe-core/playwright` (and no Playwright) dependency exists anywhere.
-- The 404/error screens already use Husk tokens (Phase 4) — do not re-port.
+  optional polish, carried to Phase 6/summary as cosmetic-only.
 
 ## Rules
 
-- Work on Phase 5 only. Do not begin Phase 6.
+- Work on Phase 6 only. It is the final phase.
 - Implement → run all relevant tests and checks → hunt for regressions → write
-  `docs/implementation/phase-5-log.md` → rewrite this file as the Phase 6-only
-  hand-off → commit the session's intended changes.
-- Required verification before declaring Phase 5 complete:
+  `docs/implementation/phase-6-log.md` → produce
+  `docs/implementation/SUMMARY.md` → commit the session's intended changes.
+- Required verification before declaring Phase 6 complete:
   `pnpm test`, `pnpm build`, `pnpm exec tsc --noEmit -p tsconfig.json`,
   `pnpm exec tsc --noEmit -p worker/tsconfig.json`, and
-  `cd worker && pnpm test`.
+  `cd worker && pnpm test`. Additionally `pnpm test:a11y` must stay green if
+  anything touched could affect rendering.
 - Use `pnpm` exclusively. Do not use `npm install` or `pip install`.
 - Do not deploy or use credentials. Stop only for a decision that genuinely
   requires the user.
@@ -202,82 +264,80 @@ These commands were run successfully at the end of the Phase 4 session:
   baseline or create unrelated diff noise.
 - Kill any `wrangler dev`, `vite preview`, or workerd process you start; a
   leftover process can lock `.output` and break the next `pnpm build` on
-  Windows.
+  Windows. (Check with `Get-Process workerd` before rebuilding.)
 - Before committing, inspect `git diff` and `git status`; stage only intended
   files. Do not amend or rewrite earlier commits, and do not push unless asked.
 
 
-## Implementation Phase 5 — Design System & Accessibility Compliance
+## Implementation Phase 6 — Performance, Test-Coverage Gaps & Final Hardening
 
-Use `C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-5-design-accessibility.md`
-as the source of the requirements. Finish and verify all five items below:
+Use `C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-6-performance-testgaps.md`
+as the source of the requirements (its Section 8 coverage matrix is the
+checklist). Finish and verify all four items below:
 
-1. **AA contrast:** darken light-theme `warn` to ~`oklch(0.5 0.09 78)` and
-   `ink-faint` to ~`oklch(0.56 0.006 250)` (≥4.5:1 on `surface`/`canvas`),
-   and mirror the dark-theme `ink-faint` bump. Add the oklch→sRGB contrast
-   conversion as a permanent vitest unit test (~30 lines of math) asserting
-   every token pair used for body/caption text clears 4.5:1 in both themes,
-   so regressions are caught in CI.
-2. **Modal focus management** (`src/components/husk/primitives.tsx`): trap
-   Tab within the dialog (query focusable descendants, wrap at both ends),
-   restore focus to the invoking element on close, and close on scrim click
-   (currently only Escape and Cancel close it).
-3. **`--scrim` token:** add it to `src/styles.css` (same value both themes is
-   acceptable, per the audit) and replace the raw `bg-[oklch(0_0_0/0.45)]`
-   literal in the Modal backdrop.
-4. **Spacing decision:** bless or snap the off-scale values (`min-h-11`,
-   `h-14`, `w-11`, `h-11`). Either bless 44/56 as named touch-target tokens
-   or snap them to the documented scale — do not silently accumulate
-   off-scale values. Record the decision explicitly in the log.
-5. **Axe smoke specs:** add `@axe-core/playwright` smoke specs for the
-   landing and PIN screens in both themes with zero violations. If a real
-   browser harness cannot run in this environment, do not fake results — set
-   up exactly what runs, and record what remains as residual risk with the
-   reason and next phase.
+1. **Streaming-GET CPU bound (HIGH verification):** prove the Phase 1
+   streaming file GET keeps the Worker's CPU bounded — integration test with a
+   10+ chunk file through the `@cloudflare/vitest-pool-workers` harness (and/
+   or `wrangler dev` if needed); assert the full round-trip completes without
+   the "Worker exceeded CPU time" (1102) class of failure. The harness in
+   `worker/tests/` already round-trips real bytes; extend it to a >10 MiB
+   multi-chunk file with byte equality asserted chunk-wise.
+2. **Missing unit tests:** `orderedEntries` (src/lib/husk/store.ts) —
+   out-of-order input, seq ties (ts tiebreak), and system messages; plus a
+   store-level test that out-of-order `relay` frames render in seq order
+   (`createRoomStore(spawnConnection?)` injection makes this seam testable
+   without jsdom).
 
-## Phase 5 definition of done
+3. **Section 8 coverage matrix close-out:** walk the full matrix in
+   `docs/audit/phase-6-performance-testgaps.md` row by row against the
+   current suites (phases 1–5 added: workerd integration harness, security
+   tests, XSS/filename render contract, IME tests, online/offline store
+   tests, contrast gate, axe/Playwright E2E, modal E2E). Mark each row's
+   status with evidence; anything still Missing or Present-but-weak gets a
+   fix or an explicit residual-risk entry in `phase-6-log.md` with the
+   reason. Known candidates: manual QA pass (see SUMMARY below),
+   keyboard-only navigation (now partially covered by the modal E2E specs).
+4. **Live Lighthouse:** run real Lighthouse against the served production
+   build (`wrangler dev`/workerd serving `.output/server`, as in the
+   a11y/Phase 4 setups) — desktop and mobile profiles — and record the
+   scores plus the effect of the Phase 4 Inter self-hosting fix in the log.
+   Chrome is already available via Playwright's chromium; if a Lighthouse
+   runner cannot be wired in this environment, record exactly what was
+   attempted and keep the residual honest (no estimates presented as
+   measurements).
 
-- The phase-5 audit findings are either fixed and tested or explicitly listed
-  as residual risk in `phase-5-log.md` with the reason and next phase.
-- The contrast test is permanent in `pnpm test` and green in both themes.
-- The modal traps/restores focus and closes on scrim click; the backdrop uses
-  the `--scrim` token.
-- The spacing decision is recorded; no untracked off-scale values remain in
-  shipped Husk components.
-- All required verification commands pass.
-- `docs/implementation/phase-5-log.md` records exact changes, commands,
-  results, manual checks, residual risk, and the final test counts.
+## Phase 6 definition of done
 
-## After Phase 5 — create the Phase 6-only hand-off and commit
+- Every Phase 6 item above is done and tested, or explicitly listed as
+  residual risk in `phase-6-log.md` with the reason.
+- The Section 8 matrix has no unexplained Missing rows.
+- All required verification commands pass (see Rules), and `pnpm test:a11y`
+  is still green.
+- `docs/implementation/phase-6-log.md` records exact changes, commands,
+  results, and the final test counts.
 
-After the Phase 5 log exists and all required checks pass, rewrite this same
-file as the next prompt. The new prompt must:
+## Final step — SUMMARY.md and commit
 
-- Scope the next session to **Implementation Phase 6 only**.
-- Begin with an absolute-path "Read these files FIRST, in full" block listing
-  the new `NEXT_SESSION_PROMPT.md`, logs 1–5, and all seven audit files.
-- Carry forward the Phase 1–5 decisions above plus concrete Phase 5 decisions:
-  the exact new token values, the contrast-test file and what it asserts, the
-  modal focus/scrim behavior, the `--scrim` value, the spacing decision, and
-  the axe harness setup and its results.
-- Include the full Phase 6 requirements from the audit:
-  1. Verify the Phase 1 streaming GET keeps CPU bounded (integration test with
-     a 10+ chunk file through `wrangler dev`/pool-workers; no 1102).
-  2. Add the missing unit tests: `orderedEntries` (out-of-order, ties, system
-     messages) and seq-order rendering under out-of-order relays.
-  3. Confirm remaining Section 8 rows are green (the matrix in phase-6 is the
-     checklist); anything still Missing from phases 1–5 gets written there.
-  4. Run live Lighthouse against `wrangler dev` (desktop + mobile profiles)
-     and record scores plus the font fix's effect in the log.
-- Preserve the Rules, exact verification commands, Windows `.output` warning,
-  known residuals, and the one-phase boundary.
-- End by telling the Phase 6 agent to write its log, produce the top-level
-  `docs/implementation/SUMMARY.md` (all changes across phases, current test
-  status, exact Free-plan Cloudflare deployment commands, and the spec
-  Section 8 manual QA checklist results), and commit before ending its
-  session.
+After the Phase 6 log exists and all checks pass:
 
-Finally, review the diff, stage only the Phase 5 implementation/log and the
-rewritten hand-off prompt, and create one commit. Do not push it.
-
-  expiry are bounded.
+- Produce the top-level `docs/implementation/SUMMARY.md` containing:
+  - every change made across Phases 1–6 (condensed per phase, pointing at the
+    phase logs for detail, including the Phase 5 CSP/NUL hydration fix and
+    the concrete Phase 5 decisions: token values, contrast test, modal
+    focus/scrim behavior, `--scrim: oklch(0 0 0 / 0.45)`, blessed
+    `--spacing-touch`/`--spacing-touch-lg` tokens, axe harness layout);
+  - current test status with exact counts (`pnpm test`, `cd worker && pnpm
+    test`, `pnpm test:a11y`, typechecks);
+  - exact Free-plan Cloudflare deployment commands: `wrangler deploy` from
+    `worker/` with the single `new_sqlite_classes` v1 migration (rate limits
+    live in the `HuskGatekeeper` SQLite DO — no KV namespace needed),
+    `wrangler secret put HUSK_TICKET_SECRET`, set `ALLOWED_ORIGINS`,
+    `pnpm build` the frontend (nitro → Cloudflare) with `VITE_WORKER_URL`,
+    deploy the frontend worker, then the spec Section 8 manual QA checklist
+    (desktop create / mobile join / messages both ways / file both ways /
+    background >8s / host force-close / confirm no server-side trace after
+    close) with a results table;
+  - the carried residuals (alarm polling, outbox drop note, `ssr.nonce`
+    migration, static `theme-color`, lint baseline, etc.).
+- Review the diff, stage only the Phase 6 implementation/log, `SUMMARY.md`,
+  and any hand-off cleanup, and create one commit. Do not push it.

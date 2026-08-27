@@ -71,6 +71,22 @@ async function hashInlineScripts(html: string): Promise<string[]> {
 }
 
 /**
+ * TanStack Start serializes dehydrated route-match IDs containing literal
+ * U+0000 characters into the emitted `$tsr-stream-barrier` inline script. The
+ * HTML parser replaces NUL with U+FFFD (WHATWG parse-error rule for NUL in
+ * script data), so a hash computed over the raw response bytes can never
+ * match the script text the browser executes — the framework's own hydration
+ * bootstrap gets CSP-blocked and the app blanks after hydration. Re-encoding
+ * each NUL as the equivalent JS string escape keeps the executed values
+ * identical (a JS/JSON string literal "\u0000" is the same string as a raw
+ * NUL) while making the bytes parser-stable, so per-response script hashes
+ * hold. NUL never legitimately occurs in SSR output outside these scripts.
+ */
+function stabilizeInlineScriptBytes(html: string): string {
+  return html.replaceAll("\u0000", "\\u0000");
+}
+
+/**
  * Adds the security header set to every server-rendered response. HTML
  * responses get a CSP whose script-src is closed over per-response hashes of
  * the exact inline scripts the SSR shell emitted (their content includes
@@ -83,7 +99,7 @@ async function withSecurityHeaders(response: Response): Promise<Response> {
   headers.set("X-Frame-Options", "DENY");
   const contentType = headers.get("content-type") ?? "";
   if (contentType.includes("text/html")) {
-    const html = await response.text();
+    const html = stabilizeInlineScriptBytes(await response.text());
     const hashes = await hashInlineScripts(html);
     headers.set("Content-Security-Policy", buildCsp(hashes));
     return new Response(html, { status: response.status, headers });

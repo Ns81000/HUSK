@@ -7,14 +7,19 @@ const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "back"] as c
 
 export function PinDisplay({ value }: { readonly value: string }) {
   return (
-    <div className="flex justify-center gap-2" aria-live="polite" aria-label="Room PIN">
+    <div
+      role="group"
+      aria-label="Room PIN"
+      className="flex justify-center gap-2"
+      aria-live="polite"
+    >
       {Array.from({ length: PIN_LENGTH }, (_, index) => {
         const digit = value[index];
         return (
           <span
             key={index}
             className={cn(
-              "tabular flex h-14 w-11 items-center justify-center rounded-md border text-[22px] font-medium",
+              "tabular flex h-touch-lg w-touch items-center justify-center rounded-md border text-[22px] font-medium",
               digit === undefined
                 ? "border-line bg-surface-sunken text-ink-faint"
                 : "border-line-strong bg-surface text-ink",
@@ -48,7 +53,7 @@ export function Keypad({
               type="button"
               onClick={onBackspace}
               aria-label="Delete last digit"
-              className="touch-target h-14 rounded-md border border-line bg-surface text-ink-muted transition-colors hover:bg-surface-sunken"
+              className="touch-target h-touch-lg rounded-md border border-line bg-surface text-ink-muted transition-colors hover:bg-surface-sunken"
             >
               <span aria-hidden>&#9003;</span>
             </button>
@@ -59,7 +64,7 @@ export function Keypad({
             key={index}
             type="button"
             onClick={() => onDigit(key)}
-            className="tabular touch-target h-14 rounded-md border border-line bg-surface text-[20px] font-medium text-ink transition-colors hover:bg-surface-sunken active:bg-accent-soft"
+            className="tabular touch-target h-touch-lg rounded-md border border-line bg-surface text-[20px] font-medium text-ink transition-colors hover:bg-surface-sunken active:bg-accent-soft"
           >
             {key}
           </button>

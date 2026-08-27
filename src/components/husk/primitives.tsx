@@ -102,7 +102,7 @@ export function Switch({
     >
       <span
         className={cn(
-          "relative h-6 w-11 rounded-pill border transition-colors",
+          "relative h-6 w-touch rounded-pill border transition-colors",
           checked ? "border-accent bg-accent" : "border-line-strong bg-surface-sunken",
         )}
       >
@@ -136,32 +136,80 @@ export function Modal({
 }) {
   const titleId = useId();
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const invokerRef = useRef<HTMLElement | null>(null);
+  const cancelRef = useRef(onCancel);
+
+  useEffect(() => {
+    cancelRef.current = onCancel;
+  }, [onCancel]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
+    invokerRef.current = document.activeElement as HTMLElement | null;
     confirmRef.current?.focus();
+    const focusableIn = (): HTMLElement[] => {
+      const dialog = dialogRef.current;
+      if (dialog === null) {
+        return [];
+      }
+      const candidates = dialog.querySelectorAll<HTMLElement>(
+        "a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      );
+      return Array.from(candidates).filter((el) => el.tabIndex >= 0);
+    };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onCancel();
+        cancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      // Trap Tab inside the dialog: wrap at both ends (WCAG 2.4.3).
+      const focusable = focusableIn();
+      if (focusable.length === 0) {
+        return;
+      }
+      const first = focusable[0] as HTMLElement;
+      const last = focusable[focusable.length - 1] as HTMLElement;
+      const dialog = dialogRef.current;
+      const inside = dialog !== null && dialog.contains(document.activeElement);
+      const atEdge = event.shiftKey
+        ? !inside || document.activeElement === first
+        : !inside || document.activeElement === last;
+      if (atEdge) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onCancel]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const invoker = invokerRef.current;
+      invokerRef.current = null;
+      invoker?.focus();
+    };
+  }, [open]);
 
   if (!open) {
     return null;
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[oklch(0_0_0/0.45)] p-4 sm:items-center">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim p-4 sm:items-center"
+      onClick={onCancel}
+    >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         className="w-full max-w-sm rounded-lg border border-line bg-surface p-6 shadow-panel"
+        onClick={(event) => event.stopPropagation()}
       >
         <h2 id={titleId} className="text-title text-ink">
           {title}

@@ -306,6 +306,7 @@ export function Composer({
           ref={fileRef}
           type="file"
           className="sr-only"
+          aria-label="File to send"
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";
@@ -336,7 +337,7 @@ export function Composer({
               void submit();
             }
           }}
-          className="max-h-40 min-h-11 flex-1 resize-none rounded-md border border-line bg-surface-raised px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-faint"
+          className="max-h-40 min-h-touch flex-1 resize-none rounded-md border border-line bg-surface-raised px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-faint"
         />
         <Button
           onClick={() => void submit()}

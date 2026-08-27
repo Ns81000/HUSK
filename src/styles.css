@@ -10,9 +10,9 @@
   font-weight: 400 600;
   font-display: swap;
   src: url("/fonts/inter-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
-    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
-    U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /*
@@ -45,6 +45,7 @@
   --color-danger: var(--danger);
   --color-info: var(--info);
   --color-focus: var(--focus);
+  --color-scrim: var(--scrim);
 
   --radius-xs: 6px;
   --radius-sm: 8px;
@@ -62,8 +63,11 @@
   --spacing-12: 48px;
   --spacing-24: 96px;
 
-  --font-sans:
-    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Named touch-target sizes (WCAG 2.5.8): blessed as tokens, not raw steps. */
+  --spacing-touch: 44px;
+  --spacing-touch-lg: 56px;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", "Menlo", monospace;
 
   --text-display: 32px;
@@ -92,16 +96,18 @@
   --line-strong: oklch(0.83 0.006 250);
   --ink: oklch(0.23 0.008 250);
   --ink-muted: oklch(0.5 0.008 250);
-  --ink-faint: oklch(0.64 0.006 250);
+  /* 0.535 (not 0.56): must clear 4.5:1 on canvas/sunken too, not just surface. */
+  --ink-faint: oklch(0.535 0.006 250);
   --accent: oklch(0.5 0.075 218);
   --accent-hover: oklch(0.44 0.08 218);
   --accent-ink: oklch(0.99 0 0);
   --accent-soft: oklch(0.94 0.02 218);
   --ok: oklch(0.52 0.07 158);
-  --warn: oklch(0.6 0.09 78);
+  --warn: oklch(0.5 0.09 78);
   --danger: oklch(0.52 0.12 25);
   --info: oklch(0.52 0.06 250);
   --focus: oklch(0.55 0.09 218);
+  --scrim: oklch(0 0 0 / 0.45);
 }
 
 .dark {
@@ -113,7 +119,7 @@
   --line-strong: oklch(0.38 0.005 250);
   --ink: oklch(0.94 0.002 250);
   --ink-muted: oklch(0.72 0.005 250);
-  --ink-faint: oklch(0.58 0.005 250);
+  --ink-faint: oklch(0.64 0.005 250);
   --accent: oklch(0.72 0.075 218);
   --accent-hover: oklch(0.79 0.08 218);
   --accent-ink: oklch(0.17 0.01 218);
@@ -123,6 +129,7 @@
   --danger: oklch(0.7 0.11 25);
   --info: oklch(0.72 0.06 250);
   --focus: oklch(0.75 0.08 218);
+  --scrim: oklch(0 0 0 / 0.45);
 }
 
 @layer base {
@@ -164,8 +171,8 @@
 }
 
 @utility touch-target {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--spacing-touch);
+  min-height: var(--spacing-touch);
 }
 
 @utility tabular {

@@ -1,7 +1,6 @@
-/*
- * Security headers for static files only. Server-rendered HTML gets its
- * Content-Security-Policy from src/server.ts with per-response script hashes;
- * browsers intersect multiple CSP headers, so it must not be set here too.
+# Security headers for static files only. Server-rendered HTML gets its
+# Content-Security-Policy from src/server.ts with per-response script hashes;
+# browsers intersect multiple CSP headers, so it must not be set here too.
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
