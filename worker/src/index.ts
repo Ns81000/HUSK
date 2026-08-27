@@ -8,8 +8,9 @@
  * exclusively in the browser URL fragment.
  */
 
-import { MAX_FILE_BYTES, PIN_PATTERN } from "./config";
+import { JOIN_TOKEN_TTL_SECONDS, MAX_FILE_BYTES, PIN_PATTERN } from "./config";
 import { checkJoinAllowed } from "./rate-limit";
+import { signTicket } from "./tickets";
 import type { Env } from "./types";
 
 export { HuskRoom } from "./room";
@@ -120,13 +121,30 @@ export default {
         // Deliberately generic: does not distinguish missing, full or wrong.
         return json({ error: "unavailable" }, 404, cors);
       }
-      return json({ ok: true, pin }, 200, cors);
+      // Mint the one-time token the socket route will consume, bound to this
+      // caller's IP so a leaked link cannot be replayed from elsewhere.
+      const tokenExpiresAt = Math.floor(Date.now() / 1000) + JOIN_TOKEN_TTL_SECONDS;
+      const tokenSignature = await signTicket(
+        env.HUSK_TICKET_SECRET,
+        "join",
+        `${pin}|${ip}|${tokenExpiresAt}`,
+        tokenExpiresAt,
+      );
+      return json({ ok: true, pin, joinToken: `${tokenExpiresAt}.${tokenSignature}` }, 200, cors);
     }
 
+    // GET (upgrade) /room/<pin>/socket?jt=<one-time join token>
+    // The join token is minted only by a successful, rate-limited /room/join,
+    // so every socket connect costs exactly one join attempt: the socket route
+    // cannot bypass the join budget, and probing it without a token yields the
+    // same generic 404 as a nonexistent room (no existence oracle).
     const socketMatch = SOCKET_PATTERN.exec(url.pathname);
     if (socketMatch) {
       const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(socketMatch[1] ?? ""));
-      return stub.fetch(request);
+      const forwarded = new Request(request.url, request);
+      forwarded.headers.set("x-husk-ip", request.headers.get("CF-Connecting-IP") ?? "unknown");
+      forwarded.headers.set("x-husk-join-token", url.searchParams.get("jt") ?? "");
+      return stub.fetch(forwarded);
     }
 
     // POST /room/<pin>/file  { size, member }

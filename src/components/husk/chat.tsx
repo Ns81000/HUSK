@@ -44,7 +44,8 @@ function MessageText({ text }: { readonly text: string }) {
   );
 }
 
-function FileCard({
+/** Exported for the XSS-in-filename render contract test. */
+export function FileCard({
   body,
   onDownload,
 }: {

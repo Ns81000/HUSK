@@ -154,6 +154,34 @@ export class HuskRoom {
       if (request.headers.get("Upgrade") !== "websocket") {
         return new Response("Expected websocket", { status: 426 });
       }
+      // Every failure below stays a generic 404 so the socket route never
+      // becomes a room-existence or token-validity oracle.
+      const ip = request.headers.get("x-husk-ip") ?? "unknown";
+      const token = request.headers.get("x-husk-join-token") ?? "";
+      const dotAt = token.indexOf(".");
+      const tokenExpiresAt = dotAt === -1 ? Number.NaN : Number(token.slice(0, dotAt));
+      const tokenSignature = dotAt === -1 ? "" : token.slice(dotAt + 1);
+      const pin = url.pathname.split("/")[2] ?? "";
+      const tokenValid =
+        dotAt !== -1 &&
+        (await verifyTicket(
+          this.env.HUSK_TICKET_SECRET,
+          "join",
+          `${pin}|${ip}|${tokenExpiresAt}`,
+          tokenExpiresAt,
+          tokenSignature,
+          Date.now(),
+        ));
+      if (!tokenValid) {
+        return new Response("unavailable", { status: 404 });
+      }
+      // Burn the one-time token: a consumed signature is remembered until the
+      // room's storage is purged, so a replayed join token is worthless.
+      const burnKey = `jt:${tokenSignature}`;
+      if ((await this.state.storage.get(burnKey)) !== undefined) {
+        return new Response("unavailable", { status: 404 });
+      }
+      await this.state.storage.put(burnKey, Date.now());
       if (!this.exists) {
         return new Response("unavailable", { status: 404 });
       }

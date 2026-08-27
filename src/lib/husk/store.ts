@@ -6,6 +6,7 @@
  */
 
 import { create } from "zustand";
+import { joinRoom } from "./api";
 import { PEER_GRACE_MS } from "./config";
 import { RoomConnection, type ConnectionStatus } from "./connection";
 import { DecryptionFailedError, open, seal, importRoomKey } from "./crypto";
@@ -237,6 +238,10 @@ export const useRoomStore = create<RoomStore>((set, get) => {
           if (status === "reconnecting") {
             apply({ type: "DISCONNECTED" });
           }
+        },
+        fetchJoinToken: async () => {
+          const result = await joinRoom(pin);
+          return result.ok ? result.joinToken : null;
         },
       });
       connection.connect();

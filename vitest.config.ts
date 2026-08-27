@@ -11,7 +11,7 @@ export default defineConfig({
         test: {
           name: "node",
           environment: "node",
-          include: ["src/**/*.test.ts", "worker/src/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "src/**/*.test.tsx", "worker/src/**/*.test.ts"],
         },
       },
       "worker/vitest.config.ts",

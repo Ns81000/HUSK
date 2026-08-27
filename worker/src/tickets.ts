@@ -29,7 +29,7 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export type TicketOperation = "put" | "get" | "chunk";
+export type TicketOperation = "put" | "get" | "chunk" | "join";
 
 export async function signTicket(
   secret: string,

@@ -10,9 +10,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ToastProvider } from "../components/husk/primitives";
-
 
 function NotFoundComponent() {
   return (
@@ -40,7 +38,14 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
-    reportLovableError(error, { boundary: "tanstack_root_error_component" });
+    // Editor telemetry is dev-only: the dynamic import inside a DEV guard
+    // keeps the reporting module (and its third-party hooks) out of
+    // production bundles entirely.
+    if (import.meta.env.DEV) {
+      void import("../lib/lovable-error-reporting").then((m) =>
+        m.reportLovableError(error, { boundary: "tanstack_root_error_component" }),
+      );
+    }
   }, [error]);
 
   return (
@@ -139,4 +144,3 @@ function RootComponent() {
     </QueryClientProvider>
   );
 }
-

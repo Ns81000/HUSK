@@ -20,15 +20,21 @@ export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "closed"
 export type ConnectionHandlers = {
   readonly onMessage: (message: ServerMessage) => void;
   readonly onStatus: (status: ConnectionStatus) => void;
+  /**
+   * Mints a fresh one-time join token from /room/join. Returns null when the
+   * join was refused (room gone, full, or throttled), which ends connecting.
+   */
+  readonly fetchJoinToken: () => Promise<string | null>;
 };
 
-export function roomSocketUrl(pin: string): string {
+export function roomSocketUrl(pin: string, joinToken: string): string {
   const base = WORKER_URL;
   if (base.length === 0) {
     throw new Error("VITE_WORKER_URL is not configured");
   }
   const url = new URL(`${base}/room/${pin}/socket`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("jt", joinToken);
   return url.toString();
 }
 
@@ -49,8 +55,30 @@ export class RoomConnection {
       return;
     }
     this.handlers.onStatus(this.attempt === 0 ? "connecting" : "reconnecting");
+    void this.handlers
+      .fetchJoinToken()
+      .then((joinToken) => {
+        if (this.disposed) {
+          return;
+        }
+        if (joinToken === null) {
+          // Join refused: the room is gone, full, or the caller is throttled.
+          // Retrying can never succeed, so stop here with a closed status.
+          this.handlers.onStatus("closed");
+          return;
+        }
+        this.open(joinToken);
+      })
+      .catch(() => {
+        if (this.disposed) {
+          return;
+        }
+        this.scheduleReconnect();
+      });
+  }
 
-    const socket = new WebSocket(roomSocketUrl(this.pin));
+  private open(joinToken: string): void {
+    const socket = new WebSocket(roomSocketUrl(this.pin, joinToken));
     this.socket = socket;
 
     socket.addEventListener("open", () => {

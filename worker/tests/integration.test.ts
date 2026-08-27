@@ -36,13 +36,19 @@ async function createRoom(pin: string): Promise<Response> {
 
 /** Unique caller IP per call so the join rate-limit budget is per-test. */
 let ipCounter = 1;
-async function joinRoom(pin: string): Promise<Response> {
-  ipCounter += 1;
+async function joinRoomFrom(pin: string, ip?: string): Promise<Response> {
+  const callerIp = ip ?? `10.0.0.${(ipCounter += 1)}`;
   return api("/room/join", {
     method: "POST",
-    headers: { "CF-Connecting-IP": `10.0.0.${ipCounter}` },
+    headers: { "CF-Connecting-IP": callerIp },
     body: JSON.stringify({ pin }),
   });
+}
+
+type JoinBody = { ok: boolean; pin?: string; joinToken?: string };
+
+async function joinRoom(pin: string): Promise<Response> {
+  return joinRoomFrom(pin);
 }
 
 type Frame = { t: string } & Record<string, unknown>;
@@ -73,10 +79,22 @@ class FrameQueue {
   }
 }
 
+/**
+ * Joins (minting a one-time token) and opens the socket with it. The token is
+ * bound to the join caller's IP, so both requests must carry the same address.
+ */
 async function openSocket(
   pin: string,
 ): Promise<{ ws: WebSocket; member: string; frames: FrameQueue }> {
-  const response = await api(`/room/${pin}/socket`, { headers: { Upgrade: "websocket" } });
+  const callerIp = `10.0.0.${(ipCounter += 1)}`;
+  const join = await joinRoomFrom(pin, callerIp);
+  const joinBody = (await join.json()) as JoinBody;
+  if (!join.ok || typeof joinBody.joinToken !== "string") {
+    throw new Error(`join failed with HTTP ${join.status}`);
+  }
+  const response = await api(`/room/${pin}/socket?jt=${encodeURIComponent(joinBody.joinToken)}`, {
+    headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
+  });
   if (response.webSocket === null) {
     throw new Error(`socket handshake failed with HTTP ${response.status}`);
   }
@@ -183,12 +201,27 @@ describe("room lifecycle and relay", () => {
   it("edge: simultaneous join at capacity is rejected", async () => {
     const pin = freshPin();
     await createRoom(pin);
-    await joinRoom(pin);
+    // openSocket() performs the joins; ten of them exactly fill the room.
     const sockets: WebSocket[] = [];
     for (let index = 0; index < 10; index += 1) {
       sockets.push((await openSocket(pin)).ws);
     }
-    const eleventh = await api(`/room/${pin}/socket`, { headers: { Upgrade: "websocket" } });
+    // An untokenized public request cannot reach the capacity check (it fails
+    // the generic 404 above), and an 11th join would trip the per-PIN budget —
+    // so mint a valid token directly with the test secret and assert the
+    // Durable Object's atomic capacity rejection.
+    const callerIp = "10.9.9.9";
+    const tokenExpiresAt = Math.floor(Date.now() / 1000) + 60;
+    const tokenSignature = await signTicket(
+      TICKET_SECRET,
+      "join",
+      `${pin}|${callerIp}|${tokenExpiresAt}`,
+      tokenExpiresAt,
+    );
+    const eleventh = await api(
+      `/room/${pin}/socket?jt=${encodeURIComponent(`${tokenExpiresAt}.${tokenSignature}`)}`,
+      { headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp } },
+    );
     expect(eleventh.status).toBe(403);
     expect(eleventh.webSocket).toBeNull();
   });
@@ -314,6 +347,91 @@ describe("chunked file transfer", () => {
     const response = await api(`/room/${pin}/file/${grant.fileId}`);
     expect(response.status).toBe(403);
     socket.ws.close();
+  });
+});
+
+describe("abuse controls", () => {
+  it("edge: socket without a join token is a generic 404, existing or not", async () => {
+    const livePin = freshPin();
+    await createRoom(livePin);
+    await joinRoom(livePin);
+
+    const missing = await api(`/room/${freshPin()}/socket`, { headers: { Upgrade: "websocket" } });
+    const withoutToken = await api(`/room/${livePin}/socket`, {
+      headers: { Upgrade: "websocket" },
+    });
+    const forgedToken = await api(`/room/${livePin}/socket?jt=9999999999.AAAA`, {
+      headers: { Upgrade: "websocket" },
+    });
+
+    // Identical generic responses: no live-PIN oracle survives.
+    expect(withoutToken.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(await withoutToken.text()).toBe(await missing.text());
+    expect(forgedToken.status).toBe(404);
+  });
+
+  it("edge: a join token cannot be replayed for a second connection", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    const callerIp = `10.0.0.${(ipCounter += 1)}`;
+    const join = await joinRoomFrom(pin, callerIp);
+    const token = ((await join.json()) as JoinBody).joinToken;
+    if (typeof token !== "string") {
+      throw new Error("join did not mint a token");
+    }
+
+    const first = await api(`/room/${pin}/socket?jt=${encodeURIComponent(token)}`, {
+      headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
+    });
+    expect(first.status).toBe(101);
+    first.webSocket?.accept();
+    first.webSocket?.close();
+
+    const replay = await api(`/room/${pin}/socket?jt=${encodeURIComponent(token)}`, {
+      headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
+    });
+    expect(replay.status).toBe(404);
+  });
+
+  it("security: brute-force joins are throttled with HTTP 429", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    const attackerIp = `10.0.0.${(ipCounter += 1)}`;
+
+    let throttled: Response | null = null;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const response = await joinRoomFrom(pin, attackerIp);
+      if (response.status === 429) {
+        throttled = response;
+        break;
+      }
+    }
+    expect(throttled).not.toBeNull();
+    const body = (await (throttled as Response).json()) as { retryAfter?: unknown };
+    expect(typeof body.retryAfter).toBe("number");
+    expect(body.retryAfter).toBeGreaterThan(0);
+  });
+
+  it("security: a captured relay frame carries only ciphertext fields", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const a = await openSocket(pin);
+    const b = await openSocket(pin);
+    await drainJoinPresence(a.frames);
+
+    a.ws.send(JSON.stringify({ t: "send", localId: "sec1", payload: { iv: "aXY", ct: "Y3Q" } }));
+    const relay = await b.frames.next();
+    expect(relay.t).toBe("relay");
+
+    // The wire format must contain nothing but routing metadata and the sealed
+    // payload: no plaintext, no key material, no extra channels.
+    const allowedKeys = new Set(["t", "seq", "senderId", "localId", "ts", "payload"]);
+    for (const key of Object.keys(relay)) {
+      expect(allowedKeys.has(key)).toBe(true);
+    }
+    expect(relay.payload).toEqual({ iv: "aXY", ct: "Y3Q" });
   });
 });
 

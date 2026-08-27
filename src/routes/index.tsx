@@ -71,12 +71,12 @@ function Landing() {
     setFailure(null);
     try {
       const result = await joinRoom(pin);
-      if (result === "rate_limited") {
-        setFailure("Too many attempts. Wait a few minutes before trying again.");
-        return;
-      }
-      if (result === "unavailable") {
-        setFailure("That room is not available.");
+      if (!result.ok) {
+        setFailure(
+          result.failure === "rate_limited"
+            ? "Too many attempts. Wait a few minutes before trying again."
+            : "That room is not available.",
+        );
         return;
       }
       notify("Room found. Paste the invite link if you do not have the key yet.");
@@ -155,8 +155,8 @@ function Landing() {
             </Button>
           </div>
           <p className="text-caption text-ink-muted">
-            A PIN alone cannot decrypt a room. You also need the invite link, which carries the
-            key in its fragment.
+            A PIN alone cannot decrypt a room. You also need the invite link, which carries the key
+            in its fragment.
           </p>
         </Panel>
       )}

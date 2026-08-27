@@ -37,3 +37,6 @@ export const FILE_BYTES_USED_KEY = "file-bytes-used";
 
 /** Chunk upload tickets expire quickly; download tickets live until room expiry. */
 export const TICKET_TTL_SECONDS = 300;
+
+/** One-time join token that a successful /room/join mints for the socket route. */
+export const JOIN_TOKEN_TTL_SECONDS = 60;

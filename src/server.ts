@@ -18,6 +18,78 @@ async function getServerEntry(): Promise<ServerEntry> {
   return serverEntryPromise;
 }
 
+/**
+ * The relay origin the browser talks to (WebSocket + file transfer), baked in
+ * at build time exactly like the client bundle's copy.
+ */
+const WORKER_ORIGIN = (import.meta.env["VITE_WORKER_URL"] ?? "").replace(/\/$/, "");
+
+function buildCsp(scriptHashes: readonly string[]): string {
+  const connectSources = ["'self'"];
+  if (WORKER_ORIGIN.length > 0) {
+    connectSources.push(
+      WORKER_ORIGIN,
+      WORKER_ORIGIN.replace(/^http:/, "ws:").replace(/^https:/, "wss:"),
+    );
+  }
+  return [
+    "default-src 'self'",
+    // The SSR shell emits inline scripts (TanStack stream barrier + scroll
+    // restoration bootstrap). Each one is hashed per response below, so no
+    // inline script outside the server-rendered document can ever run.
+    `script-src 'self' ${scriptHashes.join(" ")}`.trim(),
+    // Google Fonts is allowed until Phase 4 self-hosts Inter; then this
+    // tightens to 'self' only.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    `connect-src ${connectSources.join(" ")}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+async function sha256Base64(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  let binary = "";
+  for (const byte of new Uint8Array(digest)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function hashInlineScripts(html: string): Promise<string[]> {
+  const hashes: string[] = [];
+  const pattern = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;
+  for (let match = pattern.exec(html); match !== null; match = pattern.exec(html)) {
+    hashes.push(`'sha256-${await sha256Base64(match[1] ?? "")}'`);
+  }
+  return hashes;
+}
+
+/**
+ * Adds the security header set to every server-rendered response. HTML
+ * responses get a CSP whose script-src is closed over per-response hashes of
+ * the exact inline scripts the SSR shell emitted (their content includes
+ * dehydrated state, so static hashes would not work).
+ */
+async function withSecurityHeaders(response: Response): Promise<Response> {
+  const headers = new Headers(response.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Frame-Options", "DENY");
+  const contentType = headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
+    const html = await response.text();
+    const hashes = await hashInlineScripts(html);
+    headers.set("Content-Security-Policy", buildCsp(hashes));
+    return new Response(html, { status: response.status, headers });
+  }
+  return new Response(response.body, { status: response.status, headers });
+}
+
 // h3 swallows in-handler throws into a normal 500 Response with body
 // {"unhandled":true,"message":"HTTPError"} — try/catch alone never fires for those.
 async function normalizeCatastrophicSsrResponse(response: Response): Promise<Response> {
@@ -29,10 +101,12 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   if (!isH3SwallowedErrorBody(body)) return response;
 
   console.error(consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`));
-  return new Response(renderErrorPage(), {
-    status: 500,
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
+  return withSecurityHeaders(
+    new Response(renderErrorPage(), {
+      status: 500,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }),
+  );
 }
 
 function isH3SwallowedErrorBody(body: string): boolean {
@@ -49,13 +123,15 @@ export default {
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
+      return withSecurityHeaders(await normalizeCatastrophicSsrResponse(response));
     } catch (error) {
       console.error(error);
-      return new Response(renderErrorPage(), {
-        status: 500,
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return withSecurityHeaders(
+        new Response(renderErrorPage(), {
+          status: 500,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+      );
     }
   },
 };

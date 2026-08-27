@@ -38,7 +38,11 @@ export async function createRoom(maxAttempts = 5): Promise<string> {
   throw new Error("Could not allocate a free PIN");
 }
 
-export async function joinRoom(pin: string): Promise<JoinFailure | null> {
+export type JoinResult =
+  | { readonly ok: true; readonly joinToken: string }
+  | { readonly ok: false; readonly failure: JoinFailure };
+
+export async function joinRoom(pin: string): Promise<JoinResult> {
   assertConfigured();
   const response = await fetch(`${WORKER_URL}/room/join`, {
     method: "POST",
@@ -46,7 +50,15 @@ export async function joinRoom(pin: string): Promise<JoinFailure | null> {
     body: JSON.stringify({ pin }),
   });
   if (response.ok) {
-    return null;
+    // SAFETY: this route is our own Worker and returns this exact shape.
+    const body = (await response.json()) as { joinToken?: unknown };
+    if (typeof body.joinToken === "string" && body.joinToken.length > 0) {
+      return { ok: true, joinToken: body.joinToken };
+    }
+    return { ok: false, failure: "unavailable" };
   }
-  return response.status === 429 ? "rate_limited" : "unavailable";
+  return {
+    ok: false,
+    failure: response.status === 429 ? "rate_limited" : "unavailable",
+  };
 }
