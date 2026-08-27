@@ -40,6 +40,11 @@ describe("room state machine", () => {
     expect(transition("joining", { type: "ROOM_NOT_FOUND" })).toBe("closed_not_found");
   });
 
+  it("resolves an exhausted reconnect budget to a terminal disconnected state", () => {
+    expect(transition("active", { type: "CONNECTION_LOST" })).toBe("closed_disconnected");
+    expect(transition("reconnecting", { type: "CONNECTION_LOST" })).toBe("closed_disconnected");
+  });
+
   it("never leaves a terminal state", () => {
     for (const state of [
       "closed_by_host",
@@ -47,6 +52,7 @@ describe("room state machine", () => {
       "closed_full",
       "closed_not_found",
       "closed_rate_limited",
+      "closed_disconnected",
     ] as const) {
       expect(isTerminal(state)).toBe(true);
       expect(transition(state, { type: "PEER_JOINED" })).toBe(state);

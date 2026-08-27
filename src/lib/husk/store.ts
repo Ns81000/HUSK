@@ -7,10 +7,15 @@
 
 import { create } from "zustand";
 import { joinRoom } from "./api";
-import { PEER_GRACE_MS } from "./config";
-import { RoomConnection, type ConnectionStatus } from "./connection";
+import { ACK_TIMEOUT_MS, PEER_GRACE_MS } from "./config";
+import {
+  RoomConnection,
+  type ConnectionEndReason,
+  type ConnectionHandlers,
+  type ConnectionStatus,
+} from "./connection";
 import { DecryptionFailedError, open, seal, importRoomKey } from "./crypto";
-import type { Participant, SealedBody, ServerMessage } from "./protocol";
+import type { Participant, SealedBody, SealedEnvelope, ServerMessage } from "./protocol";
 import { transition, type RoomEvent, type RoomState } from "./room-machine";
 
 export type DeliveryState = "sending" | "sent" | "failed" | "unverified";
@@ -26,37 +31,97 @@ export type ChatEntry = {
   readonly system?: string;
 };
 
+/** Minimal connection surface the store depends on (injectable for tests). */
+export type ConnectionLike = {
+  connect(): void;
+  close(): void;
+  resetBackoff(): void;
+  send(localId: string, payload: SealedEnvelope): boolean;
+  sendControl(frame: { t: "cancel"; fileId: string }): boolean;
+};
+
+export type ConnectionSpawner = (
+  pin: string,
+  handlers: ConnectionHandlers,
+) => ConnectionLike;
+
 type RoomStore = {
   state: RoomState;
   status: ConnectionStatus;
+  /** Browser connectivity signal (navigator.onLine via window events). */
+  online: boolean;
   pin: string;
   selfId: string;
   participants: readonly Participant[];
   entries: readonly ChatEntry[];
+  /** Wall-clock time of the most recent peer leave; deadline for the grace UI. */
+  lastLeaveAt: number | null;
+  malformedCount: number;
   error: string | null;
   connect: (pin: string, keyFragment: string) => Promise<void>;
+  retry: () => Promise<void>;
   sendText: (text: string) => Promise<void>;
   sendFileMessage: (body: SealedBody) => Promise<void>;
   markFailed: (id: string) => void;
+  retryMessage: (id: string) => Promise<void>;
   cancelFile: (fileId: string) => void;
   leave: () => void;
 };
-
-let connection: RoomConnection | null = null;
-let roomKey: CryptoKey | null = null;
-let graceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function nextId(): string {
   return crypto.randomUUID();
 }
 
-export const useRoomStore = create<RoomStore>((set, get) => {
+export function createRoomStore(
+  spawnConnection: ConnectionSpawner = (pin, handlers) => new RoomConnection(pin, handlers),
+) {
+  let connection: ConnectionLike | null = null;
+  let roomKey: CryptoKey | null = null;
+  let keyFragment: string | null = null;
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+  const ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const seenRelays = new Set<string>();
+
+  function clearAckTimer(id: string): void {
+    const timer = ackTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      ackTimers.delete(id);
+    }
+  }
+
+  function clearAllAckTimers(): void {
+    for (const timer of ackTimers.values()) {
+      clearTimeout(timer);
+    }
+    ackTimers.clear();
+  }
+
+  function armAckTimer(id: string): void {
+    clearAckTimer(id);
+    ackTimers.set(
+      id,
+      setTimeout(() => {
+        ackTimers.delete(id);
+        store.getState().markFailed(id);
+      }, ACK_TIMEOUT_MS),
+    );
+  }
+
+  /** Gives buffered-but-unacked frames a fresh window after a reconnect. */
+  function armPendingAcks(): void {
+    for (const entry of store.getState().entries) {
+      if (entry.mine && entry.delivery === "sending") {
+        armAckTimer(entry.id);
+      }
+    }
+  }
   function apply(event: RoomEvent): void {
-    set((current) => ({ state: transition(current.state, event) }));
+    store.setState((current) => ({ state: transition(current.state, event) }));
   }
 
   function pushSystem(text: string): void {
-    set((current) => ({
+    store.setState((current) => ({
       entries: [
         ...current.entries,
         {
@@ -73,40 +138,85 @@ export const useRoomStore = create<RoomStore>((set, get) => {
     }));
   }
 
+  function armGraceTimer(): void {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer);
+    }
+    graceTimer = setTimeout(checkGrace, PEER_GRACE_MS);
+  }
+
+  /**
+   * Grace expiry is derived from the leave deadline, not from whichever timer
+   * happened to survive concurrent leaves and joins: the callback re-checks
+   * `lastLeaveAt` and reschedules when a newer leave restarted the window.
+   */
+  function checkGrace(): void {
+    graceTimer = null;
+    const last = store.getState().lastLeaveAt;
+    if (last === null) {
+      return;
+    }
+    const elapsed = Date.now() - last;
+    if (elapsed < PEER_GRACE_MS) {
+      graceTimer = setTimeout(checkGrace, PEER_GRACE_MS - elapsed);
+      return;
+    }
+    const peers = store.getState().participants.length;
+    if (peers <= 1) {
+      pushSystem("A participant left the room.");
+    }
+    apply({ type: "GRACE_EXPIRED", peers });
+  }
+
+  function handleEnded(reason: ConnectionEndReason): void {
+    clearAllAckTimers();
+    stopGrace();
+    if (reason === "join_refused_unavailable") {
+      apply({ type: "ROOM_NOT_FOUND" });
+    } else if (reason === "join_refused_rate_limited") {
+      apply({ type: "RATE_LIMITED" });
+    } else {
+      apply({ type: "CONNECTION_LOST" });
+    }
+    store.setState({ status: "closed" });
+  }
+
+  function stopGrace(): void {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer);
+      graceTimer = null;
+    }
+  }
+
   async function handleServerMessage(message: ServerMessage): Promise<void> {
     switch (message.t) {
       case "welcome": {
-        set({ selfId: message.you, participants: message.participants });
+        stopGrace();
+        store.setState({
+          selfId: message.you,
+          participants: message.participants,
+          lastLeaveAt: null,
+        });
         apply({ type: "CONNECTED", peers: message.participants.length });
         apply({ type: "RECONNECTED", peers: message.participants.length });
         break;
       }
       case "presence": {
-        set({ participants: message.participants });
+        store.setState({ participants: message.participants });
         if (message.event === "join") {
-          if (graceTimer !== null) {
-            clearTimeout(graceTimer);
-            graceTimer = null;
-          }
+          store.setState({ lastLeaveAt: null });
+          stopGrace();
           apply({ type: "PEER_JOINED" });
         } else {
+          store.setState({ lastLeaveAt: Date.now() });
           apply({ type: "PEER_LEFT", peers: message.participants.length });
-          if (graceTimer !== null) {
-            clearTimeout(graceTimer);
-          }
-          graceTimer = setTimeout(() => {
-            graceTimer = null;
-            const peers = get().participants.length;
-            if (peers <= 1) {
-              pushSystem("A participant left the room.");
-            }
-            apply({ type: "GRACE_EXPIRED", peers });
-          }, PEER_GRACE_MS);
+          armGraceTimer();
         }
         break;
       }
       case "ack": {
-        set((current) => ({
+        clearAckTimer(message.localId);
+        store.setState((current) => ({
           entries: current.entries.map((entry) =>
             entry.id === message.localId ? { ...entry, seq: message.seq, delivery: "sent" } : entry,
           ),
@@ -118,9 +228,26 @@ export const useRoomStore = create<RoomStore>((set, get) => {
         if (key === null) {
           return;
         }
-        const mine = message.senderId === get().selfId;
+        const mine = message.senderId === store.getState().selfId;
+        if (seenRelays.has(message.localId)) {
+          // Receiver-side dedup: a resend after a lost ack must not produce a
+          // second bubble; only the sender's own copy gets resolved.
+          if (mine) {
+            store.setState((current) => ({
+              entries: current.entries.map((entry) =>
+                entry.id === message.localId
+                  ? { ...entry, seq: message.seq, delivery: "sent" }
+                  : entry,
+              ),
+            }));
+          }
+          return;
+        }
+        // Registered before the async decrypt so a duplicate arriving mid-
+        // decrypt cannot also slip past the check.
+        seenRelays.add(message.localId);
         if (mine) {
-          set((current) => ({
+          store.setState((current) => ({
             entries: current.entries.map((entry) =>
               entry.id === message.localId
                 ? { ...entry, seq: message.seq, delivery: "sent" }
@@ -129,9 +256,13 @@ export const useRoomStore = create<RoomStore>((set, get) => {
           }));
           return;
         }
+        const roomBefore = { pin: store.getState().pin, state: store.getState().state };
         try {
           const body = await open<SealedBody>(key, message.payload);
-          set((current) => ({
+          if (isStale(roomBefore)) {
+            return;
+          }
+          store.setState((current) => ({
             entries: [
               ...current.entries,
               {
@@ -146,8 +277,8 @@ export const useRoomStore = create<RoomStore>((set, get) => {
             ],
           }));
         } catch (error) {
-          if (error instanceof DecryptionFailedError) {
-            set((current) => ({
+          if (error instanceof DecryptionFailedError && !isStale(roomBefore)) {
+            store.setState((current) => ({
               entries: [
                 ...current.entries,
                 {
@@ -167,6 +298,10 @@ export const useRoomStore = create<RoomStore>((set, get) => {
       }
       case "closed": {
         apply({ type: message.reason === "expired" ? "EXPIRED" : "LEAVE" });
+        clearAllAckTimers();
+        stopGrace();
+        connection?.close();
+        connection = null;
         break;
       }
       case "error": {
@@ -182,6 +317,12 @@ export const useRoomStore = create<RoomStore>((set, get) => {
     }
   }
 
+  /** Guards against a late async decrypt writing into a reset room. */
+  function isStale(before: { pin: string; state: RoomState }): boolean {
+    const current = store.getState();
+    return current.pin !== before.pin || current.state !== before.state;
+  }
+
   async function publish(body: SealedBody): Promise<void> {
     const key = roomKey;
     const active = connection;
@@ -189,7 +330,7 @@ export const useRoomStore = create<RoomStore>((set, get) => {
       return;
     }
     const id = nextId();
-    set((current) => ({
+    store.setState((current) => ({
       entries: [
         ...current.entries,
         {
@@ -206,45 +347,87 @@ export const useRoomStore = create<RoomStore>((set, get) => {
     try {
       const sealed = await seal(key, body);
       active.send(id, sealed);
+      armAckTimer(id);
     } catch {
-      get().markFailed(id);
+      store.getState().markFailed(id);
     }
   }
 
-  return {
+  function handleOffline(): void {
+    store.setState({ online: false });
+  }
+
+  function handleOnline(): void {
+    store.setState({ online: true });
+    // Back online: drop the backoff budget and reconnect immediately.
+    connection?.resetBackoff();
+  }
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+  }
+
+  const store = create<RoomStore>((set, get) => ({
     state: "idle",
     status: "closed",
+    online: typeof navigator === "undefined" ? true : navigator.onLine,
     pin: "",
     selfId: "",
     participants: [],
     entries: [],
+    lastLeaveAt: null,
+    malformedCount: 0,
     error: null,
 
-    async connect(pin, keyFragment) {
-      set({ pin, state: "joining", entries: [], error: null });
+    async connect(pin, fragment) {
+      store.setState({
+        pin,
+        state: "joining",
+        entries: [],
+        error: null,
+        lastLeaveAt: null,
+        malformedCount: 0,
+      });
+      seenRelays.clear();
       try {
-        roomKey = await importRoomKey(keyFragment);
+        roomKey = await importRoomKey(fragment);
       } catch {
-        set({ state: "closed_not_found", error: "This link is missing a valid room key." });
+        store.setState({ state: "closed_not_found", error: "This link is missing a valid room key." });
         return;
       }
+      keyFragment = fragment;
       connection?.close();
-      connection = new RoomConnection(pin, {
+      connection = spawnConnection(pin, {
         onMessage: (message) => {
           void handleServerMessage(message);
         },
         onStatus: (status) => {
-          set({ status });
+          store.setState({ status });
           if (status === "reconnecting") {
             apply({ type: "DISCONNECTED" });
           }
+          if (status === "open") {
+            armPendingAcks();
+          }
         },
-        fetchJoinToken: async () => {
-          const result = await joinRoom(pin);
-          return result.ok ? result.joinToken : null;
+        onEnded: handleEnded,
+        onMalformed: () => {
+          store.setState((current) => ({ malformedCount: current.malformedCount + 1 }));
+          console.warn(`Husk: dropped a malformed relay frame (total ${store.getState().malformedCount}).`);
         },
+        fetchJoinToken: () => joinRoom(pin),
       });
       connection.connect();
+    },
+
+    async retry() {
+      const pin = store.getState().pin;
+      const fragment = keyFragment;
+      if (pin.length === 0 || fragment === null) {
+        return;
+      }
+      await store.getState().connect(pin, fragment);
     },
 
     async sendText(text) {
@@ -260,11 +443,36 @@ export const useRoomStore = create<RoomStore>((set, get) => {
     },
 
     markFailed(id) {
-      set((current) => ({
+      clearAckTimer(id);
+      store.setState((current) => ({
         entries: current.entries.map((entry) =>
           entry.id === id ? { ...entry, delivery: "failed" } : entry,
         ),
       }));
+    },
+
+    async retryMessage(id) {
+      const entry = store.getState().entries.find((candidate) => candidate.id === id);
+      if (entry === undefined || !entry.mine || entry.delivery !== "failed" || entry.body === null) {
+        return;
+      }
+      const key = roomKey;
+      const active = connection;
+      if (key === null || active === null) {
+        return;
+      }
+      try {
+        const sealed = await seal(key, entry.body);
+        store.setState((current) => ({
+          entries: current.entries.map((candidate) =>
+            candidate.id === id ? { ...candidate, delivery: "sending" } : candidate,
+          ),
+        }));
+        active.send(id, sealed);
+        armAckTimer(id);
+      } catch {
+        store.getState().markFailed(id);
+      }
     },
 
     cancelFile(fileId) {
@@ -275,14 +483,30 @@ export const useRoomStore = create<RoomStore>((set, get) => {
       connection?.close();
       connection = null;
       roomKey = null;
-      if (graceTimer !== null) {
-        clearTimeout(graceTimer);
-        graceTimer = null;
-      }
-      set({ state: "closed_by_host", status: "closed", entries: [], participants: [] });
+      keyFragment = null;
+      seenRelays.clear();
+      clearAllAckTimers();
+      stopGrace();
+      store.setState({
+        state: "closed_by_host",
+        status: "closed",
+        entries: [],
+        participants: [],
+        lastLeaveAt: null,
+      });
     },
-  };
-});
+  }));
+  return store;
+}
+
+export type RoomStoreApi = ReturnType<typeof createRoomStore>;
+
+export const useRoomStore = createRoomStore();
+
+/** True while the grace window opened by the last peer leave is still running. */
+export function inGraceWindow(lastLeaveAt: number | null, now: number): boolean {
+  return lastLeaveAt !== null && now - lastLeaveAt < PEER_GRACE_MS;
+}
 
 /** Sorted by the server sequence number; client timestamps are display-only. */
 export function orderedEntries(entries: readonly ChatEntry[]): ChatEntry[] {

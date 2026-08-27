@@ -1,42 +1,66 @@
-# HUSK — Implementation Prompt (Session 3: Phases 3–6 + Final Summary)
+# HUSK — Implementation Prompt (Session 3: Phases 3–4, then hand off)
 
 You are continuing a phased fix of the Husk project (ephemeral E2E-encrypted
 chat/file sharing; React + TanStack Start frontend, Cloudflare Workers + two
 SQLite Durable Objects backend). Sessions 1–2 completed Implementation Phases
 1 and 2 of `docs/audit/IMPLEMENTATION_PROMPT.md`.
 
-## Read first, in full, before any code
+**This session's scope: complete Implementation Phases 3 and 4 only** (each
+with its log file and all tests green). When both are done, generate the next
+session's hand-off prompt (instructions at the bottom of this file).
 
-1. `docs/audit/IMPLEMENTATION_PROMPT.md` — the original master prompt (Rules
-   section and Phase definitions still apply verbatim).
-2. `docs/audit/phase-3-reliability-races.md` through
-   `docs/audit/phase-6-performance-testgaps.md` — ground truth for what is
-   broken in your phases. Do not re-derive findings; if you disagree with one,
-   say so explicitly in the phase log instead of silently ignoring it.
-3. `docs/implementation/phase-1-log.md` and
-   `docs/implementation/phase-2-log.md` — what already changed, including
-   design decisions that affect your phases:
-   - Files are stored as write-once 1 MiB rows (`file:<id>:<n>`) in the room
-     DO; a `cancel` WS frame deletes a file's rows; the per-room budget is
-     100 MB (`bytesUsed` counter, serialised through `fileOpQueue`).
-   - Sockets require a one-time join token (`?jt=`, minted by the
-     rate-limited `/room/join`, bound to IP, burned by the DO). The client's
-     `RoomConnection` takes a `fetchJoinToken` handler and mints a fresh token
-     before EVERY connect attempt; a refused join stops reconnecting.
-   - SSR emits two inline scripts; `src/server.ts` hashes them per response
-     into the CSP (`script-src 'self' 'sha256-…'`). If you add inline scripts
-     (e.g. Phase 4 theme flash), the hash mechanism picks them up
-     automatically — but verify hydration after.
-   - Google Fonts is still referenced (style-src/font-src allowlisted) until
-     your Phase 4 self-hosts Inter; tighten those CSP entries then.
-   - Integration harness: `worker/tests/integration.test.ts` runs in workerd
-     via `@cloudflare/vitest-pool-workers` (v0.22 plugin API). Tests use
-     unique per-call `CF-Connecting-IP` values (the `pin:` rate-limit key is
-     shared per PIN — do not exceed ~9 joins per test against one PIN).
-     Alarm tests drive the real alarm via `runInDurableObject` +
-     `runDurableObjectAlarm` (no test hooks in production code).
-   - Root `pnpm test` runs two vitest projects: `node` (unit + render tests,
-     includes `*.test.tsx`) and `workers`. `worker/` is its own pnpm project.
+## Read these files FIRST, in full, before writing any code
+
+Read every one of these completely to get the whole context:
+
+```
+C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\NEXT_SESSION_PROMPT.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-1-log.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\phase-2-log.md
+
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\IMPLEMENTATION_PROMPT.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-1-backend-architecture.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-2-security-crypto.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-3-reliability-races.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-4-frontend-pwa.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-5-design-accessibility.md
+C:\Users\Ns8pc\Pictures\HUSK\docs\audit\phase-6-performance-testgaps.md
+```
+
+Why each matters:
+
+- `docs/audit/IMPLEMENTATION_PROMPT.md` — the original master prompt; its
+  Rules section and Phase definitions apply verbatim.
+- `docs/audit/phase-3-*.md` and `docs/audit/phase-4-*.md` — ground truth for
+  what is broken in YOUR phases. Do not re-derive findings; if you disagree
+  with one, say so explicitly in the phase log instead of silently ignoring it.
+- `docs/implementation/phase-1-log.md` and `phase-2-log.md` — what already
+  changed, including design decisions that affect your phases:
+
+  - Files are stored as write-once 1 MiB rows (`file:<id>:<n>`) in the room
+    DO; a `cancel` WS frame deletes a file's rows; the per-room budget is
+    100 MB (`bytesUsed` counter, serialised through `fileOpQueue`).
+  - Sockets require a one-time join token (`?jt=`, minted by the
+    rate-limited `/room/join`, bound to IP, burned by the DO). The client's
+    `RoomConnection` takes a `fetchJoinToken` handler and mints a fresh token
+    before EVERY connect attempt; a refused join stops reconnecting with a
+    closed status (Phase 3 refines this into a terminal state).
+  - SSR emits two inline scripts; `src/server.ts` hashes them per response
+    into the CSP (`script-src 'self' 'sha256-…'`). If you add inline scripts
+    (e.g. Phase 4 theme flash), the hash mechanism picks them up
+    automatically — but verify hydration after.
+  - Google Fonts is still referenced (style-src/font-src allowlisted) until
+    Phase 4 self-hosts Inter; tighten those CSP entries in both
+    `src/server.ts` and `public/_headers` when you do.
+  - Integration harness: `worker/tests/integration.test.ts` runs in workerd
+    via `@cloudflare/vitest-pool-workers` (v0.22 plugin API). Tests use
+    unique per-call `CF-Connecting-IP` values (the `pin:` rate-limit key is
+    shared per PIN — do not exceed ~9 joins per test against one PIN).
+    Alarm tests drive the real alarm via `runInDurableObject` +
+    `runDurableObjectAlarm` (no test hooks in production code).
+  - Root `pnpm test` runs two vitest projects: `node` (unit + render tests,
+    includes `*.test.tsx`) and `workers`. `worker/` is its own pnpm project
+    (own lockfile; `cd worker && pnpm test` works standalone).
 
 ## Rules (unchanged from the master prompt)
 
@@ -53,6 +77,8 @@ SQLite Durable Objects backend). Sessions 1–2 completed Implementation Phases
   never prettier-formatted). Do not fix repo-wide lint; only keep files you
   touch clean.
 - No auto-generated docs/comments beyond what the code needs.
+- Kill any `wrangler dev`/`vite preview`/workerd processes you start — a
+  leftover one locks `.output` and breaks the next `pnpm build` on Windows.
 
 ## Implementation Phase 3 — Reliability & Race-Condition Fixes
 
@@ -98,8 +124,8 @@ From `docs/audit/phase-4-frontend-pwa.md`:
 1. **PWA** (CRITICAL): `vite-plugin-pwa` — manifest (standalone, maskable +
    regular 192/512 icons from a token-colored SVG mark, theme/background from
    the palette), minimal precache SW (app shell only; NEVER cache anything
-   from Worker routes — the SW lives on the frontend origin, Worker routes are
-   cross-origin anyway), SW registration, offline banner driven by the
+   from Worker routes — the SW lives on the frontend origin, Worker routes
+   are cross-origin anyway), SW registration, offline banner driven by the
    connection store. Verify the built `_headers` still serves `/sw.js`,
    `/manifest.webmanifest` correctly.
 2. **IME fix** (MEDIUM): `!event.nativeEvent.isComposing` in the composer's
@@ -120,7 +146,14 @@ From `docs/audit/phase-4-frontend-pwa.md`:
 7. Memoize message list items (`MessageItem`), auto-scroll only when already
    near-bottom (check scroll position before `scrollIntoView`).
 
-## Implementation Phase 5 — Design System & Accessibility Compliance
+## Phases 5, 6 and the Final Step (for the FOLLOWING session)
+
+Complete Phases 3 and 4 only in this session. The remainder is reproduced
+here so the next NEXT_SESSION_PROMPT.md can carry it forward with full
+context — copy these sections into that prompt, updating them with anything
+learned in Phases 3–4.
+
+### Implementation Phase 5 — Design System & Accessibility Compliance
 
 From `docs/audit/phase-5-design-accessibility.md`:
 
@@ -132,13 +165,13 @@ From `docs/audit/phase-5-design-accessibility.md`:
 2. Modal focus management (primitives.tsx): trap Tab, restore focus to the
    invoker on close, close on scrim click.
 3. `--scrim` token replacing the raw `bg-[oklch(0_0_0/0.45)]`.
-4. Bless or snap off-scale spacing (`min-h-11`, `h-14`, `w-11`) — bless 44/56
-   as named touch-target tokens is the defensible option.
+4. Bless or snap off-scale spacing (`min-h-11`, `h-14`, `w-11`) — blessing
+   44/56 as named touch-target tokens is the defensible option.
 5. `@axe-core/playwright` smoke specs: landing + PIN screens, both themes,
-   zero violations (needs a running dev server; use `pnpm dev` or a static
-   preview — document the command in the log; do not wire CI).
+   zero violations (needs a running dev server; document the command in the
+   log; do not wire CI).
 
-## Implementation Phase 6 — Performance, Test-Coverage Gaps & Final Hardening
+### Implementation Phase 6 — Performance, Test-Coverage Gaps & Final Hardening
 
 From `docs/audit/phase-6-performance-testgaps.md`:
 
@@ -156,7 +189,7 @@ From `docs/audit/phase-6-performance-testgaps.md`:
    built `.output` — if that is impossible in the environment, do a
    build-output analysis like the audit did and SAY SO in the log.
 
-## Final Step
+### Final Step
 
 After Phase 6's log: produce `docs/implementation/SUMMARY.md` — every change
 across all six phases, current test status (exact counts), and exact Free-plan
@@ -167,3 +200,25 @@ deploy commands: SQLite DO migration (already `new_sqlite_classes` v1),
 (desktop create / mobile join / messages both ways / file both ways /
 background >8s / host force-close / confirm no server-side trace after close)
 as a fill-in record.
+
+## After Phases 3 and 4 are complete — write the next hand-off prompt
+
+Once Phase 4's log exists and all suites pass, create the next session's
+prompt by REWRITING this same file,
+`C:\Users\Ns8pc\Pictures\HUSK\docs\implementation\NEXT_SESSION_PROMPT.md`,
+in the same style as this one. It must contain:
+
+- A "read these files FIRST, in full" block listing absolute paths for:
+  NEXT_SESSION_PROMPT.md (the new one), ALL existing
+  `docs/implementation/phase-*-log.md` files (1 through 4), and ALL
+  `docs/audit/*.md` files — so the following session gets the whole context.
+- A "what already changed" digest that carries forward the Phase 1–2 design
+  decisions above PLUS the concrete decisions made in Phases 3–4 (state
+  machine/terminal-state changes, retry mechanics, PWA plugin config, CSP
+  changes from the font self-hosting, etc.).
+- Scope: Implementation Phases 5 and 6 plus the Final Step (SUMMARY.md).
+- The Rules section (copy it, including the Windows `.output` lock warning).
+- The full Phase 5 / Phase 6 / Final Step definitions from above, updated
+  with anything learned in Phases 3–4.
+- A closing instruction: this will be the FINAL session — after SUMMARY.md,
+  no further hand-off prompt is needed.

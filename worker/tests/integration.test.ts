@@ -464,3 +464,135 @@ describe("room closure", () => {
     expect(getAfter.status).toBe(404);
   });
 });
+
+describe("edge cases", () => {
+  it("edge: PIN collision on creation returns 409", async () => {
+    const pin = freshPin();
+    expect((await createRoom(pin)).status).toBe(200);
+    expect((await createRoom(pin)).status).toBe(409);
+  });
+
+  it("edge: a cancel frame deletes an interrupted upload and refunds the budget", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const socket = await openSocket(pin);
+
+    const grants: Grant[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const response = await requestGrant(pin, socket.member, 25 * 1024 * 1024);
+      expect(response.status).toBe(200);
+      grants.push((await response.json()) as Grant);
+    }
+    const fifthBefore = await requestGrant(pin, socket.member, 25 * 1024 * 1024);
+    expect(fifthBefore.status).toBe(507);
+
+    // Partial upload of grant 0, then the client gives up and cancels.
+    const first = grants[0];
+    if (first === undefined) {
+      throw new Error("missing grant 0");
+    }
+    await uploadVector(first, randomBytes(1024));
+    socket.ws.send(JSON.stringify({ t: "cancel", fileId: first.fileId }));
+
+    let deleted = false;
+    for (let attempt = 0; attempt < 50 && !deleted; attempt += 1) {
+      const probe = await apiAbsolute(
+        `http://localhost/room/${pin}/file/${first.fileId}?exp=${first.download.exp}&sig=${first.download.sig}`,
+      );
+      deleted = probe.status === 404;
+      if (!deleted) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(deleted).toBe(true);
+
+    // The cancelled reservation refunds the budget, so a full-size grant fits.
+    const fifthAfter = await requestGrant(pin, socket.member, 25 * 1024 * 1024);
+    expect(fifthAfter.status).toBe(200);
+    socket.ws.close();
+  });
+
+  it("edge: duplicate tabs behave as distinct participants", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const a = await openSocket(pin);
+    const b = await openSocket(pin);
+    await drainJoinPresence(a.frames);
+    expect(b.member).not.toBe(a.member);
+
+    a.ws.send(JSON.stringify({ t: "send", localId: "tab1", payload: { iv: "aXY", ct: "Y3Q" } }));
+    const relayToB = await b.frames.next();
+    expect(relayToB.t).toBe("relay");
+    expect(relayToB.localId).toBe("tab1");
+
+    // The sender receives its own relay broadcast and then the ack.
+    const ownRelay = await a.frames.next();
+    expect(ownRelay.t).toBe("relay");
+    let ack = await a.frames.next();
+    while (ack.t !== "ack") {
+      ack = await a.frames.next();
+    }
+    expect(ack.localId).toBe("tab1");
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("edge: a resent localId is relayed once and re-acked with the original seq", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const a = await openSocket(pin);
+    const b = await openSocket(pin);
+    await drainJoinPresence(a.frames);
+
+    const frame = JSON.stringify({ t: "send", localId: "m1", payload: { iv: "aXY", ct: "Y3Q" } });
+    a.ws.send(frame);
+    const relay = await b.frames.next();
+    expect(relay.t).toBe("relay");
+    expect(relay.localId).toBe("m1");
+    let ack1 = await a.frames.next();
+    while (ack1.t !== "ack") {
+      ack1 = await a.frames.next();
+    }
+
+    // The client lost the first ack and resends the identical frame.
+    a.ws.send(frame);
+    let ack2 = await a.frames.next();
+    while (ack2.t !== "ack" || ack2.localId !== "m1") {
+      ack2 = await a.frames.next();
+    }
+    expect(ack2.seq).toBe(ack1.seq);
+
+    // No second relay reached B: its next frame belongs to a new message.
+    a.ws.send(JSON.stringify({ t: "send", localId: "m2", payload: { iv: "aXY", ct: "Y3Q" } }));
+    const next = await b.frames.next();
+    expect(next.t).toBe("relay");
+    expect(next.localId).toBe("m2");
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("edge: a socket close broadcasts presence leave exactly once", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const a = await openSocket(pin);
+    const b = await openSocket(pin);
+    await drainJoinPresence(a.frames);
+
+    a.ws.close();
+    const leave = await b.frames.next();
+    expect(leave.t).toBe("presence");
+    expect(leave.event).toBe("leave");
+    expect(leave.who).toBe(a.member);
+
+    // If a duplicate leave had been broadcast it would arrive before the
+    // relay of B's own next message.
+    b.ws.send(JSON.stringify({ t: "send", localId: "after", payload: { iv: "aXY", ct: "Y3Q" } }));
+    const next = await b.frames.next();
+    expect(next.t).toBe("relay");
+    b.ws.close();
+  });
+});

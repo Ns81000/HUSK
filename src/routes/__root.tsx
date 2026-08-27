@@ -10,27 +10,33 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
+import { ErrorMark } from "../components/husk/icons";
 import { ToastProvider } from "../components/husk/primitives";
+
+/**
+ * Applies the persisted (or OS-preferred) theme before first paint. Kept in
+ * sync with STORAGE_KEY in src/lib/husk/theme.ts. The inline script is
+ * constant, so the per-response CSP hash mechanism in src/server.ts covers it.
+ */
+const themeBootstrap = `(function(){try{var t=localStorage.getItem("husk-theme");if(t==="dark"||(!t&&window.matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.classList.add("dark")}}catch(e){}})();`;
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
+    <main className="flex min-h-screen items-center justify-center px-4">
+      <section className="max-w-md rounded-lg border border-line bg-surface p-6 text-center shadow-panel">
+        <ErrorMark className="mx-auto text-line-strong" />
+        <h1 className="mt-4 text-title text-ink">Page not found</h1>
+        <p className="mt-2 text-[14px] text-ink-muted">
           The page you're looking for doesn't exist or has been moved.
         </p>
-        <div className="mt-6">
-          <Link
-            to="/"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            Go home
-          </Link>
-        </div>
-      </div>
-    </div>
+        <Link
+          to="/"
+          className="touch-target mt-6 inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 text-[15px] font-medium text-accent-ink transition-colors hover:bg-accent-hover"
+        >
+          Go home
+        </Link>
+      </section>
+    </main>
   );
 }
 
@@ -49,12 +55,11 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   }, [error]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          This page didn't load
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
+    <main className="flex min-h-screen items-center justify-center px-4">
+      <section className="max-w-md rounded-lg border border-line bg-surface p-6 text-center shadow-panel">
+        <ErrorMark className="mx-auto text-line-strong" />
+        <h1 className="mt-4 text-title text-ink">This page didn't load</h1>
+        <p className="mt-2 text-[14px] text-ink-muted">
           Something went wrong on our end. You can try refreshing or head back home.
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
@@ -63,19 +68,19 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
               router.invalidate();
               reset();
             }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="touch-target inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 text-[15px] font-medium text-accent-ink transition-colors hover:bg-accent-hover"
           >
             Try again
           </button>
           <a
             href="/"
-            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            className="touch-target inline-flex items-center justify-center gap-2 rounded-md border border-line bg-surface px-4 text-[15px] font-medium text-ink transition-colors hover:bg-surface-sunken"
           >
             Go home
           </a>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
 
@@ -96,19 +101,21 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
+      { name: "theme-color", content: "#f6f7f8" },
     ],
     links: [
       {
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap",
-      },
+      { rel: "manifest", href: "/manifest.webmanifest" },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/icons/husk-mark.svg", type: "image/svg+xml" },
+      {
+        rel: "apple-touch-icon",
+        href: "/icons/husk-icon-192.png",
+        sizes: "192x192",
+      },
     ],
   }),
 
@@ -122,6 +129,7 @@ function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
         <HeadContent />
       </head>
       <body>
@@ -134,6 +142,14 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // Offline support is progressive; registration failure is not fatal.
+      });
+    }
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

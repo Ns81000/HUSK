@@ -1,6 +1,6 @@
 /** Message list, message composer and file cards. */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AttachIcon, DeleteIcon, DownloadIcon, FileIcon, SendIcon, WaitingMark } from "./icons";
 import { Button, IconButton, useToast } from "./primitives";
 import { tokenize } from "@/lib/husk/linkify";
@@ -101,15 +101,73 @@ function EntryBody({
   return <FileCard body={body} onDownload={() => onDownload(body)} />;
 }
 
-function DeliveryNote({ entry }: { readonly entry: ChatEntry }) {
+function DeliveryNote({
+  entry,
+  onRetry,
+}: {
+  readonly entry: ChatEntry;
+  readonly onRetry: (id: string) => void;
+}) {
   if (entry.delivery === "sending") {
     return <span className="text-caption text-ink-faint">Sending</span>;
   }
   if (entry.delivery === "failed") {
-    return <span className="text-caption text-danger">Not sent</span>;
+    return (
+      <span className="flex items-center gap-2 text-caption text-danger">
+        Not sent
+        <button
+          type="button"
+          onClick={() => onRetry(entry.id)}
+          className="touch-target rounded-xs underline underline-offset-2 hover:decoration-current"
+        >
+          Retry
+        </button>
+      </span>
+    );
   }
   return <span className="text-caption text-ink-faint">{formatTime(entry.ts)}</span>;
 }
+
+const MessageItem = memo(function MessageItem({
+  entry,
+  onDownload,
+  onRetry,
+}: {
+  readonly entry: ChatEntry;
+  readonly onDownload: (body: Extract<SealedBody, { kind: "file" }>) => Promise<void>;
+  readonly onRetry: (id: string) => void;
+}) {
+  if (entry.system !== undefined) {
+    return (
+      <p className="text-center text-caption text-ink-faint">{entry.system}</p>
+    );
+  }
+  if (entry.delivery === "unverified") {
+    return (
+      <p className="text-center text-caption text-warn">
+        A message could not be verified and was discarded.
+      </p>
+    );
+  }
+  return (
+    <div className={cn("flex flex-col gap-1", entry.mine ? "items-end" : "items-start")}>
+      <div
+        className={cn(
+          "max-w-[85%] rounded-lg border px-4 py-3 sm:max-w-[70%]",
+          entry.mine
+            ? "border-accent bg-accent text-accent-ink"
+            : "border-line bg-surface text-ink",
+        )}
+      >
+        <EntryBody body={entry.body} onDownload={onDownload} />
+      </div>
+      <DeliveryNote entry={entry} onRetry={onRetry} />
+    </div>
+  );
+});
+
+/** Below this distance from the bottom, new messages keep the view pinned. */
+const NEAR_BOTTOM_PX = 120;
 
 export function MessageList({
   onDownload,
@@ -118,12 +176,32 @@ export function MessageList({
 }) {
   const entries = useRoomStore((store) => store.entries);
   const state = useRoomStore((store) => store.state);
+  const retryMessage = useRoomStore((store) => store.retryMessage);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
   const ordered = orderedEntries(entries);
 
+  function handleScroll(): void {
+    const el = containerRef.current;
+    if (el !== null) {
+      nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    }
+  }
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
+    // Reading history must not be yanked to the bottom by a peer's message.
+    if (nearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
   }, [entries.length]);
+
+  const handleRetry = useCallback(
+    (id: string) => {
+      void retryMessage(id);
+    },
+    [retryMessage],
+  );
 
   if (ordered.length === 0) {
     return (
@@ -142,41 +220,14 @@ export function MessageList({
   }
 
   return (
-    <div className="flex-1 space-y-3 overflow-y-auto px-4 py-6 sm:px-6">
-      {ordered.map((entry) => {
-        if (entry.system !== undefined) {
-          return (
-            <p key={entry.id} className="text-center text-caption text-ink-faint">
-              {entry.system}
-            </p>
-          );
-        }
-        if (entry.delivery === "unverified") {
-          return (
-            <p key={entry.id} className="text-center text-caption text-warn">
-              A message could not be verified and was discarded.
-            </p>
-          );
-        }
-        return (
-          <div
-            key={entry.id}
-            className={cn("flex flex-col gap-1", entry.mine ? "items-end" : "items-start")}
-          >
-            <div
-              className={cn(
-                "max-w-[85%] rounded-lg border px-4 py-3 sm:max-w-[70%]",
-                entry.mine
-                  ? "border-accent bg-accent text-accent-ink"
-                  : "border-line bg-surface text-ink",
-              )}
-            >
-              <EntryBody body={entry.body} onDownload={onDownload} />
-            </div>
-            <DeliveryNote entry={entry} />
-          </div>
-        );
-      })}
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className="flex-1 space-y-3 overflow-y-auto px-4 py-6 sm:px-6"
+    >
+      {ordered.map((entry) => (
+        <MessageItem key={entry.id} entry={entry} onDownload={onDownload} onRetry={handleRetry} />
+      ))}
       <div ref={bottomRef} />
     </div>
   );
@@ -269,7 +320,7 @@ export function Composer({
           aria-label="Message"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void submit();
             }

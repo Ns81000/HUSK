@@ -6,6 +6,7 @@ import { Button, IconButton, Switch, useToast } from "./primitives";
 import { formatPin } from "@/lib/husk/pin";
 import type { ConnectionStatus } from "@/lib/husk/connection";
 import type { RoomState } from "@/lib/husk/room-machine";
+import { inGraceWindow, useRoomStore } from "@/lib/husk/store";
 import { useTheme } from "@/lib/husk/theme";
 import { cn } from "@/lib/utils";
 
@@ -23,8 +24,12 @@ export function ConnectionIndicator({
   readonly status: ConnectionStatus;
   readonly state: RoomState;
 }) {
-  const tone =
-    status === "open"
+  const lastLeaveAt = useRoomStore((store) => store.lastLeaveAt);
+  const online = useRoomStore((store) => store.online);
+  const offline = !online;
+  const tone = offline
+    ? "text-warn"
+    : status === "open"
       ? "text-ok"
       : status === "reconnecting" || status === "connecting"
         ? "text-warn"
@@ -32,8 +37,12 @@ export function ConnectionIndicator({
   return (
     <p className={cn("flex items-center gap-2 text-caption", tone)} aria-live="polite">
       <span className="inline-block h-2 w-2 rounded-pill bg-current" />
-      {statusCopy[status]}
-      {state === "peer_disconnected_grace" ? " · peer may be reconnecting" : ""}
+      {offline ? "You are offline — messages can't send while offline" : statusCopy[status]}
+      {!offline &&
+      state === "peer_disconnected_grace" &&
+      inGraceWindow(lastLeaveAt, Date.now())
+        ? " · peer may be reconnecting"
+        : ""}
     </p>
   );
 }

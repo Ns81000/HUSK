@@ -57,6 +57,10 @@ const CLOSED_COPY = {
     title: "Too many attempts",
     body: "Join attempts are throttled. Wait a few minutes and try again.",
   },
+  closed_disconnected: {
+    title: "Disconnected",
+    body: "The connection to the relay was lost. The room may still exist — try reconnecting.",
+  },
 } satisfies Record<string, ClosedCopy>;
 
 function closedCopyFor(state: RoomState): ClosedCopy {
@@ -81,6 +85,7 @@ function RoomScreen() {
   const leave = useRoomStore((store) => store.leave);
   const sendFileMessage = useRoomStore((store) => store.sendFileMessage);
   const cancelFile = useRoomStore((store) => store.cancelFile);
+  const retry = useRoomStore((store) => store.retry);
 
   useEffect(() => {
     const fragment = window.location.hash.slice(1);
@@ -160,7 +165,12 @@ function RoomScreen() {
   if (isTerminal(state)) {
     const copy = closedCopyFor(state);
     return (
-      <ClosedScreen title={copy.title} body={copy.body} onHome={() => void navigate({ to: "/" })} />
+      <ClosedScreen
+        title={copy.title}
+        body={copy.body}
+        onHome={() => void navigate({ to: "/" })}
+        onRetry={state === "closed_disconnected" ? () => void retry() : undefined}
+      />
     );
   }
 
@@ -241,10 +251,12 @@ function ClosedScreen({
   title,
   body,
   onHome,
+  onRetry,
 }: {
   readonly title: string;
   readonly body: string;
   readonly onHome: () => void;
+  readonly onRetry?: (() => void) | undefined;
 }) {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
@@ -252,9 +264,16 @@ function ClosedScreen({
         <ErrorMark className="mx-auto text-line-strong" />
         <h1 className="mt-4 text-title text-ink">{title}</h1>
         <p className="mt-2 text-[14px] text-ink-muted">{body}</p>
-        <Button className="mt-6" full onClick={onHome}>
-          Back to start
-        </Button>
+        <div className="mt-6 flex flex-col gap-2">
+          {onRetry !== undefined ? (
+            <Button full onClick={onRetry}>
+              Reconnect
+            </Button>
+          ) : null}
+          <Button tone="quiet" full onClick={onHome}>
+            Back to start
+          </Button>
+        </div>
       </Panel>
     </main>
   );

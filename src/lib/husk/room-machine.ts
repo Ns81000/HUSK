@@ -18,7 +18,8 @@ export type RoomState =
   | "closed_expired"
   | "closed_full"
   | "closed_not_found"
-  | "closed_rate_limited";
+  | "closed_rate_limited"
+  | "closed_disconnected";
 
 export type RoomEvent =
   | { type: "CREATE" }
@@ -32,6 +33,7 @@ export type RoomEvent =
   | { type: "ROOM_FULL" }
   | { type: "ROOM_NOT_FOUND" }
   | { type: "RATE_LIMITED" }
+  | { type: "CONNECTION_LOST" }
   | { type: "EXPIRED" }
   | { type: "LEAVE" };
 
@@ -41,6 +43,7 @@ export const TERMINAL_STATES: readonly RoomState[] = [
   "closed_full",
   "closed_not_found",
   "closed_rate_limited",
+  "closed_disconnected",
 ];
 
 export function isTerminal(state: RoomState): boolean {
@@ -90,6 +93,8 @@ export function transition(state: RoomState, event: RoomEvent): RoomState {
       return "closed_not_found";
     case "RATE_LIMITED":
       return "closed_rate_limited";
+    case "CONNECTION_LOST":
+      return "closed_disconnected";
     case "EXPIRED":
       return "closed_expired";
     case "LEAVE":

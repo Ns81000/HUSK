@@ -35,13 +35,14 @@ function buildCsp(scriptHashes: readonly string[]): string {
   return [
     "default-src 'self'",
     // The SSR shell emits inline scripts (TanStack stream barrier + scroll
-    // restoration bootstrap). Each one is hashed per response below, so no
-    // inline script outside the server-rendered document can ever run.
+    // restoration bootstrap + the constant theme pre-paint snippet). Each one
+    // is hashed per response below, so no inline script outside the
+    // server-rendered document can ever run.
     `script-src 'self' ${scriptHashes.join(" ")}`.trim(),
-    // Google Fonts is allowed until Phase 4 self-hosts Inter; then this
-    // tightens to 'self' only.
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    // Inter is self-hosted from /fonts; inline style attributes from the SSR
+    // shell require 'unsafe-inline'.
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",
     "img-src 'self' data:",
     `connect-src ${connectSources.join(" ")}`,
     "object-src 'none'",

@@ -82,6 +82,11 @@ export class HuskRoom {
   private bytesUsed = 0;
   /** Serialises every mutation of bytesUsed so the budget check is atomic. */
   private fileOpQueue: Promise<void> = Promise.resolve();
+  /** Recent (socketId, localId) -> seq, so a resend after a lost ack is deduplicated. */
+  private recentSends = new Map<string, number>();
+  private static readonly RECENT_SENDS_LIMIT = 500;
+  /** Sockets whose close has already been handled (error and close may both fire). */
+  private readonly closeHandled = new WeakSet<WebSocket>();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -142,6 +147,7 @@ export class HuskRoom {
         this.exists = true;
         this.createdAt = Date.now();
         this.emptySince = Date.now();
+        this.recentSends.clear();
         await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS);
       }
       if (this.participants().length >= MAX_PARTICIPANTS) {
@@ -455,7 +461,17 @@ export class HuskRoom {
       return;
     }
 
+    const dedupeKey = `${attachment.id}:${frame.localId}`;
+    const seenSeq = this.recentSends.get(dedupeKey);
+    if (seenSeq !== undefined) {
+      // A resend of an already-relayed frame (e.g. the ack was lost): re-ack
+      // with the original seq and never assign a second sequence number.
+      socket.send(JSON.stringify({ t: "ack", localId: frame.localId, seq: seenSeq }));
+      return;
+    }
+
     this.seq += 1;
+    this.rememberSend(dedupeKey, this.seq);
     const relay = {
       t: "relay",
       seq: this.seq,
@@ -468,7 +484,24 @@ export class HuskRoom {
     socket.send(JSON.stringify({ t: "ack", localId: frame.localId, seq: this.seq }));
   }
 
+  private rememberSend(key: string, seq: number): void {
+    if (this.recentSends.size >= HuskRoom.RECENT_SENDS_LIMIT) {
+      const oldest = this.recentSends.keys().next().value;
+      if (oldest !== undefined) {
+        this.recentSends.delete(oldest);
+      }
+    }
+    this.recentSends.set(key, seq);
+  }
+
   async webSocketClose(socket: WebSocket) {
+    // The runtime may deliver both an error and a close for one socket, and by
+    // the time the close event fires the socket is already gone from
+    // getWebSockets(), so dedupe by seen-set instead of membership.
+    if (this.closeHandled.has(socket)) {
+      return;
+    }
+    this.closeHandled.add(socket);
     const attachment = socket.deserializeAttachment<Attachment>();
     const remaining = this.participants().filter(
       (participant) => participant.id !== attachment?.id,
@@ -513,6 +546,7 @@ export class HuskRoom {
       this.exists = false;
       this.seq = 0;
       this.bytesUsed = 0;
+      this.recentSends.clear();
       await this.state.storage.deleteAll();
       return;
     }
