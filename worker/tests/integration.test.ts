@@ -203,14 +203,17 @@ describe("room lifecycle and relay", () => {
     // Durable Object's atomic capacity rejection.
     const callerIp = "10.9.9.9";
     const tokenExpiresAt = Math.floor(Date.now() / 1000) + 60;
+    const tokenNonce = "capacity-test-nonce";
     const tokenSignature = await signTicket(
       TICKET_SECRET,
       "join",
-      `${pin}|${callerIp}|${tokenExpiresAt}`,
+      `${pin}|${callerIp}|${tokenExpiresAt}|${tokenNonce}`,
       tokenExpiresAt,
     );
     const eleventh = await api(
-      `/room/${pin}/socket?jt=${encodeURIComponent(`${tokenExpiresAt}.${tokenSignature}`)}`,
+      `/room/${pin}/socket?jt=${encodeURIComponent(
+        `${tokenExpiresAt}.${tokenNonce}.${tokenSignature}`,
+      )}`,
       { headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp } },
     );
     expect(eleventh.status).toBe(403);
@@ -514,6 +517,39 @@ describe("abuse controls", () => {
       headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
     });
     expect(replay.status).toBe(404);
+  });
+
+  it("regression: two joins from one IP within the same second mint distinct tokens and both sockets open", async () => {
+    // Live-deploy bug (session 7): the token was HMAC over `join|pin|ip|exp`
+    // with seconds-granularity exp, so two legitimate joins inside the same
+    // second minted byte-identical tokens and the DO's one-time burn rejected
+    // the second peer's upgrade with the generic 404.
+    const pin = freshPin();
+    await createRoom(pin);
+    const callerIp = `10.0.0.${(ipCounter += 1)}`;
+    const firstJoin = joinRoomFrom(pin, callerIp);
+    const secondJoin = joinRoomFrom(pin, callerIp);
+    const [first, second] = (await Promise.all([firstJoin, secondJoin])).map(
+      async (response) => ((await response.json()) as JoinBody).joinToken,
+    );
+    const firstToken = await first;
+    const secondToken = await second;
+    expect(firstToken).toBeTruthy();
+    expect(secondToken).toBeTruthy();
+    expect(firstToken).not.toBe(secondToken);
+
+    const socketA = await api(`/room/${pin}/socket?jt=${encodeURIComponent(firstToken ?? "")}`, {
+      headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
+    });
+    const socketB = await api(`/room/${pin}/socket?jt=${encodeURIComponent(secondToken ?? "")}`, {
+      headers: { Upgrade: "websocket", "CF-Connecting-IP": callerIp },
+    });
+    expect(socketA.status).toBe(101);
+    expect(socketB.status).toBe(101);
+    socketA.webSocket?.accept();
+    socketB.webSocket?.accept();
+    socketA.webSocket?.close();
+    socketB.webSocket?.close();
   });
 
   it("security: brute-force joins are throttled with HTTP 429", async () => {

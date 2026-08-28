@@ -122,15 +122,24 @@ export default {
         return json({ error: "unavailable" }, 404, cors);
       }
       // Mint the one-time token the socket route will consume, bound to this
-      // caller's IP so a leaked link cannot be replayed from elsewhere.
+      // caller's IP so a leaked link cannot be replayed from elsewhere. A
+      // per-mint nonce keeps tokens unique even when two legitimate joins
+      // arrive in the same second (identical pin|ip|exp would otherwise mint
+      // byte-identical tokens, and the DO's one-time burn would reject the
+      // second peer's upgrade).
       const tokenExpiresAt = Math.floor(Date.now() / 1000) + JOIN_TOKEN_TTL_SECONDS;
+      const tokenNonce = crypto.randomUUID().replaceAll("-", "");
       const tokenSignature = await signTicket(
         env.HUSK_TICKET_SECRET,
         "join",
-        `${pin}|${ip}|${tokenExpiresAt}`,
+        `${pin}|${ip}|${tokenExpiresAt}|${tokenNonce}`,
         tokenExpiresAt,
       );
-      return json({ ok: true, pin, joinToken: `${tokenExpiresAt}.${tokenSignature}` }, 200, cors);
+      return json(
+        { ok: true, pin, joinToken: `${tokenExpiresAt}.${tokenNonce}.${tokenSignature}` },
+        200,
+        cors,
+      );
     }
 
     // GET (upgrade) /room/<pin>/socket?jt=<one-time join token>

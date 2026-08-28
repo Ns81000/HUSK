@@ -204,16 +204,21 @@ export class HuskRoom {
       // becomes a room-existence or token-validity oracle.
       const ip = request.headers.get("x-husk-ip") ?? "unknown";
       const token = request.headers.get("x-husk-join-token") ?? "";
-      const dotAt = token.indexOf(".");
-      const tokenExpiresAt = dotAt === -1 ? Number.NaN : Number(token.slice(0, dotAt));
-      const tokenSignature = dotAt === -1 ? "" : token.slice(dotAt + 1);
+      // Token shape: `<exp>.<nonce>.<sig>`; the nonce makes every mint unique
+      // (two same-second joins from one IP would otherwise collide on
+      // `pin|ip|exp` and burn each other's one-time token).
+      const parts = token.split(".");
+      const tokenExpiresAt = parts.length === 3 ? Number(parts[0]) : Number.NaN;
+      const tokenNonce = parts.length === 3 ? (parts[1] ?? "") : "";
+      const tokenSignature = parts.length === 3 ? (parts[2] ?? "") : "";
       const pin = url.pathname.split("/")[2] ?? "";
       const tokenValid =
-        dotAt !== -1 &&
+        parts.length === 3 &&
+        tokenNonce !== "" &&
         (await verifyTicket(
           this.env.HUSK_TICKET_SECRET,
           "join",
-          `${pin}|${ip}|${tokenExpiresAt}`,
+          `${pin}|${ip}|${tokenExpiresAt}|${tokenNonce}`,
           tokenExpiresAt,
           tokenSignature,
           Date.now(),
