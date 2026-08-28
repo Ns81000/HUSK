@@ -16,6 +16,7 @@
 
 import {
   ALARM_INTERVAL_MS,
+  CIPHER_OVERHEAD_BYTES,
   FILE_BYTES_USED_KEY,
   FILE_CHUNK_BYTES,
   FILE_META_PREFIX,
@@ -401,7 +402,7 @@ export class HuskRoom {
       return Response.json({ error: "chunk_exists" }, { status: 409 });
     }
     const body = await request.arrayBuffer();
-    if (body.byteLength === 0 || body.byteLength > FILE_CHUNK_BYTES) {
+    if (body.byteLength === 0 || body.byteLength > FILE_CHUNK_BYTES + CIPHER_OVERHEAD_BYTES) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
     await this.state.storage.put(key, body);

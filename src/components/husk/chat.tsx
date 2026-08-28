@@ -307,6 +307,7 @@ export function Composer({
           type="file"
           className="sr-only"
           aria-label="File to send"
+          disabled={disabled}
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";

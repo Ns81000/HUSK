@@ -105,6 +105,12 @@ function RoomScreen() {
       if (keyFragment === null) {
         return;
       }
+      if (status !== "open" || selfId === "") {
+        // No doomed request: the file lands in the composer's failed state
+        // and the user retries once the room is connected (welcome assigns
+        // the participant id the membership check requires).
+        throw new UploadFailedError(null);
+      }
       const key = await importRoomKey(keyFragment);
       try {
         const grant = await requestFileUpload(pin, selfId, file.size);
@@ -131,7 +137,7 @@ function RoomScreen() {
         throw error;
       }
     },
-    [keyFragment, pin, selfId, sendFileMessage, cancelFile],
+    [keyFragment, pin, status, selfId, sendFileMessage, cancelFile],
   );
 
   const onDownload = useCallback(

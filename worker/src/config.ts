@@ -41,5 +41,12 @@ export const ROOM_STATE_KEY = "room-state";
 /** Chunk upload tickets expire quickly; download tickets live until room expiry. */
 export const TICKET_TTL_SECONDS = 300;
 
+/**
+ * AES-GCM appends a 128-bit authentication tag to each sealed chunk, so the
+ * ciphertext of a full 1 MiB plaintext chunk is 16 bytes larger than the
+ * plaintext. The per-PUT body cap must allow for it.
+ */
+export const CIPHER_OVERHEAD_BYTES = 16;
+
 /** One-time join token that a successful /room/join mints for the socket route. */
 export const JOIN_TOKEN_TTL_SECONDS = 60;

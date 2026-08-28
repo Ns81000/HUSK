@@ -232,7 +232,19 @@ Gotchas found on the live deploy (all resolved in-repo):
 - A `[limits] cpu_ms = 10` block is **rejected by the Free-plan API**
   (error 100328: "CPU limits are not supported for the Free plan") — removed
   from `worker/wrangler.toml`; do not re-add it on Free.
-- **CRITICAL post-deploy fix (2026-08-28):** `HuskRoom` held `exists`,
+- **CRITICAL post-deploy fix #2 (2026-08-28): file uploads > ~1 MiB failed.**
+  The relay's per-PUT cap was exactly 1 MiB, but the client seals each 1 MiB
+  plaintext chunk and AES-GCM appends a 16-byte tag — so every full chunk
+  arrived 16 bytes over the cap and was rejected with 400 ("Upload failed ·
+  not sent"); only sub-1-MiB files worked. The local integration harness PUTs
+  raw unencrypted bytes, so the mismatch was invisible until tested in a real
+  browser. Fix: the cap now allows `CIPHER_OVERHEAD_BYTES` (16) for the GCM
+  tag, pinned by two integration tests (cap-exact accepted, cap+1 rejected).
+  Also hardened: the composer's hidden file input is disabled while the room
+  is not open, and `onSendFile` refuses to fire a doomed request before the
+  welcome frame assigns the participant id the membership check requires
+  (the file lands in the existing Retry state instead).
+- **CRITICAL post-deploy fix #1 (2026-08-28):** `HuskRoom` held `exists`,
   `createdAt`, `emptySince`, and `seq` only in isolate memory. On the real
   runtime a Durable Object is evicted within seconds of going idle (and every
   hibernating-socket wake reconstructs it), so joins, reconnects, and file

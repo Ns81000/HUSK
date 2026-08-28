@@ -355,6 +355,39 @@ describe("chunked file transfer", () => {
     socket.ws.close();
   });
 
+  it("accepts a full ciphertext chunk (1 MiB plaintext + GCM tag) and rejects beyond", async () => {
+    // The real client seals each 1 MiB plaintext chunk; AES-GCM appends a
+    // 16-byte tag, so the PUT body exceeds FILE_CHUNK_BYTES by exactly 16.
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const socket = await openSocket(pin);
+    const grant = (await (await requestGrant(pin, socket.member, CHUNK_BYTES)).json()) as Grant;
+
+    const sealedChunk = randomBytes(CHUNK_BYTES + 16);
+    const accepted = await apiAbsolute(grant.chunkUrls[0] ?? "", {
+      method: "PUT",
+      body: sealedChunk,
+    });
+    expect(accepted.status).toBe(200);
+    socket.ws.close();
+  });
+
+  it("rejects a chunk PUT one byte beyond the ciphertext cap", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const socket = await openSocket(pin);
+    const grant = (await (await requestGrant(pin, socket.member, CHUNK_BYTES)).json()) as Grant;
+
+    const oversized = await apiAbsolute(grant.chunkUrls[0] ?? "", {
+      method: "PUT",
+      body: randomBytes(CHUNK_BYTES + 17),
+    });
+    expect(oversized.status).toBe(400);
+    socket.ws.close();
+  });
+
   it("rejects an expired chunk ticket", async () => {
     const pin = freshPin();
     await createRoom(pin);
