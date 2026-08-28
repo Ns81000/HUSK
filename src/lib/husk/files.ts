@@ -50,6 +50,21 @@ export class UploadFailedError extends Error {
 }
 
 /**
+ * Client-side size guards. These must run BEFORE the storage-grant request:
+ * the relay rejects a 0-byte or over-cap grant with 400, so asking first
+ * would send a request that can never succeed. `encryptAndUpload` re-checks
+ * so the guard also holds for direct callers.
+ */
+export function assertFileSendable(size: number): void {
+  if (size === 0) {
+    throw new EmptyFileError();
+  }
+  if (size > MAX_FILE_BYTES) {
+    throw new FileTooLargeError();
+  }
+}
+
+/**
  * Asks the room for file storage. `member` is this tab's live participant id:
  * the Durable Object rejects the request unless that participant currently
  * holds a WebSocket in the room.
@@ -92,12 +107,7 @@ export async function encryptAndUpload(
   grant: FileGrant,
   onProgress: (fraction: number) => void,
 ): Promise<FileReference> {
-  if (file.size === 0) {
-    throw new EmptyFileError();
-  }
-  if (file.size > MAX_FILE_BYTES) {
-    throw new FileTooLargeError();
-  }
+  assertFileSendable(file.size);
 
   const total = Math.max(1, Math.ceil(file.size / FILE_CHUNK_BYTES));
   if (grant.chunkUrls.length < total) {

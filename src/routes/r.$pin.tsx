@@ -5,7 +5,10 @@ import { ErrorMark } from "@/components/husk/icons";
 import { Button, Modal, Panel, useToast } from "@/components/husk/primitives";
 import { ConnectionIndicator, RoomInfo } from "@/components/husk/room-info";
 import {
+  EmptyFileError,
+  FileTooLargeError,
   UploadFailedError,
+  assertFileSendable,
   downloadAndDecrypt,
   encryptAndUpload,
   requestFileUpload,
@@ -105,6 +108,10 @@ function RoomScreen() {
       if (keyFragment === null) {
         return;
       }
+      // Size guards run before the grant request: the relay rejects a
+      // 0-byte or over-cap grant with 400, so asking first would put a
+      // doomed request on the network.
+      assertFileSendable(file.size);
       if (status !== "open" || selfId === "") {
         // No doomed request: the file lands in the composer's failed state
         // and the user retries once the room is connected (welcome assigns
