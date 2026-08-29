@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionHandlers, RoomConnection } from "./connection";
 import type { JoinResult } from "./api";
+import { PING_INTERVAL_MS, PONG_TIMEOUT_MS } from "./config";
 import type { ServerMessage } from "./protocol";
 
 /** Minimal stand-in for the browser WebSocket global. */
@@ -251,9 +252,7 @@ describe("RoomConnection", () => {
     await vi.advanceTimersByTimeAsync(16_000);
     const third = lastSocket();
     third.emit("open");
-    const localIds = third.sent.map(
-      (frame) => (JSON.parse(frame) as { localId: string }).localId,
-    );
+    const localIds = third.sent.map((frame) => (JSON.parse(frame) as { localId: string }).localId);
     expect(localIds).toEqual(["fresh"]);
   });
 
@@ -269,5 +268,72 @@ describe("RoomConnection", () => {
     const socket = lastSocket();
     socket.emit("open");
     expect(events.statuses.at(-1)).toBe("open");
+  });
+
+  it("pings after the idle interval and keeps a socket that answers alive", async () => {
+    const { handlers, events } = makeHandlers();
+    const connection = await makeConnection(handlers);
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = lastSocket();
+    socket.emit("open");
+    // Three idle cycles, each ping answered by a pong: the socket lives.
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      expect(socket.sent.some((frame) => (JSON.parse(frame) as { t: string }).t === "ping")).toBe(
+        true,
+      );
+      socket.emit("message", { data: JSON.stringify({ t: "pong" }) });
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(FakeWebSocket.instances.length).toBe(1);
+    expect(events.statuses.filter((status) => status === "reconnecting")).toEqual([]);
+  });
+
+  it("closes a half-open socket that never answers the ping and reconnects", async () => {
+    const { handlers, events } = makeHandlers();
+    const connection = await makeConnection(handlers);
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = lastSocket();
+    socket.emit("open");
+    await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+    expect(socket.sent.some((frame) => (JSON.parse(frame) as { t: string }).t === "ping")).toBe(
+      true,
+    );
+    // No pong within the window: the client itself closes the zombie socket,
+    // which hands over to the standard reconnect flow.
+    await vi.advanceTimersByTimeAsync(PONG_TIMEOUT_MS);
+    expect(socket.readyState).toBe(3);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(FakeWebSocket.instances.length).toBe(2);
+    expect(events.statuses).toContain("reconnecting");
+    expect(events.ended).toEqual([]);
+  });
+
+  it("treats any server frame, not only pong, as proof of liveness", async () => {
+    const { handlers } = makeHandlers();
+    const connection = await makeConnection(handlers);
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = lastSocket();
+    socket.emit("open");
+    await vi.advanceTimersByTimeAsync(15_000);
+    socket.emit("message", {
+      data: JSON.stringify({
+        t: "relay",
+        seq: 1,
+        senderId: "p",
+        localId: "m",
+        ts: 1,
+        payload: { iv: "i", ct: "c" },
+      }),
+    });
+    // 30s after open without this frame the socket would already be dead.
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(FakeWebSocket.instances.length).toBe(1);
+    // The post-frame ping fires at t=35s; its unanswered pong window ends at t=45s.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeWebSocket.instances.length).toBe(2);
   });
 });

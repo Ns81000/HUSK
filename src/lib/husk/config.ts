@@ -35,6 +35,17 @@ export const ACK_TIMEOUT_MS = 10_000;
 export const MAX_OUTBOX_FRAMES = 50;
 
 /**
+ * Liveness detection: a socket whose TCP peer vanished (network reset, mobile
+ * sleep/wake, NAT timeout) stays readyState OPEN forever without firing
+ * close/error, so sends disappear silently. The client pings on an idle
+ * socket; if no server frame arrives within the pong window, the socket is
+ * closed and the normal reconnect flow takes over. The relay answers ping
+ * frames with pong (worker/src/room.ts).
+ */
+export const PING_INTERVAL_MS = 20_000;
+export const PONG_TIMEOUT_MS = 10_000;
+
+/**
  * Files are encrypted and uploaded in fixed 1 MiB chunks; each chunk is one
  * storage row in the room's Durable Object. Mirrors worker/src/config.ts.
  */

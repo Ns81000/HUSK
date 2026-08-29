@@ -13,6 +13,8 @@
 import type { JoinResult } from "./api";
 import {
   MAX_OUTBOX_FRAMES,
+  PING_INTERVAL_MS,
+  PONG_TIMEOUT_MS,
   RECONNECT_HANDSHAKE_FAILURES,
   RECONNECT_MAX_ATTEMPTS,
   RECONNECT_STABLE_MS,
@@ -30,9 +32,7 @@ export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "closed"
 
 /** Why connecting has permanently failed. The connection is disposed after. */
 export type ConnectionEndReason =
-  | "join_refused_unavailable"
-  | "join_refused_rate_limited"
-  | "attempts_exhausted";
+  "join_refused_unavailable" | "join_refused_rate_limited" | "attempts_exhausted";
 
 export type ConnectionHandlers = {
   readonly onMessage: (message: ServerMessage) => void;
@@ -70,6 +70,8 @@ export class RoomConnection {
   private openedAt = 0;
   private handshakeFailures = 0;
   private expiresAt = Number.POSITIVE_INFINITY;
+  private pingTimer: ReturnType<typeof setTimeout> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly outbox: OutboxEntry[] = [];
 
   constructor(
@@ -141,10 +143,13 @@ export class RoomConnection {
       this.handshakeFailures = 0;
       this.handlers.onStatus("open");
       this.flush();
+      this.schedulePing();
     });
 
     socket.addEventListener("message", (event) => {
       const message = parseServerMessage(String(event.data));
+      // Any server frame proves the socket is alive, pong or not.
+      this.onServerActivity();
       if (message === null) {
         this.handlers.onMalformed();
         return;
@@ -156,6 +161,7 @@ export class RoomConnection {
     });
 
     socket.addEventListener("close", () => {
+      this.stopLiveness();
       if (this.disposed) {
         return;
       }
@@ -190,11 +196,62 @@ export class RoomConnection {
     this.timer = setTimeout(() => this.connect(), delay);
   }
 
+  /**
+   * Liveness: on an open socket, ping after PING_INTERVAL_MS of silence; if
+   * nothing comes back within PONG_TIMEOUT_MS, the peer is presumed gone and
+   * the socket is closed so the reconnect flow runs. Any inbound frame (not
+   * just pong) counts as proof of life.
+   */
+  private schedulePing(): void {
+    this.clearPingTimer();
+    this.pingTimer = setTimeout(() => {
+      this.pingTimer = null;
+      if (this.disposed || this.socket?.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.socket.send(JSON.stringify({ t: "ping" }));
+      this.clearPongTimer();
+      this.pongTimer = setTimeout(() => {
+        this.pongTimer = null;
+        // Half-open socket: readyState lies. Force the reconnect flow.
+        this.socket?.close();
+      }, PONG_TIMEOUT_MS);
+    }, PING_INTERVAL_MS);
+  }
+
+  private onServerActivity(): void {
+    if (this.disposed || this.socket?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.clearPongTimer();
+    this.schedulePing();
+  }
+
+  private clearPingTimer(): void {
+    if (this.pingTimer !== null) {
+      clearTimeout(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private clearPongTimer(): void {
+    if (this.pongTimer !== null) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+  }
+
+  private stopLiveness(): void {
+    this.clearPingTimer();
+    this.clearPongTimer();
+  }
+
   private end(reason: ConnectionEndReason): void {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
+    this.stopLiveness();
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -256,6 +313,7 @@ export class RoomConnection {
 
   close(): void {
     this.disposed = true;
+    this.stopLiveness();
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
