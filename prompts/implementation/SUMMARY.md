@@ -168,12 +168,49 @@ audit findings they answer live in `docs/audit/`.
   (the Phase 4 Inter self-hosting fix measured, not estimated). Full method
   and tables in phase-6-log.md.
 
+## Session 7 — Adversarial live-deployment testing (live-test-log.md)
+
+The deployed app was adversarially tested against production (real browser,
+real relay, raw-protocol probes, `wrangler tail`). Full 50-row matrix with
+verdicts and evidence in `live-test-log.md`. Three bugs found and fixed:
+
+1. **Same-second join tokens collided (relay, HIGH):** the join token was HMAC
+   over `join|pin|ip|exp` with a seconds-granularity expiry, so two legitimate
+   joins from one IP+PIN within the same second minted byte-identical tokens
+   and the DO's one-time burn rejected the second peer's upgrade (generic
+   404). Tokens are now `exp.nonce.sig` with the nonce inside the HMAC input;
+   one-time burn, IP binding, TTL and the no-oracle rule unchanged. Regression
+   test: parallel same-second joins mint distinct tokens and both sockets open
+   (workerd). Deploy quirks unchanged; relay version at session end
+   `0a0bd9f9-98cd-42dd-932f-902882d23ba0`.
+2. **0-byte / over-cap attachments sent a doomed grant request (frontend,
+   LOW):** size validation ran inside `encryptAndUpload`, after the storage
+   grant POST (always 400 for size 0 / > 25 MB). New `assertFileSendable()`
+   runs before the request; 4 boundary unit tests. Frontend version at session
+   end `12493349-d658-4ea4-8cf5-4a2e05793bab`.
+3. **Half-open sockets had no liveness detection (frontend, HIGH):** the
+   protocol defines `ping`/`pong` but nothing sent a ping. A socket whose TCP
+   peer vanished (network reset, sleep/wake, NAT timeout — reproduced live
+   under a 50 kB/s throttled upload) stays `readyState OPEN` forever: sends
+   vanish, messages flip to "Not sent", and no reconnect ever starts while the
+   UI shows "Connected". `RoomConnection` now pings after 20 s of silence and
+   closes the socket when no server frame arrives within 10 s, feeding the
+   existing reconnect flow; any inbound frame counts as proof of life. +3
+   connection tests. The throttled-upload scenario then passes end-to-end.
+
+Deliberate-design confirmations (documented, unchanged): graceful leaves are
+indistinguishable from crashes server-side (grace window + system note, never
+a terminal `closed` for peers — `host_closed` protocol surface stays unused);
+GET replay within room lifetime; duplicate tabs count as distinct
+participants; missed messages are never backfilled and the UI says "Not sent".
+Notable non-bug finding: exactly 25 MB = **25** chunk PUTs (not ~24).
+
 ## Current test status (exact counts, all passing at this commit)
 
 | Command                                          | Result                                                                                      |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `pnpm test`                                      | 14 files, **104/104** (includes the 19 workerd integration tests via the `workers` project) |
-| `cd worker && pnpm test`                         | **19/19**                                                                                   |
+| `pnpm test`                                      | 15 files, **115/115** (includes the 23 workerd integration tests via the `workers` project) |
+| `cd worker && pnpm test`                         | **23/23**                                                                                   |
 | `pnpm exec tsc --noEmit -p tsconfig.json`        | pass                                                                                        |
 | `pnpm exec tsc --noEmit -p worker/tsconfig.json` | pass                                                                                        |
 | `cd worker && pnpm typecheck`                    | pass                                                                                        |
