@@ -30,8 +30,14 @@ function apiAbsolute(url: string, init?: RequestInit): Promise<Response> {
   return SELF.fetch(new Request(`http://localhost${parsed.pathname}${parsed.search}`, init));
 }
 
+/** Unique caller IP per call so the create rate-limit budget is per-test. */
+let createIpCounter = 1;
 async function createRoom(roomId: string): Promise<Response> {
-  return api("/room/create", { method: "POST", body: JSON.stringify({ roomId }) });
+  return api("/room/create", {
+    method: "POST",
+    headers: { "CF-Connecting-IP": `10.1.0.${(createIpCounter += 1)}` },
+    body: JSON.stringify({ roomId }),
+  });
 }
 
 /** Unique caller IP per call so the join rate-limit budget is per-test. */
@@ -476,6 +482,83 @@ describe("chunked file transfer", () => {
 });
 
 describe("abuse controls", () => {
+  it("rate-limits /room/create per IP: the 6th rapid create is a 429", async () => {
+    const ip = "10.9.9.1";
+    const statuses: number[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const response = await api("/room/create", {
+        method: "POST",
+        headers: { "CF-Connecting-IP": ip },
+        body: JSON.stringify({ roomId: freshPin() }),
+      });
+      statuses.push(response.status);
+    }
+    // Five creates fit the budget; the sixth is throttled.
+    expect(statuses.slice(0, 5)).toEqual([200, 200, 200, 200, 200]);
+    expect(statuses[5]).toBe(429);
+  });
+
+  it("edge: a member cannot cancel another member's file", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const a = await openSocket(pin);
+    const b = await openSocket(pin);
+    await drainJoinPresence(a.frames);
+
+    const grant = (await (await requestGrant(pin, a.member, 1024)).json()) as Grant;
+    await uploadVector(grant, randomBytes(1024));
+
+    // B sends the cancel frame for A's fileId: the rows must survive.
+    b.ws.send(JSON.stringify({ t: "cancel", fileId: grant.fileId }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const probe = await apiAbsolute(
+      `http://localhost/room/${pin}/file/${grant.fileId}?exp=${grant.download.exp}&sig=${grant.download.sig}`,
+    );
+    expect(probe.status).toBe(200);
+    expect((await probe.arrayBuffer()).byteLength).toBe(1024);
+
+    // The owner's own cancel still works.
+    a.ws.send(JSON.stringify({ t: "cancel", fileId: grant.fileId }));
+    let deleted = false;
+    for (let attempt = 0; attempt < 50 && !deleted; attempt += 1) {
+      const after = await apiAbsolute(
+        `http://localhost/room/${pin}/file/${grant.fileId}?exp=${grant.download.exp}&sig=${grant.download.sig}`,
+      );
+      deleted = after.status === 404;
+      if (!deleted) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    expect(deleted).toBe(true);
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("edge: a chunk PUT after the reservation was cancelled writes no orphan row", async () => {
+    const pin = freshPin();
+    await createRoom(pin);
+    await joinRoom(pin);
+    const socket = await openSocket(pin);
+    const grant = (await (await requestGrant(pin, socket.member, 2048)).json()) as Grant;
+    await uploadVector(grant, randomBytes(2048));
+
+    // Cancel, then race a signed chunk PUT for the now-deleted reservation.
+    socket.ws.send(JSON.stringify({ t: "cancel", fileId: grant.fileId }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const lateChunkUrl = grant.chunkUrls[0];
+    if (lateChunkUrl === undefined) {
+      throw new Error("missing chunk URL 0");
+    }
+    const late = await apiAbsolute(lateChunkUrl, {
+      method: "PUT",
+      body: randomBytes(64),
+    });
+    expect([404, 409]).toContain(late.status);
+    socket.ws.close();
+  });
+
   it("edge: socket without a join token is a generic 404, existing or not", async () => {
     const livePin = freshPin();
     await createRoom(livePin);

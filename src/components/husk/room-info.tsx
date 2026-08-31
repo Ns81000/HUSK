@@ -92,10 +92,10 @@ export function RoomInfoPanel({
       <div className="space-y-5">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">
-              Room
+            <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">Room</p>
+            <p className="tabular mt-1 text-[22px] font-semibold leading-tight text-ink">
+              {roomId}
             </p>
-            <p className="tabular mt-1 text-[22px] font-semibold leading-tight text-ink">{roomId}</p>
             <p className="mt-1 text-caption text-ink-muted">
               {participants} {participants === 1 ? "participant" : "participants"} connected
             </p>
@@ -120,13 +120,11 @@ export function RoomInfoPanel({
           </p>
           <div className="mt-2 flex min-w-0 items-center gap-2 rounded-xl border border-line/30 bg-surface-sunken/40 px-3.5 py-2.5">
             <LinkIcon className="h-4 w-4 shrink-0 text-ink-faint" />
-            <span className="truncate text-[13px] text-ink-muted font-mono">{shareLink || "…"}</span>
+            <span className="truncate text-[13px] text-ink-muted font-mono">
+              {shareLink || "…"}
+            </span>
           </div>
-          <Button
-            onClick={() => void copy()}
-            className="mt-2.5 rounded-xl h-10 font-medium"
-            full
-          >
+          <Button onClick={() => void copy()} className="mt-2.5 rounded-xl h-10 font-medium" full>
             {copied ? (
               <>
                 <CheckIcon className="swap-check h-4 w-4 text-emerald-950 stroke-[2.5]" />
@@ -159,22 +157,36 @@ export function RoomInfoPanel({
           <ul className="space-y-2.5 text-[13px] leading-snug">
             <li className="flex items-start gap-2.5">
               <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-ok" />
-              <span><strong className="text-ink font-medium">End-to-End Encrypted:</strong> AES-256-GCM browser encryption keeps data private.</span>
+              <span>
+                <strong className="text-ink font-medium">End-to-End Encrypted:</strong> AES-256-GCM
+                browser encryption keeps data private.
+              </span>
             </li>
             <li className="flex items-start gap-2.5">
               <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-ok" />
-              <span><strong className="text-ink font-medium">Zero Knowledge:</strong> Relay never sees room keys or unencrypted content.</span>
+              <span>
+                <strong className="text-ink font-medium">Zero Knowledge:</strong> Relay never sees
+                room keys or unencrypted content.
+              </span>
             </li>
             <li className="flex items-start gap-2.5">
               <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-ok" />
-              <span><strong className="text-ink font-medium">Instant Dissolution:</strong> When all participants leave, the room vanishes forever.</span>
+              <span>
+                <strong className="text-ink font-medium">Instant Dissolution:</strong> When all
+                participants leave, the room vanishes forever.
+              </span>
             </li>
           </ul>
         </div>
       </div>
 
       <div className="pt-5">
-        <Button tone="danger" full onClick={onLeave} className="rounded-xl h-11 text-[15px] font-semibold">
+        <Button
+          tone="danger"
+          full
+          onClick={onLeave}
+          className="rounded-xl h-11 text-[15px] font-semibold"
+        >
           <LeaveIcon />
           Leave room
         </Button>

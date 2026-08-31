@@ -36,6 +36,7 @@ describe("room state machine", () => {
 
   it("resolves expiry and rate limiting to terminal states", () => {
     expect(transition("active", { type: "EXPIRED" })).toBe("closed_expired");
+    expect(transition("active", { type: "IDLE_CLOSED" })).toBe("closed_idle");
     expect(transition("joining", { type: "RATE_LIMITED" })).toBe("closed_rate_limited");
     expect(transition("joining", { type: "ROOM_NOT_FOUND" })).toBe("closed_not_found");
   });
@@ -49,6 +50,7 @@ describe("room state machine", () => {
     for (const state of [
       "closed_by_host",
       "closed_expired",
+      "closed_idle",
       "closed_full",
       "closed_not_found",
       "closed_rate_limited",

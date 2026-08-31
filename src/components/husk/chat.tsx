@@ -286,7 +286,12 @@ export function MessageList({
             />
           </div>
           {ordered.map((entry) => (
-            <MessageItem key={entry.id} entry={entry} onDownload={onDownload} onRetry={handleRetry} />
+            <MessageItem
+              key={entry.id}
+              entry={entry}
+              onDownload={onDownload}
+              onRetry={handleRetry}
+            />
           ))}
           {state === "waiting_for_peer" && participants.length <= 1 ? (
             <p className="pt-2 text-center text-caption text-ink-faint">

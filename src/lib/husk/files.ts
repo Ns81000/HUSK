@@ -2,10 +2,13 @@
  * File encryption and transfer.
  *
  * Files are encrypted in the browser before they touch the network. Each
- * 1 MiB chunk is sealed and uploaded as its own signed request, and downloads
- * are decrypted incrementally from the response stream, so the full ciphertext
- * is never materialised on either end. The relay only ever stores ciphertext,
- * inside the room's Durable Object, and only until the room closes.
+ * 1 MiB chunk is sealed and uploaded as its own signed request, so an upload
+ * holds at most one plaintext and one ciphertext chunk in memory. Downloads
+ * are decrypted incrementally from the response stream, but the decrypted
+ * chunks accumulate in memory until `new Blob` finalises the result — the
+ * download peak is roughly one full plaintext file (25 MB max). The relay
+ * only ever stores ciphertext, inside the room's Durable Object, and only
+ * until the room closes.
  */
 
 import { FILE_CHUNK_BYTES, MAX_FILE_BYTES, WORKER_URL } from "./config";
@@ -74,11 +77,18 @@ export async function requestFileUpload(
   member: string,
   size: number,
 ): Promise<FileGrant> {
-  const response = await fetch(`${WORKER_URL}/room/${roomId}/file`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ size, member }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${WORKER_URL}/room/${roomId}/file`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ size, member }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    // Timeout or network failure: the caller has no reservation to clean up.
+    throw new UploadFailedError(null);
+  }
   if (!response.ok) {
     throw new UploadFailedError(null);
   }
@@ -127,11 +137,19 @@ export async function encryptAndUpload(
     if (chunkUrl === undefined) {
       throw new UploadFailedError(grant.fileId);
     }
-    const response = await fetch(chunkUrl, {
-      method: "PUT",
-      body: ciphertext,
-      headers: { "content-type": "application/octet-stream" },
-    });
+    let response: Response;
+    try {
+      response = await fetch(chunkUrl, {
+        method: "PUT",
+        body: ciphertext,
+        headers: { "content-type": "application/octet-stream" },
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch {
+      // Timeout or network failure mid-upload: the typed error carries the
+      // fileId so the caller cancels the reserved storage.
+      throw new UploadFailedError(grant.fileId);
+    }
     // 409 means this chunk row already holds our bytes (a retried request);
     // any other failure aborts the upload.
     if (!response.ok && response.status !== 409) {
@@ -193,7 +211,8 @@ class ByteQueue {
 
 /**
  * Downloads the stored ciphertext as a stream and decrypts it chunk-by-chunk
- * as bytes arrive, never buffering more than the chunk being completed.
+ * as bytes arrive. Memory bound: the decrypted chunks are kept until the
+ * final `new Blob`, so the peak is approximately one full plaintext file.
  */
 export async function downloadAndDecrypt(
   key: CryptoKey,
@@ -202,9 +221,15 @@ export async function downloadAndDecrypt(
   mime: string,
   onProgress: (fraction: number) => void,
 ): Promise<Blob> {
-  const response = await fetch(
-    `${WORKER_URL}/room/${roomId}/file/${file.fileId}?exp=${file.exp}&sig=${encodeURIComponent(file.sig)}`,
-  );
+  let response: Response;
+  try {
+    response = await fetch(
+      `${WORKER_URL}/room/${roomId}/file/${file.fileId}?exp=${file.exp}&sig=${encodeURIComponent(file.sig)}`,
+      { signal: AbortSignal.timeout(60_000) },
+    );
+  } catch {
+    throw new Error("Download failed");
+  }
   if (!response.ok || response.body === null) {
     throw new Error("Download failed");
   }

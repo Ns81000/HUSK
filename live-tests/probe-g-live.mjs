@@ -1,5 +1,6 @@
-// G38/G41/I50 (no-join subset): live axe on landing/PIN-entry/no-key room in
-// both themes, mobile emulation snapshots, and the full _headers contract.
+// G38/G41/I50 (room-link flow): live axe on landing/room-error paths in both
+// themes, mobile emulation snapshots, and the static _headers contract. The
+// app has no PIN entry anymore: joining happens by opening /r/<roomId>#<key>.
 import { FRONTEND, assert, launch, log, sleep } from "./drive-lib.mjs";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -11,6 +12,12 @@ async function axeViolations(page) {
     (v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`,
   );
 }
+
+// A syntactically valid room id and a 32-byte base64url key fragment: the room
+// does not exist on the relay, so the join lands on the "Room unavailable"
+// error screen — a fully rendered page suitable for axe sweeps.
+const ROOM_ID = "123456ab";
+const KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
 
 const browser = await launch();
 
@@ -38,32 +45,32 @@ const browser = await launch();
   log("icon xfo/nosniff:", xfo, nosniff);
   assert(nosniff === "nosniff", `static assets carry nosniff`);
 
-  // G38: axe sweeps, both themes.
+  // G38: axe sweeps, both themes, over the room-link flow surfaces.
   for (const theme of ["light", "dark"]) {
     await page.addInitScript((value) => window.localStorage.setItem("husk-theme", value), theme);
     await page.goto(FRONTEND + "/");
     await page.getByRole("button", { name: "Create a room" }).waitFor({ timeout: 20_000 });
     let violations = await axeViolations(page);
     assert(violations.length === 0, `landing axe clean, ${theme} (${violations.join(" | ")})`);
-    const joinBtn = page.getByRole("button", { name: "Join with a PIN" });
-    for (let i = 0; i < 3; i += 1) {
-      try {
-        await joinBtn.click({ timeout: 3000 });
-        break;
-      } catch {}
-    }
-    await page.getByRole("heading", { name: "Enter the room PIN" }).waitFor({ timeout: 10_000 });
-    violations = await axeViolations(page);
-    assert(violations.length === 0, `PIN-entry axe clean, ${theme} (${violations.join(" | ")})`);
-    await page.goto(FRONTEND + "/r/123456ab");
+
+    // Keyless invite link: the client-side guard screen.
+    await page.goto(`${FRONTEND}/r/${ROOM_ID}`);
     await page.getByRole("heading", { name: "This link has no key" }).waitFor({ timeout: 10_000 });
     violations = await axeViolations(page);
     assert(violations.length === 0, `no-key room axe clean, ${theme} (${violations.join(" | ")})`);
+
+    // Well-formed link for a room that does not exist: the join refusal path.
+    await page.goto(`${FRONTEND}/r/${ROOM_ID}#${KEY}`);
+    await page
+      .getByRole("heading", { name: /Room unavailable|Disconnected|Room closed/ })
+      .waitFor({ timeout: 20_000 });
+    violations = await axeViolations(page);
+    assert(violations.length === 0, `dead-room axe clean, ${theme} (${violations.join(" | ")})`);
   }
   await ctx.close();
 }
 
-// G41: mobile emulation (Pixel-ish and iPhone-ish) on landing + keypad + room error path.
+// G41: mobile emulation (Pixel-ish and iPhone-ish) on landing + room error path.
 {
   const devices = [
     {
@@ -95,28 +102,14 @@ const browser = await launch();
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
     );
     assert(!hasHScroll, `${device.name}: landing has no horizontal overflow`);
-    const joinBtn = page.getByRole("button", { name: "Join with a PIN" });
-    for (let i = 0; i < 3; i += 1) {
-      try {
-        await joinBtn.click({ timeout: 3000 });
-        break;
-      } catch {}
-    }
-    await page.getByRole("heading", { name: "Enter the room PIN" }).waitFor({ timeout: 10_000 });
-    // Keypad buttons reachable by touch-size; tap 1-2-3-4-5-6.
-    for (const digit of ["1", "2", "3", "4", "5", "6"]) {
-      await page.getByRole("button", { name: digit, exact: true }).tap();
-    }
-    await page.getByRole("button", { name: "Join", exact: true }).tap();
-    await sleep(2500);
-    const failure = await page.getByText(/not available|Too many attempts|full six digit/).count();
-    log(`${device.name}: join attempt feedback shown:`, failure > 0 ? "yes" : "(navigated)");
-    await page.goto(`${FRONTEND}/r/123456ab`);
+    // Room error path under touch viewport.
+    await page.goto(`${FRONTEND}/r/${ROOM_ID}`);
     await page.getByRole("heading", { name: "This link has no key" }).waitFor({ timeout: 10_000 });
-    assert(true, `${device.name}: room error path renders`);
+    assert(true, `${device.name}: no-key room error path renders`);
     await ctx.close();
   }
 }
 
 await browser.close();
+await sleep(200);
 log("SCENARIO G-live/I50: OK");

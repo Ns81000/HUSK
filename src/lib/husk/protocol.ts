@@ -47,8 +47,8 @@ export type ServerMessage =
   | { readonly t: "closed"; readonly reason: RoomCloseReason }
   | { readonly t: "error"; readonly code: RoomErrorCode };
 
-export type RoomCloseReason = "host_closed" | "expired" | "idle";
-export type RoomErrorCode = "room_full" | "room_not_found" | "rate_limited" | "bad_request";
+export type RoomCloseReason = "expired" | "idle";
+export type RoomErrorCode = "bad_request";
 
 /** Plaintext body of a sealed envelope. Only ever exists inside a browser. */
 export type SealedBody =
@@ -76,8 +76,11 @@ export type SealedBody =
       readonly sentAt: number;
     };
 
-const CLOSE_REASONS = ["host_closed", "expired", "idle"] as const;
-const ERROR_CODES = ["room_full", "room_not_found", "rate_limited", "bad_request"] as const;
+// Only reasons/codes the relay actually sends. "host_closed" never occurs
+// server-side (closure is alarm-driven: expired or idle), and the error tag
+// carries only "bad_request" for malformed frames.
+const CLOSE_REASONS = ["expired", "idle"] as const;
+const ERROR_CODES = ["bad_request"] as const;
 
 type UnknownRecord = Record<string, unknown>;
 

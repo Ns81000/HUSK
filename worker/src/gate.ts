@@ -7,14 +7,14 @@
  * whose window and penalty have both fully elapsed.
  */
 
-import { JOIN_BACKOFF_MAX_SECONDS, JOIN_WINDOW_SECONDS } from "./config";
+import { JOIN_BACKOFF_MAX_SECONDS, JOIN_MAX_ATTEMPTS, JOIN_WINDOW_SECONDS } from "./config";
 import { evaluate, isRecordExpired, type RateDecision, type RateRecord } from "./rate-limit";
 import type { DurableObjectState } from "./types";
 
 const RECORD_PREFIX = "rl:";
 const PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
-type CheckRequest = { keys?: unknown };
+type CheckRequest = { keys?: unknown; maxAttempts?: unknown };
 
 export class HuskGatekeeper {
   constructor(private readonly state: DurableObjectState) {}
@@ -36,7 +36,13 @@ export class HuskGatekeeper {
         return Response.json({ error: "bad_request" }, { status: 400 });
       }
       const now = Date.now();
-      const decision = await this.check(keys, now);
+      const maxAttempts =
+        typeof body.maxAttempts === "number" &&
+        Number.isInteger(body.maxAttempts) &&
+        body.maxAttempts > 0
+          ? body.maxAttempts
+          : JOIN_MAX_ATTEMPTS;
+      const decision = await this.check(keys, now, maxAttempts);
       await this.ensurePurgeAlarm(now);
       return Response.json({
         allowed: decision.allowed,
@@ -46,14 +52,18 @@ export class HuskGatekeeper {
     return new Response("not_found", { status: 404 });
   }
 
-  private async check(keys: readonly string[], now: number): Promise<RateDecision> {
+  private async check(
+    keys: readonly string[],
+    now: number,
+    maxAttempts: number,
+  ): Promise<RateDecision> {
     let blocked: RateDecision | null = null;
     let allowedDecision: RateDecision | null = null;
 
     for (const key of keys) {
       // SAFETY: this key namespace is written only by this class, with this shape.
       const record = (await this.state.storage.get<RateRecord>(`${RECORD_PREFIX}${key}`)) ?? null;
-      const decision = evaluate(record, now);
+      const decision = evaluate(record, now, maxAttempts);
       await this.state.storage.put(`${RECORD_PREFIX}${key}`, decision.next);
       if (decision.allowed) {
         allowedDecision = allowedDecision ?? decision;

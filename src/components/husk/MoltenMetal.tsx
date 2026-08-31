@@ -283,7 +283,11 @@ export function MoltenMetal({
       ([entry]) => {
         if (!entry) return;
         isVisible = entry.isIntersecting;
-        isVisible ? tryStart() : tryStop();
+        if (isVisible) {
+          tryStart();
+        } else {
+          tryStop();
+        }
       },
       { threshold: 0 },
     );
@@ -291,7 +295,11 @@ export function MoltenMetal({
 
     const onVisibility = () => {
       isPageVisible = !document.hidden;
-      isPageVisible ? tryStart() : tryStop();
+      if (isPageVisible) {
+        tryStart();
+      } else {
+        tryStop();
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -338,20 +346,37 @@ export function MoltenMetal({
     const uc1 = u["uColor1"]!.value as Float32Array;
     const uc2 = u["uColor2"]!.value as Float32Array;
     const uc3 = u["uColor3"]!.value as Float32Array;
-    uc1[0] = c1[0]; uc1[1] = c1[1]; uc1[2] = c1[2];
-    uc2[0] = c2[0]; uc2[1] = c2[1]; uc2[2] = c2[2];
-    uc3[0] = c3[0]; uc3[1] = c3[1]; uc3[2] = c3[2];
+    uc1[0] = c1[0];
+    uc1[1] = c1[1];
+    uc1[2] = c1[2];
+    uc2[0] = c2[0];
+    uc2[1] = c2[1];
+    uc2[2] = c2[2];
+    uc3[0] = c3[0];
+    uc3[1] = c3[1];
+    uc3[2] = c3[2];
   }, [
-    color1, color2, color3, speed, scale, detail, glow, coreSize, swirl,
-    fold, blackPoint, brightness, colorMode, grain, grainIntensity,
-    mouseInteraction, mouseStrength, opacity,
+    color1,
+    color2,
+    color3,
+    speed,
+    scale,
+    detail,
+    glow,
+    coreSize,
+    swirl,
+    fold,
+    blackPoint,
+    brightness,
+    colorMode,
+    grain,
+    grainIntensity,
+    mouseInteraction,
+    mouseStrength,
+    opacity,
   ]);
 
   return (
-    <div
-      ref={containerRef}
-      className={`molten-metal-container ${className}`.trim()}
-      aria-hidden
-    />
+    <div ref={containerRef} className={`molten-metal-container ${className}`.trim()} aria-hidden />
   );
 }

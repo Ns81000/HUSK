@@ -37,10 +37,16 @@ describe("parseServerMessage", () => {
       t: "closed",
       reason: "expired",
     });
-    expect(parseServerMessage(JSON.stringify({ t: "error", code: "room_full" }))).toEqual({
+    expect(parseServerMessage(JSON.stringify({ t: "error", code: "bad_request" }))).toEqual({
       t: "error",
-      code: "room_full",
+      code: "bad_request",
     });
+  });
+
+  it("rejects protocol surface the relay never sends", () => {
+    expect(parseServerMessage(JSON.stringify({ t: "closed", reason: "host_closed" }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ t: "error", code: "room_full" }))).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ t: "error", code: "room_not_found" }))).toBeNull();
   });
 
   it("rejects unparseable input and unknown tags", () => {

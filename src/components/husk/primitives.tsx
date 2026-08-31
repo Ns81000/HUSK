@@ -52,8 +52,7 @@ export function Button({
         "touch-target press inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[15px] font-medium transition-all duration-200",
         toneClass[tone],
         loading && "cursor-wait opacity-90",
-        isInactive &&
-          "cursor-not-allowed shadow-none filter-none transform-none",
+        isInactive && "cursor-not-allowed shadow-none filter-none transform-none",
         full === true && "w-full",
         className,
       )}

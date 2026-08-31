@@ -16,7 +16,7 @@ import {
 } from "./connection";
 import { DecryptionFailedError, open, seal, importRoomKey } from "./crypto";
 import type { Participant, SealedBody, SealedEnvelope, ServerMessage } from "./protocol";
-import { transition, type RoomEvent, type RoomState } from "./room-machine";
+import { isTerminal, transition, type RoomEvent, type RoomState } from "./room-machine";
 
 export type DeliveryState = "sending" | "sent" | "failed" | "unverified";
 
@@ -79,7 +79,19 @@ export function createRoomStore(
   let keyFragment: string | null = null;
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
   const ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const seenRelays = new Set<string>();
+  /** localId -> arrival time, capped so a long session cannot grow unbounded. */
+  const seenRelays = new Map<string, number>();
+  const SEEN_RELAYS_LIMIT = 1000;
+
+  function rememberRelay(localId: string): void {
+    if (seenRelays.size >= SEEN_RELAYS_LIMIT) {
+      const oldest = seenRelays.keys().next().value;
+      if (oldest !== undefined) {
+        seenRelays.delete(oldest);
+      }
+    }
+    seenRelays.set(localId, Date.now());
+  }
 
   function clearAckTimer(id: string): void {
     const timer = ackTimers.get(id);
@@ -170,6 +182,12 @@ export function createRoomStore(
   function handleEnded(reason: ConnectionEndReason): void {
     clearAllAckTimers();
     stopGrace();
+    // A terminal end means the ack can never arrive: stop the spinner.
+    store.setState((current) => ({
+      entries: current.entries.map((entry) =>
+        entry.mine && entry.delivery === "sending" ? { ...entry, delivery: "failed" } : entry,
+      ),
+    }));
     if (reason === "join_refused_unavailable") {
       apply({ type: "ROOM_NOT_FOUND" });
     } else if (reason === "join_refused_rate_limited") {
@@ -244,7 +262,7 @@ export function createRoomStore(
         }
         // Registered before the async decrypt so a duplicate arriving mid-
         // decrypt cannot also slip past the check.
-        seenRelays.add(message.localId);
+        rememberRelay(message.localId);
         if (mine) {
           store.setState((current) => ({
             entries: current.entries.map((entry) =>
@@ -296,19 +314,17 @@ export function createRoomStore(
         break;
       }
       case "closed": {
-        apply({ type: message.reason === "expired" ? "EXPIRED" : "LEAVE" });
+        apply({ type: message.reason === "expired" ? "EXPIRED" : "IDLE_CLOSED" });
         clearAllAckTimers();
         stopGrace();
         connection?.close();
         connection = null;
         break;
       }
-      case "error": {
-        if (message.code === "room_full") {
-          apply({ type: "ROOM_FULL" });
-        }
+      case "error":
+        // The relay only ever sends "bad_request" for malformed frames; the
+        // client already surfaces those via the malformed counter.
         break;
-      }
       case "pong":
         break;
       default:
@@ -413,7 +429,14 @@ export function createRoomStore(
     },
 
     async retry() {
-      const roomId = store.getState().roomId;
+      const current = store.getState();
+      // A retry is only meaningful from a terminal screen or an active
+      // reconnect flow; from any other state it would wipe the transcript
+      // and respawn a connection for a room that is already connected.
+      if (!isTerminal(current.state) && current.state !== "reconnecting") {
+        return;
+      }
+      const roomId = current.roomId;
       const fragment = keyFragment;
       if (roomId.length === 0 || fragment === null) {
         return;

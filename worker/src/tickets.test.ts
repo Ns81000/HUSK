@@ -27,9 +27,9 @@ describe("signed R2 tickets", () => {
 
   it("rejects an expired ticket", async () => {
     const signature = await signTicket(secret, "get", "123456/a", expiresAt);
-    expect(
-      await verifyTicket(secret, "get", "123456/a", expiresAt, signature, now + 600_000),
-    ).toBe(false);
+    expect(await verifyTicket(secret, "get", "123456/a", expiresAt, signature, now + 600_000)).toBe(
+      false,
+    );
   });
 
   it("rejects an unsigned request", async () => {

@@ -15,7 +15,7 @@ export function assert(cond, label) {
 }
 
 export async function createRoom(pin) {
-  const res = await fetch(`${BASE}/room/create`, {
+  const res = await fetchRetry(`${BASE}/room/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ roomId: pin }),
@@ -24,13 +24,27 @@ export async function createRoom(pin) {
 }
 
 export async function joinRoom(pin) {
-  const res = await fetch(`${BASE}/room/join`, {
+  const res = await fetchRetry(`${BASE}/room/join`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ roomId: pin }),
   });
   const body = await res.json().catch(() => null);
   return { status: res.status, body, headers: res.headers };
+}
+
+/** Fetch with connect-level retry: the audit network drops TLS connects. */
+export async function fetchRetry(url, init, attempts = 4) {
+  let lastError;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      await sleep(1500 * (i + 1));
+    }
+  }
+  throw lastError;
 }
 
 /** Opens a socket with a join token; resolves after the welcome frame. */
@@ -90,7 +104,7 @@ export function connect(pin, joinToken, label = "") {
         )
         .catch(reject);
     };
-    setTimeout(() => reject(new Error(`socket open timeout ${label}`)), 15_000);
+    setTimeout(() => reject(new Error(`socket open timeout ${label}`)), 30_000);
   });
 }
 
@@ -133,7 +147,7 @@ export async function openSealed(key, envelope) {
 }
 
 export async function requestFileGrant(pin, member, size) {
-  const res = await fetch(`${BASE}/room/${pin}/file`, {
+  const res = await fetchRetry(`${BASE}/room/${pin}/file`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ size, member }),
@@ -143,7 +157,7 @@ export async function requestFileGrant(pin, member, size) {
 }
 
 export async function putChunk(chunkUrl, bytes) {
-  const res = await fetch(chunkUrl, {
+  const res = await fetchRetry(chunkUrl, {
     method: "PUT",
     body: bytes,
     headers: { "content-type": "application/octet-stream" },
@@ -152,7 +166,7 @@ export async function putChunk(chunkUrl, bytes) {
 }
 
 export async function getFile(pin, fileId, exp, sig) {
-  const res = await fetch(
+  const res = await fetchRetry(
     `${BASE}/room/${pin}/file/${fileId}?exp=${exp}&sig=${encodeURIComponent(sig)}`,
   );
   return {

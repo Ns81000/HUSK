@@ -51,9 +51,7 @@ type Events = {
   malformed: number;
 };
 
-function makeHandlers(
-  grant: JoinResult = { ok: true, roomId: "123456", joinToken: "tok" },
-) {
+function makeHandlers(grant: JoinResult = { ok: true, roomId: "123456", joinToken: "tok" }) {
   const events: Events = { statuses: [], ended: [], messages: [], malformed: 0 };
   const handlers: ConnectionHandlers = {
     onMessage: (message) => {
@@ -337,5 +335,52 @@ describe("RoomConnection", () => {
     // The post-frame ping fires at t=35s; its unanswered pong window ends at t=45s.
     await vi.advanceTimersByTimeAsync(20_000);
     expect(FakeWebSocket.instances.length).toBe(2);
+  });
+
+  it("does not spawn a second connect while the join grant is in flight", async () => {
+    let resolveJoin: ((grant: JoinResult) => void) | undefined;
+    const events: Events = { statuses: [], ended: [], messages: [], malformed: 0 };
+    const handlers: ConnectionHandlers = {
+      onMessage: () => {},
+      onStatus: (status) => {
+        events.statuses.push(status);
+      },
+      onEnded: () => {},
+      onMalformed: () => {},
+      fetchJoinToken: () =>
+        new Promise<JoinResult>((resolve) => {
+          resolveJoin = resolve;
+        }),
+    };
+    const connection = await makeConnection(handlers);
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    // resetBackoff (e.g. the browser coming back online) while the join is
+    // still pending must not start a parallel connect.
+    connection.resetBackoff();
+    resolveJoin?.({ ok: true, roomId: "123456", joinToken: "tok" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances.length).toBe(1);
+    lastSocket().emit("open");
+    expect(events.statuses.at(-1)).toBe("open");
+    expect(events.ended).toEqual([]);
+  });
+
+  it("closing a superseded socket never starts a parallel reconnect", async () => {
+    const { handlers, events } = makeHandlers();
+    const connection = await makeConnection(handlers);
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    const first = lastSocket();
+    first.emit("open");
+    // A second connect() supersedes the live socket: open() closes it.
+    connection.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances.length).toBe(2);
+    // The old socket's close event fires, but the new socket owns the flow.
+    first.emit("close");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWebSocket.instances.length).toBe(2);
+    expect(events.ended).toEqual([]);
   });
 });

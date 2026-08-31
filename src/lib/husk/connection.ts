@@ -53,6 +53,11 @@ export function roomSocketUrl(roomId: string, joinToken: string): string {
   if (base.length === 0) {
     throw new Error("VITE_WORKER_URL is not configured");
   }
+  // The join token travels in the query string by necessity: the browser
+  // WebSocket API cannot set custom handshake headers, and a subprotocol
+  // would leak the token into the server's protocol-negotiation logs in the
+  // same way. The token is one-time, IP-bound and expires in
+  // JOIN_TOKEN_TTL_SECONDS, so the exposure window is a single upgrade.
   const url = new URL(`${base}/room/${roomId}/socket`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("jt", joinToken);
@@ -65,6 +70,8 @@ export class RoomConnection {
   private socket: WebSocket | null = null;
   private attempt = 0;
   private disposed = false;
+  /** True between connect() and the join resolving or failing. */
+  private inFlightConnect = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private openedThisConnect = false;
   private openedAt = 0;
@@ -83,6 +90,7 @@ export class RoomConnection {
     if (this.disposed) {
       return;
     }
+    this.inFlightConnect = true;
     this.openedThisConnect = false;
     this.handlers.onStatus(this.attempt === 0 ? "connecting" : "reconnecting");
     void this.handlers
@@ -94,6 +102,7 @@ export class RoomConnection {
         if (!grant.ok) {
           // Join refused: the room is gone, full, or the caller is throttled.
           // Retrying can never succeed, so stop here for good.
+          this.inFlightConnect = false;
           this.end(
             grant.failure === "rate_limited"
               ? "join_refused_rate_limited"
@@ -109,16 +118,19 @@ export class RoomConnection {
         }
         // The join endpoint itself is unreachable: a network blip, retried
         // within the reconnect budget.
+        this.inFlightConnect = false;
         this.scheduleReconnect();
       });
   }
 
   /**
    * Resets the reconnect budget and reconnects immediately, e.g. when the
-   * browser comes back online. No-op once ended.
+   * browser comes back online. No-op once ended, or while a connect is
+   * already in flight — resetting then would let a second connect() run in
+   * parallel and open a duplicate socket.
    */
   resetBackoff(): void {
-    if (this.disposed) {
+    if (this.disposed || this.inFlightConnect) {
       return;
     }
     this.attempt = 0;
@@ -134,8 +146,15 @@ export class RoomConnection {
   }
 
   private open(joinToken: string): void {
+    this.inFlightConnect = false;
     const socket = new WebSocket(roomSocketUrl(this.roomId, joinToken));
+    // Supersede any previous socket: close it, and make sure its close
+    // listener does NOT trigger a parallel reconnect. Each listener captures
+    // its own socket, so the identity check inside the listener is the
+    // per-socket superseded flag.
+    const previous = this.socket;
     this.socket = socket;
+    previous?.close();
 
     socket.addEventListener("open", () => {
       this.openedThisConnect = true;
@@ -162,7 +181,9 @@ export class RoomConnection {
 
     socket.addEventListener("close", () => {
       this.stopLiveness();
-      if (this.disposed) {
+      // A socket that was replaced by a newer one (or the previous socket
+      // closed by open()) must not start its own reconnect flow.
+      if (this.disposed || socket !== this.socket) {
         return;
       }
       if (!this.openedThisConnect) {

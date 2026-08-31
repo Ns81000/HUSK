@@ -180,6 +180,37 @@ describe("room store", () => {
     expect(store.getState().state).toBe("joining");
   });
 
+  it("retry() from a non-terminal, connected state is a no-op that keeps the transcript", async () => {
+    const store = await connectedStore();
+    const conn = lastConn();
+    welcome(conn);
+    const key = await importRoomKey(FRAGMENT);
+    const payload = await seal<SealedBody>(key, { kind: "text", text: "keep", sentAt: 1 });
+    peerRelay(conn, payload, { localId: "kept", seq: 1, ts: 1 });
+    await flushDecrypt();
+    expect(store.getState().state).toBe("active");
+    expect(store.getState().entries.length).toBe(1);
+
+    await store.getState().retry();
+
+    expect(store.getState().entries.length).toBe(1);
+    expect(store.getState().entries[0]?.id).toBe("kept");
+    expect(FakeConnection.instances.length).toBe(1);
+  });
+
+  it("a terminal end marks still-sending messages as failed instead of spinning forever", async () => {
+    const store = await connectedStore();
+    const conn = lastConn();
+    welcome(conn);
+    await store.getState().sendText("in flight");
+    expect(store.getState().entries[0]?.delivery).toBe("sending");
+
+    conn.handlers.onEnded("attempts_exhausted");
+
+    expect(store.getState().entries[0]?.delivery).toBe("failed");
+    expect(store.getState().state).toBe("closed_disconnected");
+  });
+
   it("an unacked message flips to failed after 10s and retryMessage resends the same localId", async () => {
     const store = await connectedStore();
     await store.getState().sendText("hello");

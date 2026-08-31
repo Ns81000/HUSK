@@ -1,13 +1,13 @@
 import { defineConfig } from "vitest/config";
-import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
   test: {
     // Unit tests run in Node; the Worker integration tests run in workerd via
-    // their own project config in worker/vitest.config.ts.
+    // their own project config in worker/vitest.config.ts. The deprecated
+    // vite-tsconfig-paths plugin is replaced by Vite's native resolution.
     projects: [
       {
-        plugins: [tsconfigPaths()],
+        resolve: { tsconfigPaths: true },
         test: {
           name: "node",
           environment: "node",

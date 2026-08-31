@@ -36,7 +36,7 @@ type Participant = { id: string; joinedAt: number };
 
 type Attachment = { id: string; joinedAt: number };
 
-type FileMeta = { size: number; chunks: number; createdAt: number };
+type FileMeta = { size: number; chunks: number; createdAt: number; owner: string };
 
 /**
  * Lifecycle state that must survive isolate eviction: on the real runtime a
@@ -98,7 +98,7 @@ export class HuskRoom {
   private fileOpQueue: Promise<void> = Promise.resolve();
   /** Recent (socketId, localId) -> seq, so a resend after a lost ack is deduplicated. */
   private recentSends = new Map<string, number>();
-  private static readonly RECENT_SENDS_LIMIT = 500;
+  private static readonly RECENT_SENDS_LIMIT = 1000;
   /** Sockets whose close has already been handled (error and close may both fire). */
   private readonly closeHandled = new WeakSet<WebSocket>();
 
@@ -227,12 +227,21 @@ export class HuskRoom {
         return new Response("unavailable", { status: 404 });
       }
       // Burn the one-time token: a consumed signature is remembered until the
-      // room's storage is purged, so a replayed join token is worthless.
+      // room's storage is purged, so a replayed join token is worthless. The
+      // check and the write run under blockConcurrencyWhile so two concurrent
+      // upgrades cannot both pass the check before either write lands.
       const burnKey = `jt:${tokenSignature}`;
-      if ((await this.state.storage.get(burnKey)) !== undefined) {
+      let tokenReplayed = false;
+      await this.state.blockConcurrencyWhile(async () => {
+        if ((await this.state.storage.get(burnKey)) !== undefined) {
+          tokenReplayed = true;
+          return;
+        }
+        await this.state.storage.put(burnKey, Date.now());
+      });
+      if (tokenReplayed) {
         return new Response("unavailable", { status: 404 });
       }
-      await this.state.storage.put(burnKey, Date.now());
       if (!this.exists) {
         return new Response("unavailable", { status: 404 });
       }
@@ -341,6 +350,7 @@ export class HuskRoom {
       size,
       chunks,
       createdAt: Date.now(),
+      owner: member,
     } satisfies FileMeta);
     this.bytesUsed += size;
     await this.state.storage.put(FILE_BYTES_USED_KEY, this.bytesUsed);
@@ -410,6 +420,11 @@ export class HuskRoom {
     if (body.byteLength === 0 || body.byteLength > FILE_CHUNK_BYTES + CIPHER_OVERHEAD_BYTES) {
       return Response.json({ error: "bad_request" }, { status: 400 });
     }
+    // Re-check after the await: a cancel that landed while the body streamed
+    // deleted the reservation, and writing now would leak unaccounted rows.
+    if ((await this.state.storage.get(`${FILE_META_PREFIX}${fileId}`)) === undefined) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
     await this.state.storage.put(key, body);
     return Response.json({ ok: true });
   }
@@ -456,8 +471,8 @@ export class HuskRoom {
     });
   }
 
-  private deleteFileRows(fileId: string): Promise<void> {
-    const run = () => this.deleteFileRowsNow(fileId);
+  private deleteFileRows(fileId: string, owner: string): Promise<void> {
+    const run = () => this.deleteFileRowsNow(fileId, owner);
     const result = this.fileOpQueue.then(run, run);
     this.fileOpQueue = result.then(
       () => undefined,
@@ -466,10 +481,12 @@ export class HuskRoom {
     return result;
   }
 
-  private async deleteFileRowsNow(fileId: string): Promise<void> {
+  private async deleteFileRowsNow(fileId: string, owner: string): Promise<void> {
     const metaKey = `${FILE_META_PREFIX}${fileId}`;
     const meta = await this.state.storage.get<FileMeta>(metaKey);
-    if (meta === undefined) {
+    if (meta === undefined || meta.owner !== owner) {
+      // Unknown file, or a cancel from a member that is not the uploader:
+      // one participant must not be able to delete another's files.
       return;
     }
     const rows = await this.state.storage.list({
@@ -502,8 +519,9 @@ export class HuskRoom {
     }
 
     if (frame.t === "cancel") {
-      // Interrupted-upload cleanup: drop this file's rows and free the budget.
-      await this.deleteFileRows(frame.fileId);
+      // Interrupted-upload cleanup: drop this file's rows and free the budget,
+      // but only when the cancelling member is the one who reserved the file.
+      await this.deleteFileRows(frame.fileId, attachment.id);
       return;
     }
 

@@ -16,6 +16,7 @@ export type RoomState =
   | "reconnecting"
   | "closed_by_host"
   | "closed_expired"
+  | "closed_idle"
   | "closed_full"
   | "closed_not_found"
   | "closed_rate_limited"
@@ -35,11 +36,13 @@ export type RoomEvent =
   | { type: "RATE_LIMITED" }
   | { type: "CONNECTION_LOST" }
   | { type: "EXPIRED" }
+  | { type: "IDLE_CLOSED" }
   | { type: "LEAVE" };
 
 export const TERMINAL_STATES: readonly RoomState[] = [
   "closed_by_host",
   "closed_expired",
+  "closed_idle",
   "closed_full",
   "closed_not_found",
   "closed_rate_limited",
@@ -65,9 +68,7 @@ export function transition(state: RoomState, event: RoomEvent): RoomState {
     case "JOIN":
       return state === "idle" ? "joining" : state;
     case "CONNECTED":
-      return state === "creating" || state === "joining"
-        ? connectedState(event.peers)
-        : state;
+      return state === "creating" || state === "joining" ? connectedState(event.peers) : state;
     case "PEER_JOINED":
       return state === "waiting_for_peer" ||
         state === "peer_disconnected_grace" ||
@@ -80,9 +81,7 @@ export function transition(state: RoomState, event: RoomEvent): RoomState {
       }
       return event.peers > 1 ? "active" : "peer_disconnected_grace";
     case "GRACE_EXPIRED":
-      return state === "peer_disconnected_grace"
-        ? connectedState(event.peers)
-        : state;
+      return state === "peer_disconnected_grace" ? connectedState(event.peers) : state;
     case "DISCONNECTED":
       return "reconnecting";
     case "RECONNECTED":
@@ -97,6 +96,8 @@ export function transition(state: RoomState, event: RoomEvent): RoomState {
       return "closed_disconnected";
     case "EXPIRED":
       return "closed_expired";
+    case "IDLE_CLOSED":
+      return "closed_idle";
     case "LEAVE":
       return "closed_by_host";
     default:

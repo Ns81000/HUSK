@@ -69,7 +69,7 @@ if (typeof globalThis.addEventListener === "function") {
   );
 }
 
-export function consumeLastCapturedError(): unknown {
+export function consumeLastCapturedError(): Error | undefined {
   if (!lastCapturedError) return undefined;
   if (Date.now() - lastCapturedError.at > TTL_MS) {
     lastCapturedError = undefined;
@@ -77,5 +77,5 @@ export function consumeLastCapturedError(): unknown {
   }
   const { error } = lastCapturedError;
   lastCapturedError = undefined;
-  return error;
+  return error instanceof Error ? error : undefined;
 }

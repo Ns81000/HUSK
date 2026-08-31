@@ -21,6 +21,13 @@ export const JOIN_BACKOFF_BASE_SECONDS = 60;
 export const JOIN_BACKOFF_MAX_SECONDS = 60 * 60;
 
 /**
+ * Room-creation budget per IP inside JOIN_WINDOW_SECONDS, counted in the
+ * "create:" gatekeeper key namespace so a create burst cannot mint unbounded
+ * Durable Objects.
+ */
+export const CREATE_MAX_ATTEMPTS = 5;
+
+/**
  * File transfer limits. One file is stored as ceil(size / FILE_CHUNK_BYTES)
  * rows in the room's SQLite Durable Object storage; each row (key + value)
  * must stay under the 2 MB per-row ceiling, which 1 MiB chunks clear with

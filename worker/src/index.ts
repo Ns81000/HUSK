@@ -8,7 +8,12 @@
  * exclusively in the browser URL fragment.
  */
 
-import { JOIN_TOKEN_TTL_SECONDS, MAX_FILE_BYTES, ROOM_ID_PATTERN } from "./config";
+import {
+  CREATE_MAX_ATTEMPTS,
+  JOIN_TOKEN_TTL_SECONDS,
+  MAX_FILE_BYTES,
+  ROOM_ID_PATTERN,
+} from "./config";
 import { checkJoinAllowed } from "./rate-limit";
 import { signTicket } from "./tickets";
 import type { Env } from "./types";
@@ -16,29 +21,26 @@ import type { Env } from "./types";
 export { HuskRoom } from "./room";
 export { HuskGatekeeper } from "./gate";
 
-type CorsHeaders = Record<string, string>;
-
-function corsHeaders(request: Request, env: Env): CorsHeaders {
+function corsHeaders(request: Request, env: Env): Headers {
   const origin = request.headers.get("Origin") ?? "";
   const allowed = env.ALLOWED_ORIGINS.split(",").map((value) => value.trim());
-  const headers: CorsHeaders = {
+  const headers = new Headers({
     "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
     "Access-Control-Allow-Headers": "content-type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
-  };
+  });
   // No ACAO header at all for disallowed origins: the browser blocks the read.
   if (origin !== "" && allowed.includes(origin)) {
-    headers["Access-Control-Allow-Origin"] = origin;
+    headers.set("Access-Control-Allow-Origin", origin);
   }
   return headers;
 }
 
-function json<T>(body: T, status: number, headers: CorsHeaders): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...headers, "content-type": "application/json" },
-  });
+function json<T>(body: T, status: number, cors: Headers): Response {
+  const headers = new Headers(cors);
+  headers.set("content-type", "application/json");
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 const SOCKET_PATTERN = /^\/room\/([a-z0-9]{8})\/socket$/;
@@ -56,11 +58,9 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
 }
 
 /** Forwards a response from a Durable Object, adding CORS headers without buffering the body. */
-function forwardWithCors(response: Response, cors: CorsHeaders): Response {
+function forwardWithCors(response: Response, cors: Headers): Response {
   const headers = new Headers(response.headers);
-  for (const [key, value] of Object.entries(cors)) {
-    headers.set(key, value);
-  }
+  cors.forEach((value, key) => headers.set(key, value));
   return new Response(response.body, { status: response.status, headers });
 }
 
@@ -89,6 +89,13 @@ export default {
       if (!ROOM_ID_PATTERN.test(roomId)) {
         return json({ error: "bad_request" }, 400, cors);
       }
+      // Same gatekeeper as joins, separate "create:" key namespace: a burst of
+      // creates would otherwise mint unbounded Durable Objects.
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const decision = await checkJoinAllowed(env, [`create:${ip}`], CREATE_MAX_ATTEMPTS);
+      if (!decision.allowed) {
+        return json({ error: "rate_limited", retryAfter: decision.retryAfterSeconds }, 429, cors);
+      }
       const stub = env.HUSK_ROOMS.get(env.HUSK_ROOMS.idFromName(roomId));
       const created = await stub.fetch(
         new Request(`https://room/${roomId}/create`, { method: "POST" }),
@@ -108,7 +115,10 @@ export default {
       const body = await readJson(request);
       const roomId = String(body.roomId ?? "");
       const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      const decision = await checkJoinAllowed(env, [`ip:${ip}`, `room:${roomId}`]);
+      // Per-IP budget only. The per-room key was removed: it let a single
+      // busy room (or several legit joiners behind one NAT) exhaust the
+      // shared budget and lock everyone out of that room entirely.
+      const decision = await checkJoinAllowed(env, [`ip:${ip}`]);
       if (!decision.allowed) {
         return json({ error: "rate_limited", retryAfter: decision.retryAfterSeconds }, 429, cors);
       }

@@ -53,6 +53,10 @@ const CLOSED_COPY = {
     title: "Room expired",
     body: "This room reached its lifetime limit and was closed by the relay.",
   },
+  closed_idle: {
+    title: "Room closed",
+    body: "The room sat empty too long and was closed by the relay. Everything in it is gone.",
+  },
   closed_full: { title: "Room full", body: "This room already has the maximum participants." },
   closed_not_found: {
     title: "Room unavailable",
@@ -69,9 +73,22 @@ const CLOSED_COPY = {
 } satisfies Record<string, ClosedCopy>;
 
 function closedCopyFor(state: RoomState): ClosedCopy {
-  // SAFETY: lookup on a plain record; a missing key falls back below.
-  const entry = (CLOSED_COPY as Record<string, ClosedCopy | undefined>)[state];
-  return entry ?? CLOSED_COPY.closed_not_found;
+  switch (state) {
+    case "closed_by_host":
+      return CLOSED_COPY.closed_by_host;
+    case "closed_expired":
+      return CLOSED_COPY.closed_expired;
+    case "closed_idle":
+      return CLOSED_COPY.closed_idle;
+    case "closed_full":
+      return CLOSED_COPY.closed_full;
+    case "closed_rate_limited":
+      return CLOSED_COPY.closed_rate_limited;
+    case "closed_disconnected":
+      return CLOSED_COPY.closed_disconnected;
+    default:
+      return CLOSED_COPY.closed_not_found;
+  }
 }
 function RoomScreen() {
   const { roomId } = Route.useParams();
@@ -92,6 +109,13 @@ function RoomScreen() {
   const sendFileMessage = useRoomStore((store) => store.sendFileMessage);
   const cancelFile = useRoomStore((store) => store.cancelFile);
   const retry = useRoomStore((store) => store.retry);
+  const [shareDismissed, setShareDismissed] = useState(false);
+  const hadPeerRef = useRef(false);
+  useEffect(() => {
+    if (participants.length > 1) {
+      hadPeerRef.current = true;
+    }
+  }, [participants.length]);
 
   useEffect(() => {
     const fragment = window.location.hash.slice(1);
@@ -161,7 +185,9 @@ function RoomScreen() {
       anchor.href = url;
       anchor.download = body.name;
       anchor.click();
-      URL.revokeObjectURL(url);
+      // Revoke after a delay: an immediate revoke can cancel the download in
+      // browsers that resolve the anchor click asynchronously.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
       notify("File decrypted and downloaded.");
     },
     [keyFragment, roomId, notify],
@@ -187,11 +213,6 @@ function RoomScreen() {
         onRetry={state === "closed_disconnected" ? () => void retry() : undefined}
       />
     );
-  }
-  const [shareDismissed, setShareDismissed] = useState(false);
-  const hadPeerRef = useRef(false);
-  if (participants.length > 1) {
-    hadPeerRef.current = true;
   }
   const shareLink = origin === "" ? "" : `${origin}/r/${roomId}#${keyFragment ?? ""}`;
   const waiting =
@@ -269,7 +290,13 @@ function RoomScreen() {
         <Drawer.Root open={infoOpen} onOpenChange={setInfoOpen}>
           <Drawer.Portal>
             <Drawer.Overlay className="fixed inset-0 z-40 bg-scrim" />
-            <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] rounded-t-xl border-t border-line/30 bg-surface p-6 outline-none" style={{ backdropFilter: "blur(24px) saturate(1.4)", background: "oklch(0.26 0.034 137 / 0.95)" }}>
+            <Drawer.Content
+              className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] rounded-t-xl border-t border-line/30 bg-surface p-6 outline-none"
+              style={{
+                backdropFilter: "blur(24px) saturate(1.4)",
+                background: "oklch(0.26 0.034 137 / 0.95)",
+              }}
+            >
               <div className="mx-auto mb-4 h-1.5 w-12 rounded-pill bg-line-strong/50" aria-hidden />
               <div className="max-h-[calc(85vh-5rem)] overflow-y-auto">
                 <RoomInfoPanel
@@ -377,7 +404,12 @@ function ShareCard({
 
   return (
     <div className="flex justify-center px-4 pt-6 sm:px-6">
-      <div className={cn("share-card relative w-full max-w-md p-6 text-center", collapsing && "collapse-out")}>
+      <div
+        className={cn(
+          "share-card relative w-full max-w-md p-6 text-center",
+          collapsing && "collapse-out",
+        )}
+      >
         {onDismiss ? (
           <button
             type="button"
@@ -393,7 +425,8 @@ function ShareCard({
         </div>
         <h2 className="mt-4 text-[17px] font-semibold text-ink">Waiting for someone to join</h2>
         <p className="mt-1.5 text-[14px] text-ink-muted">
-          Share the invite link. The encryption key travels in the URL fragment — the relay never sees it.
+          Share the invite link. The encryption key travels in the URL fragment — the relay never
+          sees it.
         </p>
         <div className="mt-4 flex items-center gap-2 rounded-lg border border-line/30 bg-surface-sunken/40 px-3 py-2.5 text-left">
           <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>

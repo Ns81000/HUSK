@@ -48,11 +48,19 @@ export async function createRoom(maxAttempts = 5): Promise<string> {
   assertConfigured();
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const roomId = generateRoomId();
-    const response = await fetch(`${WORKER_URL}/room/create`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ roomId }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${WORKER_URL}/room/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ roomId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      // Timeout or network failure; surfacing the same error as a refused
+      // create keeps the caller's handling uniform.
+      throw new Error("Could not create a room");
+    }
     if (response.ok) {
       return roomId;
     }
@@ -69,11 +77,19 @@ export type JoinResult =
 
 export async function joinRoom(roomId: string): Promise<JoinResult> {
   assertConfigured();
-  const response = await fetch(`${WORKER_URL}/room/join`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ roomId }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${WORKER_URL}/room/join`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    // Timeout or network failure counts as unavailable: the reconnect
+    // budget on the socket side bounds how long this can repeat.
+    return { ok: false, failure: "unavailable" };
+  }
   if (response.ok) {
     // SAFETY: this route is our own Worker and returns this exact shape.
     const body = (await response.json()) as { joinToken?: unknown };

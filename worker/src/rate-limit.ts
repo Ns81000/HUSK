@@ -28,7 +28,11 @@ export type RateDecision = {
   readonly next: RateRecord;
 };
 
-export function evaluate(record: RateRecord | null, now: number): RateDecision {
+export function evaluate(
+  record: RateRecord | null,
+  now: number,
+  maxAttempts: number = JOIN_MAX_ATTEMPTS,
+): RateDecision {
   const windowMs = JOIN_WINDOW_SECONDS * 1000;
   const base: RateRecord = record ?? {
     attempts: 0,
@@ -52,7 +56,7 @@ export function evaluate(record: RateRecord | null, now: number): RateDecision {
   const attempts = windowExpired ? 1 : base.attempts + 1;
   const windowStart = windowExpired ? now : base.windowStart;
 
-  if (attempts > JOIN_MAX_ATTEMPTS) {
+  if (attempts > maxAttempts) {
     const strikes = base.strikes + 1;
     const penalty = Math.min(
       JOIN_BACKOFF_MAX_SECONDS,
@@ -91,13 +95,14 @@ export function isRecordExpired(record: RateRecord, now: number): boolean {
 export async function checkJoinAllowed(
   env: Env,
   keys: readonly string[],
+  maxAttempts: number = JOIN_MAX_ATTEMPTS,
 ): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
   const gate = env.HUSK_GATE.get(env.HUSK_GATE.idFromName("gate"));
   const response = await gate.fetch(
     new Request("https://gate/check", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ keys }),
+      body: JSON.stringify({ keys, maxAttempts }),
     }),
   );
   if (!response.ok) {
