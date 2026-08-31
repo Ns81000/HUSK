@@ -3,23 +3,12 @@
  * server-only frames, token reuse, path traversal, same-millisecond sends,
  * rapid room creation (rate-limit check).
  * Join budget spent: 2 (+ reuse of one token).
+ * NOTE: the /room/create burst probe runs LAST — it exhausts the create
+ * budget (5 per IP per 5 min) on purpose, which would starve earlier sections.
  */
 import {
   BASE, assert, connect, createRoom, importRoomKeySync, joinRoom, log, randomRoomId, seal, sendJson, sleep,
 } from "./probe-lib.mjs";
-
-// --- Rapid room creation: is /room/create rate limited at all? ---
-const created = [];
-for (let i = 0; i < 5; i += 1) {
-  const res = await createRoom(randomRoomId());
-  created.push(res.status);
-}
-log("5x create statuses:", created.join(","));
-if (created.every((s) => s === 200)) {
-  log("FINDING-CONFIRMED: /room/create is NOT rate limited (5/5 accepted from one IP instantly)");
-} else {
-  log("rate limiting present on create:", created.join(","));
-}
 
 // --- Same-millisecond sends: seq ordering must stay strict. ---
 const roomId = randomRoomId();
@@ -94,5 +83,24 @@ assert(reuseRejected, "reused join token is rejected (burned token cannot reopen
 
 A.close();
 B.close();
+
+// --- Rapid room creation: the create budget (5 per IP per 5 min) must hold.
+// Runs last: the burst deliberately exhausts this IP's create budget. The
+// room create above already consumed one slot, so the burst runs until the
+// first 429 rather than assuming a fresh window.
+const created = [];
+let guard = 0;
+while (guard++ < 10) {
+  const res = await createRoom(randomRoomId());
+  created.push(res.status);
+  if (res.status !== 200) break;
+}
+log("create burst:", created.join(","));
+assert(created.at(-1) === 429, `create burst ends in a 429 (got ${created.join(",")})`);
+assert(
+  created.filter((s) => s === 200).length >= 1,
+  "the remaining budget is served before the denial",
+);
+
 log("SCENARIO 5e/5f: OK");
 await sleep(200);

@@ -9,6 +9,7 @@ import {
   joinRoom,
   log,
   randomRoomId,
+  sendJson,
   sleep,
 } from "./probe-lib.mjs";
 
@@ -58,7 +59,7 @@ if (ok11) {
 
 // A message still relays at full capacity.
 const relay = sockets[0].waitFor("relay", 10_000, "relay at capacity");
-tenth.send(JSON.stringify({ t: "send", localId: "at-cap", payload: { iv: "aXY", ct: "Y3Q" } }));
+sendJson(tenth.ws, { t: "send", localId: "at-cap", payload: { iv: "aXY", ct: "Y3Q" } });
 const r = await relay;
 assert(r.seq >= 1, `relay works at full capacity (seq ${r.seq})`);
 

@@ -75,8 +75,11 @@ await page2B.goto(`${FRONTEND}/r/${room2.pin}#${room2.fragment}`);
 const got2 = await waitForParticipants(page2A, 2);
 assert(got2 === 2, `room 2: both connected (got ${got2})`);
 
-// Desktop sidebar has the "Leave room" button; open modal, confirm.
-await page2A.getByRole("button", { name: "Leave room" }).click();
+// The "Leave room" button lives inside the room info panel (toggled by the
+// "Room info" button on both desktop and mobile). Open the panel, then the
+// leave modal.
+await page2A.getByRole("button", { name: "Room info" }).click();
+await page2A.getByRole("button", { name: "Leave room" }).click({ timeout: 15_000 });
 await page2A.getByRole("heading", { name: "Leave this room?" }).waitFor({ timeout: 5000 });
 assert(true, `leave modal opens`);
 await page2A.getByRole("button", { name: "Leave", exact: true }).click();

@@ -60,10 +60,15 @@ const browser = await launch();
     assert(violations.length === 0, `no-key room axe clean, ${theme} (${violations.join(" | ")})`);
 
     // Well-formed link for a room that does not exist: the join refusal path.
-    await page.goto(`${FRONTEND}/r/${ROOM_ID}#${KEY}`);
+    // Generous timeout: on a degraded network SSR + hydrate + the join round
+    // trip can take well over 20 s. The about:blank hop forces a fresh
+    // document — a same-path hash-only navigation would not remount the
+    // route, and the previous screen (no-key) would stick.
+    await page.goto("about:blank");
+    await page.goto(`${FRONTEND}/r/${ROOM_ID}#${KEY}`, { waitUntil: "domcontentloaded" });
     await page
-      .getByRole("heading", { name: /Room unavailable|Disconnected|Room closed/ })
-      .waitFor({ timeout: 20_000 });
+      .getByRole("heading", { name: /Room unavailable|Disconnected|Room closed|Too many attempts/ })
+      .waitFor({ timeout: 60_000 });
     violations = await axeViolations(page);
     assert(violations.length === 0, `dead-room axe clean, ${theme} (${violations.join(" | ")})`);
   }

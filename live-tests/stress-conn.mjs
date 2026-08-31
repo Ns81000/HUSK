@@ -67,9 +67,9 @@ assert(delivered >= sockets.length - 2, `fanout delivered to most sockets (${del
 // Message survival across a reconnect cycle: S1's message is relayed before
 // it drops; after a fresh socket rejoins with a new token, the conversation
 // continues with strictly increasing seq and NO replay of history.
-const key = await importRoomKeySync("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY");
+const key2 = await importRoomKeySync("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY");
 const beforeSeqWaiter = sockets[2].waitFor((m) => m.t === "relay" && m.localId === "before-close", 10_000, "relay before-close");
-sendJson(sockets[1].ws, { t: "send", localId: "before-close", payload: await seal(key, { kind: "text", text: "before-close", sentAt: Date.now() }) });
+sendJson(sockets[1].ws, { t: "send", localId: "before-close", payload: await seal(key2, { kind: "text", text: "before-close", sentAt: Date.now() }) });
 const beforeClose = await beforeSeqWaiter;
 sockets[1].close();
 await sleep(500);
@@ -92,7 +92,7 @@ for (let i = 0; i < sockets.length; i += 1) {
 const rejoined = await connect(roomId, rejoinToken, "S1-rejoin");
 assert(rejoined.welcome.t === "welcome", "rejoined socket welcomed");
 assert(rejoined.welcome.you !== sockets[1].welcome.you, "rejoin gets a fresh participant id");
-sendJson(rejoined.ws, { t: "send", localId: "after-rejoin", payload: await seal(key, { kind: "text", text: "after-rejoin", sentAt: Date.now() }) });
+sendJson(rejoined.ws, { t: "send", localId: "after-rejoin", payload: await seal(key2, { kind: "text", text: "after-rejoin", sentAt: Date.now() }) });
 const survivorResults = await Promise.allSettled(survivorWaiters);
 const survivors = survivorResults.filter((r) => r.status === "fulfilled");
 assert(survivors.length >= 1, `post-reconnect message delivered to survivors (${survivors.length}/${survivorWaiters.length})`);
