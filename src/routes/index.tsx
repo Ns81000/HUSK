@@ -88,9 +88,9 @@ function Landing() {
           <img
             src="/icons/husk-mark.svg"
             alt="Husk Logo"
-            width={56}
-            height={64}
-            className="mx-auto h-14 w-auto drop-shadow-[0_4px_16px_rgba(60,231,103,0.3)] select-none transition-transform duration-300 hover:scale-105"
+            width={84}
+            height={96}
+            className="mx-auto h-20 w-auto sm:h-24 drop-shadow-[0_8px_28px_rgba(60,231,103,0.35)] select-none transition-transform duration-300 hover:scale-105"
           />
         </div>
         <h1 className="enter text-display mt-8 text-ink" style={enter(50)}>
@@ -106,9 +106,26 @@ function Landing() {
             loading={busy}
             disabled={!configured}
             onClick={() => void onCreate()}
-            className="h-12"
+            className="group h-13 rounded-2xl text-[16px] font-semibold tracking-[-0.01em]"
           >
-            {busy ? "Creating room" : "Create a Room"}
+            <span>{busy ? "Creating room" : "Create a Room"}</span>
+            {!busy ? (
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className="transition-transform duration-200 group-hover:translate-x-1"
+              >
+                <path d="M5 12h14" />
+                <path d="m12 5 7 7-7 7" />
+              </svg>
+            ) : null}
           </Button>
           {failure !== null ? (
             <p className="fade-in mt-4 text-[14px] text-danger" role="alert">
