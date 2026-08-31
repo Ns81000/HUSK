@@ -8,11 +8,11 @@ import {
   importRoomKeySync,
   joinRoom,
   log,
-  randomPin,
+  randomRoomId,
   sleep,
 } from "./probe-lib.mjs";
 
-const pin = randomPin();
+const pin = randomRoomId();
 assert((await createRoom(pin)).status === 200, `create ${pin} -> 200`);
 const keyBytes = crypto.getRandomValues(new Uint8Array(32));
 let binary = "";

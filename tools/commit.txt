@@ -1,0 +1,12 @@
+[main 542f2bd] Redesign frontend: remove PIN flow, new design system, Grainient landing, room-id slugs
+ 44 files changed, 1386 insertions(+), 675 deletions(-)
+ delete mode 100644 hexagon_final_logo_light_dark.svg
+ create mode 100644 public/icons/husk-logo.svg
+ create mode 100644 public/icons/husk-mark-light.svg
+ create mode 100644 src/components/husk/Grainient.css
+ create mode 100644 src/components/husk/Grainient.tsx
+ delete mode 100644 src/components/husk/keypad.tsx
+ delete mode 100644 src/lib/husk/pin.test.ts
+ delete mode 100644 src/lib/husk/pin.ts
+ rename src/routes/{r.$pin.tsx => r.$roomId.tsx} (51%)
+ create mode 100644 tools/generate-icons.mjs

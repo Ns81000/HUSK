@@ -9,13 +9,13 @@ import {
   joinRoom,
   log,
   putChunk,
-  randomPin,
+  randomRoomId,
   requestFileGrant,
   sendJson,
   sleep,
 } from "./probe-lib.mjs";
 
-const pin = randomPin();
+const pin = randomRoomId();
 assert((await createRoom(pin)).status === 200, `create ${pin} -> 200`);
 const ja = await joinRoom(pin);
 log("join A:", ja.status, ja.body?.joinToken ? "token" : JSON.stringify(ja.body));

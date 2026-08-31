@@ -40,7 +40,7 @@ log("room:", pin, "fragment length:", fragment.length);
 assert(fragment.length > 0, `creator URL carries the key fragment`);
 const link = `${FRONTEND}/r/${pin}#${fragment}`;
 await pageB.goto(link);
-await pageB.waitForURL(/\/r\/\d+/);
+await pageB.waitForURL(/\/r\/[a-z0-9]{8}/);
 await sleep(2500);
 const countA = await participantCount(pageA);
 const countB = await participantCount(pageB);

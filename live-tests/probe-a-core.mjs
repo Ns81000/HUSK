@@ -8,12 +8,12 @@ import {
   joinRoom,
   log,
   openSealed,
-  randomPin,
+  randomRoomId,
   seal,
   sendJson,
 } from "./probe-lib.mjs";
 
-const pin = randomPin();
+const pin = randomRoomId();
 const created = await createRoom(pin);
 assert(created.status === 200, `create room ${pin} -> 200 (got ${created.status})`);
 

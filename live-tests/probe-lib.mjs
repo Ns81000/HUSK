@@ -18,7 +18,7 @@ export async function createRoom(pin) {
   const res = await fetch(`${BASE}/room/create`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({ roomId: pin }),
   });
   return { status: res.status, body: await res.text(), headers: res.headers };
 }
@@ -27,7 +27,7 @@ export async function joinRoom(pin) {
   const res = await fetch(`${BASE}/room/join`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({ roomId: pin }),
   });
   const body = await res.json().catch(() => null);
   return { status: res.status, body, headers: res.headers };
@@ -162,8 +162,13 @@ export async function getFile(pin, fileId, exp, sig) {
   };
 }
 
-export function randomPin() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+export function randomRoomId() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "";
+  for (let index = 0; index < 8; index += 1) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
 }
 
 export function sleep(ms) {

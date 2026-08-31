@@ -53,7 +53,7 @@ const browser = await launch();
   assert(h1 === "Husk", `offline / loads the cached landing shell`);
   // /r/<pin> must NOT be served stale: offline navigation fails (network-only).
   const roomNav = await page
-    .goto(`${FRONTEND}/r/123456`, { waitUntil: "domcontentloaded", timeout: 20_000 })
+    .goto(`${FRONTEND}/r/123456ab`, { waitUntil: "domcontentloaded", timeout: 20_000 })
     .catch((e) => null);
   const roomText = roomNav
     ? await page

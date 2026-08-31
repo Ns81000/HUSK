@@ -67,12 +67,12 @@ const assetRes = await page.request.get(FRONTEND + "/robots.txt");
 assert(assetRes.status() === 200, `robots.txt -> 200`);
 
 // G43: error paths without joins.
-const noKey = await page.goto(FRONTEND + "/r/123456");
+const noKey = await page.goto(FRONTEND + "/r/123456ab");
 await page.getByRole("heading", { name: "This link has no key" }).waitFor({ timeout: 10_000 });
 assert(true, `room link without fragment -> "This link has no key" screen`);
-const garbage = await page.goto(FRONTEND + "/r/abcxyz");
+const garbage = await page.goto(FRONTEND + "/r/abcxyz12");
 log("garbage PIN shape status:", garbage.status());
-await page.goto(FRONTEND + "/r/123456#not-a-real-key-!!!!");
+await page.goto(FRONTEND + "/r/123456ab#not-a-real-key-!!!!");
 await sleep(2000);
 log(
   "bad-key screen heading:",

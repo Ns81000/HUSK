@@ -1,7 +1,7 @@
 // Diagnostic: two joins -> two sockets with full event logging.
-import { createRoom, joinRoom, log, randomPin } from "./probe-lib.mjs";
+import { createRoom, joinRoom, log, randomRoomId } from "./probe-lib.mjs";
 
-const pin = randomPin();
+const pin = randomRoomId();
 log("create:", (await createRoom(pin)).status);
 const j1 = await joinRoom(pin);
 const j2 = await joinRoom(pin);

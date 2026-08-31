@@ -94,13 +94,13 @@ export async function createRoomViaUi(page) {
       await button.click({ force: true }).catch(() => {});
     }
     try {
-      await page.waitForURL(/\/r\/\d+/, { timeout: 5000 });
+      await page.waitForURL(/\/r\/[a-z0-9]{8}/, { timeout: 5000 });
       break;
     } catch {
       // not hydrated yet; retry
     }
   }
-  await page.waitForURL(/\/r\/\d+/);
+  await page.waitForURL(/\/r\/[a-z0-9]{8}/);
   const url = new URL(page.url());
   return { pin: url.pathname.split("/")[2], fragment: url.hash.slice(1) };
 }
@@ -108,7 +108,7 @@ export async function createRoomViaUi(page) {
 export async function joinViaLink(context, link) {
   const page = await context.newPage();
   await page.goto(link);
-  await page.waitForURL(/\/r\/\d+/);
+  await page.waitForURL(/\/r\/[a-z0-9]{8}/);
   return page;
 }
 

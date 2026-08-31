@@ -7,12 +7,12 @@ import {
   joinRoom,
   log,
   putChunk,
-  randomPin,
+  randomRoomId,
   requestFileGrant,
 } from "./probe-lib.mjs";
 
 const FRONTEND = "https://ns81000-husk.ns8pc1.workers.dev";
-const pin = randomPin();
+const pin = randomRoomId();
 assert((await createRoom(pin)).status === 200, `create ${pin} -> 200`);
 const jb = await joinRoom(pin);
 assert(jb.status === 200, `join -> 200`);
@@ -78,7 +78,7 @@ const expiredGet = await fetch(
   `https://husk.ns8pc1.workers.dev/room/${pin}/file/${grant.fileId}?exp=1000000000&sig=${grant.download.sig}`,
 );
 assert(expiredGet.status === 403, `expired exp file GET -> 403 (got ${expiredGet.status})`);
-const otherPin = randomPin();
+const otherPin = randomRoomId();
 await createRoom(otherPin);
 const wrongPinGet = await fetch(
   `https://husk.ns8pc1.workers.dev/room/${otherPin}/file/${grant.fileId}?exp=${grant.download.exp}&sig=${grant.download.sig}`,
@@ -113,7 +113,7 @@ const allowedPost = await corsProbe(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pin: randomPin() }),
+    body: JSON.stringify({ roomId: randomRoomId() }),
   },
   FRONTEND,
 );
@@ -123,7 +123,7 @@ const disallowedPost = await corsProbe(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pin: randomPin() }),
+    body: JSON.stringify({ roomId: randomRoomId() }),
   },
   "https://evil.example",
 );
@@ -133,7 +133,7 @@ const noOriginPost = await corsProbe(
   {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ pin: randomPin() }),
+    body: JSON.stringify({ roomId: randomRoomId() }),
   },
   null,
 );
