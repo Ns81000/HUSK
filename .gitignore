@@ -36,3 +36,6 @@ test-results/
 playwright-report/
 pw-*.log
 verify.log
+
+# Live-test debug artifacts
+live-tests/debug-*.png
