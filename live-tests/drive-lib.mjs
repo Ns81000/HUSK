@@ -112,9 +112,24 @@ export async function joinViaLink(context, link) {
   return page;
 }
 
+/**
+ * Reads the participant count from the room info panel, opening the drawer
+ * (desktop) or bottom sheet (mobile) if it is not already open, and closing
+ * it again so the composer and message list stay interactive.
+ */
 export async function participantCount(page) {
-  const text = await page.getByText(/participant(s)? connected/).textContent();
+  const panel = page.getByText(/participant(s)? connected/);
+  const alreadyOpen = await panel.isVisible().catch(() => false);
+  if (!alreadyOpen) {
+    await page.getByRole("button", { name: "Room info" }).click();
+    await panel.waitFor({ state: "visible", timeout: 5000 });
+  }
+  const text = await panel.textContent();
   const match = /(\d+)/.exec(text ?? "");
+  if (!alreadyOpen) {
+    await page.mouse.click(10, 300);
+    await panel.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+  }
   return match ? Number(match[1]) : -1;
 }
 
@@ -141,7 +156,7 @@ export async function sendText(page, text) {
 }
 
 export async function messageCount(page) {
-  return page.locator(".space-y-3 > div").count();
+  return page.locator(".space-y-4 > div").count();
 }
 
 export async function attachFile(page, filePath) {

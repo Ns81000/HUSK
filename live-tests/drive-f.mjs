@@ -50,7 +50,7 @@ const browser = await launch();
     .textContent()
     .catch(() => "");
   log("offline landing h1:", h1, "| response:", offlineNav?.status() ?? "failed");
-  assert(h1 === "Husk", `offline / loads the cached landing shell`);
+  assert(h1 === "HUSK", `offline / loads the cached landing shell`);
   // /r/<pin> must NOT be served stale: offline navigation fails (network-only).
   const roomNav = await page
     .goto(`${FRONTEND}/r/123456ab`, { waitUntil: "domcontentloaded", timeout: 20_000 })
@@ -76,7 +76,7 @@ const browser = await launch();
   );
   // The strict policy: the SW never respondsWith for /r/*, so offline it must fail.
   const servedOffline =
-    roomNav !== null && roomNav.status() === 200 && roomText.includes("Enter the room PIN");
+    roomNav !== null && roomNav.status() === 200 && roomText.includes("This link has no key");
   log(
     "offline /r/<pin> served a page:",
     servedOffline,
