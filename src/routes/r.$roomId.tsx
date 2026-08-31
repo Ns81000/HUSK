@@ -290,6 +290,7 @@ function RoomScreen() {
           leave();
           setConfirmLeave(false);
           setInfoOpen(false);
+          void navigate({ to: "/" });
         }}
       />
     </main>
@@ -418,17 +419,28 @@ function ClosedScreen({
 }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas px-4">
-      <div className="share-card fade-in max-w-md p-8 text-center">
-        <HuskMark size={48} className="mx-auto" />
+      <div className="share-card fade-in max-w-md p-8 text-center rounded-2xl shadow-2xl">
+        <img
+          src="/icons/husk-mark.svg"
+          alt="Husk"
+          width={64}
+          height={73}
+          className="mx-auto h-16 w-auto drop-shadow-[0_6px_20px_rgba(60,231,103,0.3)] select-none"
+        />
         <h1 className="mt-6 text-[20px] font-semibold text-ink">{title}</h1>
-        <p className="mt-2 text-[14px] text-ink-muted">{body}</p>
-        <div className="mt-6 flex flex-col gap-2">
+        <p className="mt-2 text-[14px] text-ink-muted leading-relaxed">{body}</p>
+        <div className="mt-6 flex flex-col gap-2.5">
           {onRetry !== undefined ? (
-            <Button full onClick={onRetry} className="rounded-lg">
+            <Button full onClick={onRetry} className="rounded-xl h-11 text-[15px]">
               Reconnect
             </Button>
           ) : null}
-          <Button tone="quiet" full onClick={onHome} className="rounded-lg">
+          <Button
+            tone={onRetry !== undefined ? "quiet" : "primary"}
+            full
+            onClick={onHome}
+            className="rounded-xl h-11 text-[15px]"
+          >
             Back to start
           </Button>
         </div>

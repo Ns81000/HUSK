@@ -182,7 +182,7 @@ export function Modal({
 
   return (
     <div
-      className="modal-scrim fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm p-4 sm:items-center"
+      className="modal-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
       onClick={onCancel}
     >
       <div

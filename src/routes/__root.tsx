@@ -21,19 +21,27 @@ const themeBootstrap = `(function(){document.documentElement.classList.add("dark
 
 function NotFoundComponent() {
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <section className="max-w-md rounded-lg border border-line bg-surface p-6 text-center shadow-panel">
-        <ErrorMark className="mx-auto text-line-strong" />
-        <h1 className="mt-4 text-title text-ink">Page not found</h1>
-        <p className="mt-2 text-[14px] text-ink-muted">
+    <main className="flex min-h-screen items-center justify-center bg-canvas px-4">
+      <section className="share-card max-w-md p-8 text-center rounded-2xl shadow-2xl">
+        <img
+          src="/icons/husk-mark.svg"
+          alt="Husk"
+          width={64}
+          height={73}
+          className="mx-auto h-16 w-auto drop-shadow-[0_6px_20px_rgba(60,231,103,0.3)] select-none"
+        />
+        <h1 className="mt-6 text-[20px] font-semibold text-ink">Page not found</h1>
+        <p className="mt-2 text-[14px] text-ink-muted leading-relaxed">
           The page you're looking for doesn't exist or has been moved.
         </p>
-        <Link
-          to="/"
-          className="touch-target mt-6 inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 text-[15px] font-medium text-accent-ink transition-colors hover:bg-accent-hover"
-        >
-          Go home
-        </Link>
+        <div className="mt-6">
+          <Link
+            to="/"
+            className="touch-target press inline-flex w-full items-center justify-center gap-2 rounded-xl btn-tactile-primary text-[#04180c] h-11 text-[15px] font-semibold"
+          >
+            Go home
+          </Link>
+        </div>
       </section>
     </main>
   );
@@ -43,9 +51,6 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
-    // Editor telemetry is dev-only: the dynamic import inside a DEV guard
-    // keeps the reporting module (and its third-party hooks) out of
-    // production bundles entirely.
     if (import.meta.env.DEV) {
       void import("../lib/lovable-error-reporting").then((m) =>
         m.reportLovableError(error, { boundary: "tanstack_root_error_component" }),
@@ -54,26 +59,33 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   }, [error]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <section className="max-w-md rounded-lg border border-line bg-surface p-6 text-center shadow-panel">
-        <ErrorMark className="mx-auto text-line-strong" />
-        <h1 className="mt-4 text-title text-ink">This page didn't load</h1>
-        <p className="mt-2 text-[14px] text-ink-muted">
+    <main className="flex min-h-screen items-center justify-center bg-canvas px-4">
+      <section className="share-card max-w-md p-8 text-center rounded-2xl shadow-2xl">
+        <img
+          src="/icons/husk-mark.svg"
+          alt="Husk"
+          width={64}
+          height={73}
+          className="mx-auto h-16 w-auto drop-shadow-[0_6px_20px_rgba(60,231,103,0.3)] select-none"
+        />
+        <h1 className="mt-6 text-[20px] font-semibold text-ink">This page didn't load</h1>
+        <p className="mt-2 text-[14px] text-ink-muted leading-relaxed">
           Something went wrong on our end. You can try refreshing or head back home.
         </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <div className="mt-6 flex flex-col gap-2.5">
           <button
+            type="button"
             onClick={() => {
               router.invalidate();
               reset();
             }}
-            className="touch-target inline-flex items-center justify-center gap-2 rounded-md bg-accent px-4 text-[15px] font-medium text-accent-ink transition-colors hover:bg-accent-hover"
+            className="touch-target press inline-flex w-full items-center justify-center gap-2 rounded-xl btn-tactile-primary text-[#04180c] h-11 text-[15px] font-semibold cursor-pointer"
           >
             Try again
           </button>
           <a
             href="/"
-            className="touch-target inline-flex items-center justify-center gap-2 rounded-md border border-line bg-surface px-4 text-[15px] font-medium text-ink transition-colors hover:bg-surface-sunken"
+            className="touch-target press inline-flex w-full items-center justify-center gap-2 rounded-xl btn-tactile-quiet h-11 text-[15px] font-medium"
           >
             Go home
           </a>
