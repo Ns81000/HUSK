@@ -249,13 +249,17 @@ function RoomScreen() {
               <aside
                 role="dialog"
                 aria-label="Room info"
-                className="drawer-panel absolute inset-y-0 right-0 flex w-80 max-w-[85vw] flex-col border-l border-line/30 p-6 shadow-panel"
+                className="drawer-panel absolute inset-y-0 right-0 flex w-88 max-w-[85vw] flex-col border-l border-line/30 p-6 shadow-panel"
               >
                 <RoomInfoPanel
                   roomId={roomId}
                   shareLink={shareLink}
                   participants={participants.length}
-                  onLeave={() => setConfirmLeave(true)}
+                  onClose={() => setInfoOpen(false)}
+                  onLeave={() => {
+                    setInfoOpen(false);
+                    setConfirmLeave(true);
+                  }}
                 />
               </aside>
             </div>
@@ -272,7 +276,10 @@ function RoomScreen() {
                   roomId={roomId}
                   shareLink={shareLink}
                   participants={participants.length}
-                  onLeave={() => setConfirmLeave(true)}
+                  onLeave={() => {
+                    setInfoOpen(false);
+                    setConfirmLeave(true);
+                  }}
                 />
               </div>
             </Drawer.Content>
