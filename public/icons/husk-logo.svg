@@ -1,8 +1,53 @@
 <svg width="100%" viewBox="0 0 320 160" role="img" xmlns="http://www.w3.org/2000/svg">
-<title>The Husk hexagon logo, transparent background, in light and dark surface versions</title>
-<desc>Two versions of the mint hexagon logo with no background: a deep green version for light surfaces and a bright mint version for dark surfaces.</desc>
+<title>The Husk 3D isometric-cube logo, in light and dark surface versions</title>
+<desc>Two versions of the 3D isometric block logo: a deep green version for light surfaces and a bright mint version for dark surfaces.</desc>
 
-<polygon points="80,30 122,54 122,102 80,126 38,102 38,54" fill="#18794e"/>
-<polygon points="240,30 282,54 282,102 240,126 198,102 198,54" fill="#3ce767"/>
+<defs>
+  <!-- Green version face gradients -->
+  <linearGradient id="greenTop" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#3fb37f"/>
+    <stop offset="100%" stop-color="#1f8f5c"/>
+  </linearGradient>
+  <linearGradient id="greenLeft" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#1c8a58"/>
+    <stop offset="100%" stop-color="#146b43"/>
+  </linearGradient>
+  <linearGradient id="greenRight" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#12603a"/>
+    <stop offset="100%" stop-color="#0a3f26"/>
+  </linearGradient>
+
+  <!-- Mint version face gradients -->
+  <linearGradient id="mintTop" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#9dffbf"/>
+    <stop offset="100%" stop-color="#5cf28c"/>
+  </linearGradient>
+  <linearGradient id="mintLeft" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#3ce767"/>
+    <stop offset="100%" stop-color="#2ec158"/>
+  </linearGradient>
+  <linearGradient id="mintRight" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#22a24c"/>
+    <stop offset="100%" stop-color="#157a37"/>
+  </linearGradient>
+</defs>
+
+<!-- GREEN VERSION (light surfaces) -->
+<g>
+  <polygon points="80,30 114,50 80,70 46,50" fill="url(#greenTop)"/>
+  <polygon points="46,50 80,70 80,110 46,90" fill="url(#greenLeft)"/>
+  <polygon points="114,50 114,90 80,110 80,70" fill="url(#greenRight)"/>
+  <polyline points="46,50 80,30 114,50" fill="none" stroke="#8de8b8" stroke-width="1.5" opacity="0.6"/>
+  <polyline points="46,90 80,110 114,90" fill="none" stroke="#06251770" stroke-width="1.5"/>
+</g>
+
+<!-- MINT VERSION (dark surfaces) -->
+<g>
+  <polygon points="240,30 274,50 240,70 206,50" fill="url(#mintTop)"/>
+  <polygon points="206,50 240,70 240,110 206,90" fill="url(#mintLeft)"/>
+  <polygon points="274,50 274,90 240,110 240,70" fill="url(#mintRight)"/>
+  <polyline points="206,50 240,30 274,50" fill="none" stroke="#d9fff0" stroke-width="1.5" opacity="0.7"/>
+  <polyline points="206,90 240,110 274,90" fill="none" stroke="#0a3f2670" stroke-width="1.5"/>
+</g>
 
 </svg>

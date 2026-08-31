@@ -2,8 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer } from "vaul";
 import { Composer, MessageList } from "@/components/husk/chat";
-import { BackIcon, CheckIcon, HuskMark, InfoIcon } from "@/components/husk/icons";
-import { Button, IconButton, Modal, Panel, useToast } from "@/components/husk/primitives";
+import { BackIcon, CheckIcon, HuskMark, InfoIcon, ShieldIcon } from "@/components/husk/icons";
+import { Button, IconButton, Modal, useToast } from "@/components/husk/primitives";
 import { ConnectionIndicator, RoomInfoPanel } from "@/components/husk/room-info";
 import {
   EmptyFileError,
@@ -192,8 +192,8 @@ function RoomScreen() {
   const waiting = state === "waiting_for_peer" && participants.length <= 1;
 
   return (
-    <main className="flex h-screen flex-col">
-      <header className="safe-top flex items-center gap-3 border-b border-line bg-surface px-4 pb-3 sm:px-6">
+    <main className="flex h-screen flex-col bg-canvas">
+      <header className="chat-header safe-top flex items-center gap-3 px-4 pb-3 sm:px-6">
         <IconButton
           label="Back to start"
           onClick={() => void navigate({ to: "/" })}
@@ -203,7 +203,7 @@ function RoomScreen() {
           <HuskMark size={22} className="hidden lg:block" />
         </IconButton>
         <div className="min-w-0 flex-1">
-          <p className="tabular truncate text-title text-ink">Room {roomId}</p>
+          <p className="tabular truncate text-[15px] font-semibold text-ink">Room {roomId}</p>
           <ConnectionIndicator status={status} state={state} />
         </div>
         <IconButton label="Room info" onClick={() => setInfoOpen(true)}>
@@ -229,7 +229,7 @@ function RoomScreen() {
               <aside
                 role="dialog"
                 aria-label="Room info"
-                className="drawer-panel absolute inset-y-0 right-0 flex w-80 max-w-[85vw] flex-col border-l border-line bg-surface p-6 shadow-panel"
+                className="drawer-panel absolute inset-y-0 right-0 flex w-80 max-w-[85vw] flex-col border-l border-line/30 p-6 shadow-panel"
               >
                 <RoomInfoPanel
                   roomId={roomId}
@@ -245,8 +245,8 @@ function RoomScreen() {
         <Drawer.Root open={infoOpen} onOpenChange={setInfoOpen}>
           <Drawer.Portal>
             <Drawer.Overlay className="fixed inset-0 z-40 bg-scrim" />
-            <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] rounded-t-xl border-t border-line bg-surface p-6 outline-none">
-              <div className="mx-auto mb-4 h-1.5 w-12 rounded-pill bg-line-strong" aria-hidden />
+            <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] rounded-t-xl border-t border-line/30 bg-surface p-6 outline-none" style={{ backdropFilter: "blur(24px) saturate(1.4)", background: "oklch(0.26 0.034 137 / 0.95)" }}>
+              <div className="mx-auto mb-4 h-1.5 w-12 rounded-pill bg-line-strong/50" aria-hidden />
               <div className="max-h-[calc(85vh-5rem)] overflow-y-auto">
                 <RoomInfoPanel
                   roomId={roomId}
@@ -289,9 +289,9 @@ function useIsDesktop(): boolean {
 }
 
 /**
- * The first-room empty state: a prominent share card that auto-collapses the
- * moment the first peer joins. Rendered above the message list so both the
- * empty history and early messages keep their place.
+ * The first-room empty state: a glassmorphic share card that auto-collapses
+ * the moment the first peer joins. Uses animated border shimmer instead of
+ * a blinking logo.
  */
 function ShareCard({
   shareLink,
@@ -347,16 +347,18 @@ function ShareCard({
 
   return (
     <div className="flex justify-center px-4 pt-6 sm:px-6">
-      <Panel className={cn("w-full max-w-md text-center", collapsing && "collapse-out")}>
-        <HuskMark size={36} className="waiting-pulse mx-auto" />
-        <h2 className="text-title mt-4 text-ink">Waiting for someone to join</h2>
-        <p className="mt-1 text-[14px] text-ink-muted">
-          Share the invite link. It carries the room key in its fragment — the relay never sees it.
+      <div className={cn("share-card w-full max-w-md p-6 text-center", collapsing && "collapse-out")}>
+        <div className="mx-auto flex h-12 w-12 items-center justify-center">
+          <ShieldIcon className="h-7 w-7 text-accent waiting-glow" />
+        </div>
+        <h2 className="mt-4 text-[17px] font-semibold text-ink">Waiting for someone to join</h2>
+        <p className="mt-1.5 text-[14px] text-ink-muted">
+          Share the invite link. The encryption key travels in the URL fragment — the relay never sees it.
         </p>
-        <div className="mt-4 flex items-center gap-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-left">
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-line/30 bg-surface-sunken/40 px-3 py-2.5 text-left">
           <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>
         </div>
-        <Button onClick={() => void copy()} className="mt-3" full>
+        <Button onClick={() => void copy()} className="mt-3 rounded-lg" full>
           {copied ? (
             <>
               <CheckIcon className="swap-check h-4 w-4" />
@@ -366,7 +368,7 @@ function ShareCard({
             "Copy invite link"
           )}
         </Button>
-      </Panel>
+      </div>
     </div>
   );
 }
@@ -383,22 +385,22 @@ function ClosedScreen({
   readonly onRetry?: (() => void) | undefined;
 }) {
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <Panel className="fade-in max-w-md text-center">
+    <main className="flex min-h-screen items-center justify-center bg-canvas px-4">
+      <div className="share-card fade-in max-w-md p-8 text-center">
         <HuskMark size={48} className="mx-auto" />
-        <h1 className="mt-6 text-title text-ink">{title}</h1>
+        <h1 className="mt-6 text-[20px] font-semibold text-ink">{title}</h1>
         <p className="mt-2 text-[14px] text-ink-muted">{body}</p>
         <div className="mt-6 flex flex-col gap-2">
           {onRetry !== undefined ? (
-            <Button full onClick={onRetry}>
+            <Button full onClick={onRetry} className="rounded-lg">
               Reconnect
             </Button>
           ) : null}
-          <Button tone="quiet" full onClick={onHome}>
+          <Button tone="quiet" full onClick={onHome} className="rounded-lg">
             Back to start
           </Button>
         </div>
-      </Panel>
+      </div>
     </main>
   );
 }

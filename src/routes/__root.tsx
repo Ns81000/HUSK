@@ -14,12 +14,10 @@ import { ErrorMark } from "../components/husk/icons";
 import { ToastProvider } from "../components/husk/primitives";
 
 /**
- * Applies the persisted (or default) theme before first paint. Dark is the
- * product default: only an explicit stored "light" avoids it. Kept in sync
- * with STORAGE_KEY in src/lib/husk/theme.ts. The inline script is constant,
- * so the per-response CSP hash mechanism in src/server.ts covers it.
+ * Applies the dark theme before first paint. There is no light mode.
+ * The inline script is constant, so the per-response CSP hash covers it.
  */
-const themeBootstrap = `(function(){try{var t=localStorage.getItem("husk-theme");if(t!=="light"){document.documentElement.classList.add("dark")}}catch(e){document.documentElement.classList.add("dark")}})();`;
+const themeBootstrap = `(function(){document.documentElement.classList.add("dark")})();`;
 
 function NotFoundComponent() {
   return (
@@ -115,13 +113,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "icon",
         href: "/icons/husk-mark.svg",
         type: "image/svg+xml",
-        media: "(prefers-color-scheme: dark)",
-      },
-      {
-        rel: "icon",
-        href: "/icons/husk-mark-light.svg",
-        type: "image/svg+xml",
-        media: "(prefers-color-scheme: light)",
       },
       {
         rel: "apple-touch-icon",

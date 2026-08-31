@@ -1,5 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 84 96" width="256" height="256">
   <title>Husk mark</title>
-  <polygon points="42,0 84,24 84,72 42,96 0,72 0,24" fill="#3ce767"/>
+  <defs>
+    <linearGradient id="mintTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9dffbf"/>
+      <stop offset="100%" stop-color="#5cf28c"/>
+    </linearGradient>
+    <linearGradient id="mintLeft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3ce767"/>
+      <stop offset="100%" stop-color="#2ec158"/>
+    </linearGradient>
+    <linearGradient id="mintRight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22a24c"/>
+      <stop offset="100%" stop-color="#157a37"/>
+    </linearGradient>
+  </defs>
+  <!-- top face -->
+  <polygon points="42,8 76,28 42,48 8,28" fill="url(#mintTop)"/>
+  <!-- left face -->
+  <polygon points="8,28 42,48 42,88 8,68" fill="url(#mintLeft)"/>
+  <!-- right face -->
+  <polygon points="76,28 76,68 42,88 42,48" fill="url(#mintRight)"/>
+  <!-- top edge highlight -->
+  <polyline points="8,28 42,8 76,28" fill="none" stroke="#d9fff0" stroke-width="1.5" opacity="0.7"/>
+  <!-- bottom edge shadow line -->
+  <polyline points="8,68 42,88 76,68" fill="none" stroke="#0a3f2670" stroke-width="1.5"/>
 </svg>
-

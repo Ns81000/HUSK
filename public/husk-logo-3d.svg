@@ -1,0 +1,72 @@
+<svg width="100%" viewBox="0 0 320 170" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>The Husk hexagon logo, 3D isometric-cube redesign, in light and dark surface versions</title>
+<desc>Two versions of the mint hexagon logo redesigned as a 3D isometric block: a deep green version for light surfaces and a bright mint version for dark surfaces. Each hexagon is split into three shaded rhombus faces (top, left, right) to create the illusion of a solid 3D cube, with a soft drop shadow for grounding.</desc>
+
+<defs>
+  <!-- soft ground shadow -->
+  <filter id="softShadow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="4"/>
+  </filter>
+
+  <!-- Green version face gradients -->
+  <linearGradient id="greenTop" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#3fb37f"/>
+    <stop offset="100%" stop-color="#1f8f5c"/>
+  </linearGradient>
+  <linearGradient id="greenLeft" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#1c8a58"/>
+    <stop offset="100%" stop-color="#146b43"/>
+  </linearGradient>
+  <linearGradient id="greenRight" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#12603a"/>
+    <stop offset="100%" stop-color="#0a3f26"/>
+  </linearGradient>
+
+  <!-- Mint version face gradients -->
+  <linearGradient id="mintTop" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#9dffbf"/>
+    <stop offset="100%" stop-color="#5cf28c"/>
+  </linearGradient>
+  <linearGradient id="mintLeft" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#3ce767"/>
+    <stop offset="100%" stop-color="#2ec158"/>
+  </linearGradient>
+  <linearGradient id="mintRight" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#22a24c"/>
+    <stop offset="100%" stop-color="#157a37"/>
+  </linearGradient>
+</defs>
+
+<!-- GREEN VERSION (light surfaces) -->
+<ellipse cx="80" cy="140" rx="46" ry="9" fill="#000000" opacity="0.28" filter="url(#softShadow)"/>
+
+<g>
+  <!-- top face -->
+  <polygon points="80,30 122,54 80,78 38,54" fill="url(#greenTop)"/>
+  <!-- left face -->
+  <polygon points="38,54 80,78 80,126 38,102" fill="url(#greenLeft)"/>
+  <!-- right face -->
+  <polygon points="122,54 122,102 80,126 80,78" fill="url(#greenRight)"/>
+  <!-- top edge highlight -->
+  <polyline points="38,54 80,30 122,54" fill="none" stroke="#8de8b8" stroke-width="1.5" opacity="0.6"/>
+  <!-- bottom edge shadow line -->
+  <polyline points="38,102 80,126 122,102" fill="none" stroke="#06251770" stroke-width="1.5"/>
+</g>
+
+<!-- MINT VERSION (dark surfaces) -->
+<ellipse cx="240" cy="140" rx="46" ry="9" fill="#000000" opacity="0.28" filter="url(#softShadow)"/>
+
+<g>
+  <!-- top face -->
+  <polygon points="240,30 282,54 240,78 198,54" fill="url(#mintTop)"/>
+  <!-- left face -->
+  <polygon points="198,54 240,78 240,126 198,102" fill="url(#mintLeft)"/>
+  <!-- right face -->
+  <polygon points="282,54 282,102 240,126 240,78" fill="url(#mintRight)"/>
+  <!-- top edge highlight -->
+  <polyline points="198,54 240,30 282,54" fill="none" stroke="#d9fff0" stroke-width="1.5" opacity="0.7"/>
+  <!-- bottom edge shadow line -->
+  <polyline points="198,102 240,126 282,102" fill="none" stroke="#0a3f2670" stroke-width="1.5"/>
+</g>
+
+</svg>

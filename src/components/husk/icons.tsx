@@ -120,23 +120,6 @@ export function ErrorMark({ className }: IconProps) {
   );
 }
 
-export function SunIcon({ className }: IconProps) {
-  return (
-    <svg {...base(className)}>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M18.7 5.3l-1.8 1.8M7.1 16.9l-1.8 1.8" />
-    </svg>
-  );
-}
-
-export function MoonIcon({ className }: IconProps) {
-  return (
-    <svg {...base(className)}>
-      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" />
-    </svg>
-  );
-}
-
 export function InfoIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>
@@ -191,7 +174,10 @@ export function WarnIcon({ className }: IconProps) {
   );
 }
 
-/** The Husk hexagon brand mark. Fill is theme-aware via .husk-mark CSS. */
+/**
+ * The Husk 3D isometric-cube brand mark. Three gradient-filled rhombus faces
+ * create a solid cube illusion with a top-edge highlight.
+ */
 export function HuskMark({
   size = 64,
   className,
@@ -199,16 +185,40 @@ export function HuskMark({
   readonly size?: number;
   readonly className?: string;
 }) {
+  const h = (size * 96) / 84;
   return (
     <svg
       width={size}
-      height={(size * 96) / 84}
+      height={h}
       viewBox="0 0 84 96"
       fill="none"
       aria-hidden
       className={cn("husk-mark", className)}
     >
-      <polygon points="42,0 84,24 84,72 42,96 0,72 0,24" />
+      <defs>
+        <linearGradient id="hm-top" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#9dffbf" />
+          <stop offset="100%" stopColor="#5cf28c" />
+        </linearGradient>
+        <linearGradient id="hm-left" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#3ce767" />
+          <stop offset="100%" stopColor="#2ec158" />
+        </linearGradient>
+        <linearGradient id="hm-right" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#22a24c" />
+          <stop offset="100%" stopColor="#157a37" />
+        </linearGradient>
+      </defs>
+      <polygon points="42,8 76,28 42,48 8,28" fill="url(#hm-top)" />
+      <polygon points="8,28 42,48 42,88 8,68" fill="url(#hm-left)" />
+      <polygon points="76,28 76,68 42,88 42,48" fill="url(#hm-right)" />
+      <polyline
+        points="8,28 42,8 76,28"
+        fill="none"
+        stroke="#d9fff0"
+        strokeWidth="1.5"
+        opacity="0.7"
+      />
     </svg>
   );
 }

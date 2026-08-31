@@ -176,12 +176,9 @@
   }
 }
 @layer components {
-  /* Brand mark: deep green on light surfaces, mint on dark. */
+  /* Brand mark: 3D cube uses inline gradient fills; no fill override needed. */
   .husk-mark {
-    fill: #18794e;
-  }
-  .dark .husk-mark {
-    fill: var(--husk-accent);
+    filter: drop-shadow(0 2px 4px oklch(0.15 0.03 135 / 0.35));
   }
 
   /* Button press feedback: every interactive element gets a subtle squeeze. */
@@ -234,6 +231,9 @@
   }
   .modal-panel {
     animation: modal-in 200ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+    border: 1px solid oklch(0.4 0.05 136 / 0.5);
+    background: oklch(0.26 0.034 137 / 0.92);
+    backdrop-filter: blur(20px) saturate(1.4);
   }
   @keyframes modal-in {
     from {
@@ -246,9 +246,11 @@
     }
   }
 
-  /* Toast: slides up from the bottom edge. */
+  /* Toast: slides up from the bottom edge with glass effect. */
   .toast-in {
     animation: toast-in 300ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+    backdrop-filter: blur(16px) saturate(1.3);
+    background: oklch(0.26 0.034 137 / 0.88);
   }
   @keyframes toast-in {
     from {
@@ -277,20 +279,27 @@
     }
   }
 
-  /* Waiting-for-peer marker. */
-  .waiting-pulse {
-    animation: waiting-pulse 2.2s ease-in-out infinite;
+  /* Waiting-for-peer: gentle breathing glow instead of blinking mark. */
+  .waiting-glow {
+    animation: waiting-glow 2.8s ease-in-out infinite;
   }
-  @keyframes waiting-pulse {
+  @keyframes waiting-glow {
     0%,
     100% {
-      opacity: 0.35;
-      transform: scale(0.96);
+      opacity: 0.4;
+      filter: drop-shadow(0 0 6px oklch(0.7 0.2 145 / 0.3));
+      transform: scale(0.97);
     }
     50% {
-      opacity: 1;
-      transform: scale(1.02);
+      opacity: 0.85;
+      filter: drop-shadow(0 0 16px oklch(0.7 0.2 145 / 0.5));
+      transform: scale(1.01);
     }
+  }
+
+  /* Legacy waiting-pulse kept for backward compat but redirected to glow. */
+  .waiting-pulse {
+    animation: waiting-glow 2.8s ease-in-out infinite;
   }
 
   /* Indeterminate upload bar. */
@@ -307,7 +316,7 @@
     inset-block: 0;
     width: 40%;
     border-radius: var(--radius-pill);
-    background: var(--accent);
+    background: linear-gradient(90deg, var(--accent), oklch(0.9 0.2 145));
     animation: upload-slide 1.1s cubic-bezier(0.77, 0, 0.175, 1) infinite;
   }
   @keyframes upload-slide {
@@ -319,52 +328,109 @@
     }
   }
 
-  /* Message bubbles with a subtle directional tail. */
+  /* Message bubbles: clean rounded corners, no radial-gradient tails. */
   .bubble {
     position: relative;
+    transition: background-color 160ms ease;
   }
   .bubble-mine {
-    background: color-mix(in oklch, var(--accent) 16%, var(--surface));
+    background: color-mix(in oklch, var(--accent) 14%, var(--surface));
+    border: 1px solid oklch(0.5 0.1 140 / 0.15);
+    border-radius: 16px 16px 4px 16px;
   }
   .bubble-theirs {
     background: var(--surface-raised);
-  }
-  .bubble-mine::after,
-  .bubble-theirs::after {
-    content: "";
-    position: absolute;
-    bottom: 0;
-    width: 12px;
-    height: 14px;
-    pointer-events: none;
-  }
-  .bubble-mine::after {
-    right: -5px;
-    background: radial-gradient(circle at 100% 0, transparent 12px, var(--surface) 0);
-  }
-  .bubble-theirs::after {
-    left: -5px;
-    background: radial-gradient(circle at 0 0, transparent 12px, var(--surface) 0);
+    border: 1px solid oklch(0.4 0.04 136 / 0.2);
+    border-radius: 16px 16px 16px 4px;
   }
 
-  /* System (timeline) message: a centered label over a hairline rule. */
+  /* System (timeline) message: refined centered label with subtle lines. */
   .system-marker {
     display: flex;
     align-items: center;
     gap: var(--spacing-3);
     color: var(--ink-faint);
+    padding: var(--spacing-1) 0;
   }
   .system-marker::before,
   .system-marker::after {
     content: "";
     flex: 1;
     height: 1px;
-    background: var(--line);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      oklch(0.4 0.04 136 / 0.4),
+      transparent
+    );
+  }
+
+  /* Glassmorphic chat header. */
+  .chat-header {
+    backdrop-filter: blur(20px) saturate(1.4);
+    background: oklch(0.26 0.034 137 / 0.85);
+    border-bottom: 1px solid oklch(0.4 0.05 136 / 0.3);
+    box-shadow: 0 1px 0 oklch(0.5 0.1 140 / 0.08);
+  }
+
+  /* Glassmorphic share card with animated border. */
+  .share-card {
+    position: relative;
+    border-radius: var(--radius-lg);
+    background: oklch(0.26 0.034 137 / 0.75);
+    backdrop-filter: blur(20px) saturate(1.3);
+    border: 1px solid oklch(0.4 0.05 136 / 0.4);
+    box-shadow:
+      0 0 0 1px oklch(0.5 0.1 140 / 0.06),
+      0 4px 24px oklch(0.1 0.02 135 / 0.3);
+    overflow: hidden;
+  }
+  .share-card::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      oklch(0.7 0.2 145 / 0.3),
+      transparent 50%,
+      oklch(0.7 0.2 145 / 0.15)
+    );
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation: border-shimmer 4s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes border-shimmer {
+    0%, 100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* Elevated composer bar with glass effect. */
+  .composer-bar {
+    backdrop-filter: blur(20px) saturate(1.4);
+    background: oklch(0.26 0.034 137 / 0.88);
+    border-top: 1px solid oklch(0.4 0.05 136 / 0.3);
+    box-shadow: 0 -1px 0 oklch(0.5 0.1 140 / 0.06);
+  }
+
+  /* Composer textarea focus glow. */
+  .composer-input:focus {
+    border-color: oklch(0.6 0.15 140 / 0.5);
+    box-shadow: 0 0 0 3px oklch(0.6 0.15 140 / 0.12);
+    outline: none;
   }
 
   /* Drawer: slide-out panel with scrim. */
   .drawer-panel {
     animation: drawer-in 260ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+    backdrop-filter: blur(24px) saturate(1.4);
+    background: oklch(0.26 0.034 137 / 0.92);
   }
   @keyframes drawer-in {
     from {
@@ -404,6 +470,58 @@
       transform: scale(1);
     }
   }
+
+  /* Animated rings for empty chat state. */
+  .empty-rings {
+    position: relative;
+    width: 80px;
+    height: 80px;
+  }
+  .empty-rings::before,
+  .empty-rings::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.5px solid oklch(0.5 0.1 140 / 0.3);
+    animation: ring-pulse 3s ease-in-out infinite;
+  }
+  .empty-rings::after {
+    inset: 8px;
+    animation-delay: 0.6s;
+    border-color: oklch(0.6 0.15 140 / 0.25);
+  }
+  @keyframes ring-pulse {
+    0%,
+    100% {
+      opacity: 0.3;
+      transform: scale(0.96);
+    }
+    50% {
+      opacity: 0.7;
+      transform: scale(1.04);
+    }
+  }
+
+  /* File card hover accent. */
+  .file-card {
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .file-card:hover {
+    border-color: oklch(0.5 0.1 140 / 0.35);
+    box-shadow: 0 0 0 1px oklch(0.5 0.1 140 / 0.1);
+  }
+
+  /* Room info section divider. */
+  .info-divider {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      oklch(0.4 0.04 136 / 0.4),
+      transparent
+    );
+  }
 }
 
 @utility safe-bottom {
@@ -435,3 +553,4 @@
     opacity: 1;
   }
 }
+

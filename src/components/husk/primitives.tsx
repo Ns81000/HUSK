@@ -30,11 +30,11 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 const toneClass = {
   primary:
-    "bg-accent text-accent-ink hover:bg-accent-hover disabled:bg-line disabled:text-ink-faint disabled:opacity-70",
+    "bg-accent text-white hover:brightness-110 disabled:bg-white/10 disabled:text-white/40 disabled:border-white/5 disabled:shadow-none shadow-[0_0_15px_rgba(82,39,255,0.4)] hover:shadow-[0_0_25px_rgba(82,39,255,0.6)] border border-accent-hover",
   quiet:
-    "bg-surface text-ink border border-line hover:bg-surface-sunken disabled:text-ink-faint disabled:opacity-70",
+    "glass-panel hover:bg-white/10 text-white disabled:text-white/40 disabled:opacity-70",
   danger:
-    "bg-surface text-danger border border-line hover:bg-surface-sunken disabled:text-ink-faint disabled:opacity-70",
+    "glass-panel border-danger/30 text-danger hover:bg-danger/10 hover:border-danger/50 disabled:text-white/40 disabled:opacity-70",
 } satisfies Record<ButtonTone, string>;
 
 export function Button({
@@ -52,7 +52,7 @@ export function Button({
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
       className={cn(
-        "touch-target press inline-flex items-center justify-center gap-2 rounded-md px-4 text-[15px] font-medium",
+        "touch-target press inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[15px] font-medium transition-all duration-300",
         "disabled:cursor-not-allowed",
         toneClass[tone],
         full === true && "w-full",
@@ -76,7 +76,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink disabled:text-ink-faint",
+        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-xl text-white/70 transition-all duration-300 hover:bg-white/10 hover:text-white disabled:text-white/30 glass-panel",
         className,
       )}
     />
@@ -91,71 +91,9 @@ export function Panel({
   readonly className?: string;
 }) {
   return (
-    <section className={cn("rounded-lg border border-line bg-surface p-6 shadow-panel", className)}>
+    <section className={cn("rounded-2xl glass-panel p-6 shadow-2xl", className)}>
       {children}
     </section>
-  );
-}
-
-/**
- * Segmented control with a sliding indicator. Two segments, one choice —
- * used for the theme toggle.
- */
-export function SegmentedControl<T extends string>({
-  value,
-  onChange,
-  options,
-  label,
-}: {
-  readonly value: T;
-  readonly onChange: (next: T) => void;
-  readonly options: readonly {
-    readonly value: T;
-    readonly text: ReactNode;
-    /** Accessible name for icon-only segments. */
-    readonly label?: string;
-  }[];
-  readonly label: string;
-}) {
-  const index = Math.max(
-    0,
-    options.findIndex((option) => option.value === value),
-  );
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="relative flex rounded-pill border border-line bg-surface-sunken p-1"
-    >
-      <span
-        aria-hidden
-        className="absolute inset-y-1 rounded-pill bg-surface shadow-panel transition-transform duration-150 ease-out"
-        style={{
-          width: `calc((100% - 8px) / ${options.length})`,
-          left: 4,
-          transform: `translateX(${index * 100}%)`,
-        }}
-      />
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-label={option.label}
-            onClick={() => onChange(option.value)}
-            className={cn(
-              "press relative z-10 flex h-8 min-w-touch items-center justify-center gap-1.5 rounded-pill px-3 text-[13px] font-medium transition-colors",
-              active ? "text-ink" : "text-ink-faint hover:text-ink-muted",
-            )}
-          >
-            {option.text}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
@@ -241,7 +179,7 @@ export function Modal({
 
   return (
     <div
-      className="modal-scrim fixed inset-0 z-50 flex items-end justify-center bg-scrim p-4 sm:items-center"
+      className="modal-scrim fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm p-4 sm:items-center"
       onClick={onCancel}
     >
       <div
@@ -249,14 +187,14 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="modal-panel w-full max-w-sm rounded-lg border border-line bg-surface p-6 shadow-panel"
+        className="modal-panel w-full max-w-sm rounded-2xl glass-panel p-6 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id={titleId} className="text-title text-ink">
+        <h2 id={titleId} className="text-xl font-semibold text-white">
           {title}
         </h2>
-        <p className="mt-2 text-[14px] text-ink-muted">{description}</p>
-        <div className="mt-6 flex justify-end gap-2">
+        <p className="mt-3 text-[14px] text-white/70 leading-relaxed">{description}</p>
+        <div className="mt-8 flex justify-end gap-3">
           <Button tone="quiet" onClick={onCancel}>
             Cancel
           </Button>
@@ -291,16 +229,16 @@ export function ToastProvider({ children }: { readonly children: ReactNode }) {
       {children}
       <div
         aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-24 z-50 flex flex-col items-center gap-2 px-4 sm:bottom-6"
+        className="pointer-events-none fixed inset-x-0 bottom-24 z-50 flex flex-col items-center gap-3 px-4 sm:bottom-8"
       >
         {toasts.map((toast) => (
           <div
             key={toast.id}
             className={cn(
-              "toast-in pointer-events-auto max-w-sm rounded-md border border-l-4 bg-surface px-4 py-3 text-[14px] shadow-panel",
+              "toast-in pointer-events-auto max-w-sm rounded-xl border-l-4 glass-panel px-5 py-3.5 text-[14px] font-medium shadow-2xl transition-all duration-300",
               toast.tone === "danger"
-                ? "border-line border-l-danger text-danger"
-                : "border-line border-l-accent text-ink",
+                ? "border-l-danger text-white border-white/10"
+                : "border-l-accent text-white border-white/10",
             )}
           >
             {toast.text}

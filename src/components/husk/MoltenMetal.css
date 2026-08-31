@@ -1,0 +1,13 @@
+/* MoltenMetal container: fills its nearest positioned ancestor. */
+.molten-metal-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .molten-metal-container canvas {
+    visibility: hidden;
+  }
+}

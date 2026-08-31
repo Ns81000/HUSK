@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { CheckIcon, CopyIcon, LinkIcon, LeaveIcon, ShieldIcon } from "./icons";
-import { Button, IconButton, SegmentedControl, useToast } from "./primitives";
+import { Button, IconButton, useToast } from "./primitives";
 import type { ConnectionStatus } from "@/lib/husk/connection";
 import type { RoomState } from "@/lib/husk/room-machine";
 import { inGraceWindow, useRoomStore } from "@/lib/husk/store";
-import { useTheme } from "@/lib/husk/theme";
 import { cn } from "@/lib/utils";
 
 const statusCopy = {
@@ -64,7 +63,6 @@ export function RoomInfoPanel({
   readonly onLeave: () => void;
 }) {
   const notify = useToast();
-  const { theme, setTheme } = useTheme();
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState(false);
 
@@ -90,24 +88,28 @@ export function RoomInfoPanel({
   return (
     <div className="flex h-full flex-col gap-6">
       <div>
-        <p className="text-caption uppercase tracking-wide text-ink-faint">Room</p>
-        <p className="tabular mt-1 text-display text-ink">{roomId}</p>
-        <p className="mt-1 text-caption text-ink-muted">
+        <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">Room</p>
+        <p className="tabular mt-1.5 text-[28px] font-semibold leading-tight text-ink">{roomId}</p>
+        <p className="mt-1.5 text-caption text-ink-muted">
           {participants} {participants === 1 ? "participant" : "participants"} connected
         </p>
       </div>
 
+      <div className="info-divider" />
+
       <div>
-        <p className="text-caption uppercase tracking-wide text-ink-faint">Invite link</p>
+        <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">
+          Invite link
+        </p>
         <div className="mt-2 flex items-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-surface-sunken px-3 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line/30 bg-surface-sunken/40 px-3 py-2.5">
             <LinkIcon className="h-4 w-4 shrink-0 text-ink-faint" />
             <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>
           </div>
           <IconButton
             label={copied ? "Invite link copied" : "Copy invite link"}
             onClick={() => void copy()}
-            className="border border-line"
+            className="rounded-lg border border-line/30"
           >
             {copied ? <CheckIcon className="swap-check text-ok" /> : <CopyIcon />}
           </IconButton>
@@ -117,11 +119,14 @@ export function RoomInfoPanel({
             Clipboard access was refused. Ask your browser to allow it and retry.
           </p>
         ) : null}
-        <p className="mt-2 text-caption text-ink-faint">
+        <p className="mt-2 text-caption text-ink-faint/70">
           The part after the hash is the encryption key. It never reaches the server.
         </p>
       </div>
-      <div className="flex items-start gap-2 rounded-md border border-line bg-surface-sunken p-3 text-caption text-ink-muted">
+
+      <div className="info-divider" />
+
+      <div className="flex items-start gap-3 rounded-lg border border-line/20 bg-surface-sunken/30 p-3.5 text-caption text-ink-muted">
         <ShieldIcon className="mt-0.5 shrink-0 text-ok" />
         <span>
           Messages and files are encrypted with AES-256-GCM in this browser. The relay stores
@@ -129,17 +134,8 @@ export function RoomInfoPanel({
         </span>
       </div>
 
-      <div className="mt-auto space-y-4">
-        <SegmentedControl
-          label="Theme"
-          value={theme}
-          onChange={setTheme}
-          options={[
-            { value: "light", text: "Light" },
-            { value: "dark", text: "Dark" },
-          ]}
-        />
-        <Button tone="danger" full onClick={onLeave}>
+      <div className="mt-auto">
+        <Button tone="danger" full onClick={onLeave} className="rounded-lg">
           <LeaveIcon />
           Leave room
         </Button>

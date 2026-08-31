@@ -1,34 +1,35 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type CSSProperties } from "react";
-import { Button, Panel, SegmentedControl } from "@/components/husk/primitives";
-import { Grainient } from "@/components/husk/Grainient";
-import { HuskMark, MoonIcon, ShieldIcon, SunIcon } from "@/components/husk/icons";
+import { Button, Panel } from "@/components/husk/primitives";
+import { MoltenMetal } from "@/components/husk/MoltenMetal";
+import { HuskMark, ShieldIcon } from "@/components/husk/icons";
 import { createRoom, WorkerNotConfiguredError } from "@/lib/husk/api";
 import { generateRoomKeyFragment } from "@/lib/husk/crypto";
 import { WORKER_URL } from "@/lib/husk/config";
-import { useTheme } from "@/lib/husk/theme";
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Husk — ephemeral encrypted rooms" },
-      {
-        name: "description",
-        content:
-          "Husk creates temporary end-to-end encrypted rooms for chat and files. Nothing is stored: when everyone leaves, the room is gone.",
-      },
-      { property: "og:title", content: "Husk — ephemeral encrypted rooms" },
-      {
-        property: "og:description",
-        content:
-          "Temporary end-to-end encrypted chat and file sharing. The relay never holds your key.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
-  }),
-  component: Landing,
-});
+export const Route = createFileRoute("/")(
+  {
+    head: () => ({
+      meta: [
+        { title: "Husk — ephemeral encrypted rooms" },
+        {
+          name: "description",
+          content:
+            "Husk creates temporary end-to-end encrypted rooms for chat and files. Nothing is stored: when everyone leaves, the room is gone.",
+        },
+        { property: "og:title", content: "Husk — ephemeral encrypted rooms" },
+        {
+          property: "og:description",
+          content:
+            "Temporary end-to-end encrypted chat and file sharing. The relay never holds your key.",
+        },
+        { property: "og:type", content: "website" },
+        { name: "twitter:card", content: "summary_large_image" },
+      ],
+    }),
+    component: Landing,
+  },
+);
 
 function enter(delayMs: number): CSSProperties {
   return { "--enter-delay": `${delayMs}ms` } as CSSProperties;
@@ -36,7 +37,6 @@ function enter(delayMs: number): CSSProperties {
 
 function Landing() {
   const navigate = useNavigate();
-  const { theme, setTheme } = useTheme();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -62,17 +62,26 @@ function Landing() {
 
   return (
     <main className="relative flex min-h-screen flex-col">
-      <Grainient />
-
-      <div className="fixed right-4 top-4 z-20">
-        <SegmentedControl
-          label="Theme"
-          value={theme}
-          onChange={setTheme}
-          options={[
-            { value: "light", text: <SunIcon className="h-4 w-4" />, label: "Light theme" },
-            { value: "dark", text: <MoonIcon className="h-4 w-4" />, label: "Dark theme" },
-          ]}
+      <div className="fixed inset-0 z-0">
+        <MoltenMetal
+          color1="#0a3f26"
+          color2="#1c8a58"
+          color3="#3ce767"
+          speed={0.3}
+          scale={4}
+          detail={3}
+          glow={1.6}
+          coreSize={0.1}
+          swirl={1}
+          fold={-0.2}
+          blackPoint={0.05}
+          brightness={1.2}
+          colorMode="molten"
+          grain={true}
+          grainIntensity={0.04}
+          mouseInteraction={true}
+          mouseStrength={0.25}
+          opacity={1.0}
         />
       </div>
 

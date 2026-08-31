@@ -9,7 +9,6 @@ import {
   FileIcon,
   SendIcon,
   SpinnerIcon,
-  WaitingMark,
   WarnIcon,
 } from "./icons";
 import { Button, IconButton } from "./primitives";
@@ -47,7 +46,7 @@ export function shouldSubmitOnEnter(event: {
 
 function MessageText({ text }: { readonly text: string }) {
   return (
-    <p className="whitespace-pre-wrap break-words text-[15px]">
+    <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">
       {tokenize(text).map((token, index) =>
         token.kind === "link" ? (
           <a
@@ -55,7 +54,7 @@ function MessageText({ text }: { readonly text: string }) {
             href={token.href}
             rel="noopener noreferrer"
             target="_blank"
-            className="underline decoration-line-strong underline-offset-2 hover:decoration-current"
+            className="underline decoration-accent/40 underline-offset-2 transition-colors hover:decoration-accent"
           >
             {token.value}
           </a>
@@ -79,9 +78,11 @@ export function FileCard({
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="w-56 rounded-md border border-line bg-surface p-3 sm:w-64">
+    <div className="file-card w-56 rounded-lg border border-line bg-surface-sunken/50 p-3 sm:w-64">
       <div className="flex items-center gap-3">
-        <FileIcon className="shrink-0 text-ink-muted" />
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent/10">
+          <FileIcon className="text-accent" />
+        </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[14px] font-medium text-ink">{body.name}</p>
           <p className="text-caption text-ink-muted">
@@ -139,7 +140,7 @@ function DeliveryNote({
 }) {
   if (entry.delivery === "sending") {
     return (
-      <span className="flex items-center gap-1 text-caption text-ink-faint">
+      <span className="flex items-center gap-1.5 text-caption text-ink-faint">
         <SpinnerIcon className="h-3 w-3" />
         Sending
       </span>
@@ -161,7 +162,7 @@ function DeliveryNote({
     );
   }
   return (
-    <span className="flex items-center gap-1 text-caption text-ink-faint">
+    <span className="flex items-center gap-1.5 text-caption text-ink-faint">
       <CheckIcon className="h-3 w-3 text-ok" />
       {formatTime(entry.ts)}
     </span>
@@ -178,24 +179,25 @@ const MessageItem = memo(function MessageItem({
 }) {
   if (entry.system !== undefined) {
     return (
-      <p className="system-marker px-2 text-center text-caption" role="note">
+      <div className="system-marker px-2 text-center text-caption" role="note">
         <span className="shrink-0">{entry.system}</span>
-      </p>
+        <span className="ml-2 text-[11px] text-ink-faint/60">{formatTime(entry.ts)}</span>
+      </div>
     );
   }
   if (entry.delivery === "unverified") {
     return (
-      <p className="system-marker px-2 text-center text-caption text-warn" role="note">
+      <div className="system-marker px-2 text-center text-caption text-warn" role="note">
         <WarnIcon className="h-3.5 w-3.5 shrink-0" />
         <span className="shrink-0">A message could not be verified and was discarded.</span>
-      </p>
+      </div>
     );
   }
   return (
     <div className={cn("flex flex-col gap-1", entry.mine ? "items-end" : "items-start")}>
       <div
         className={cn(
-          "bubble max-w-[85%] rounded-lg px-4 py-3 sm:max-w-[70%]",
+          "bubble max-w-[90%] px-4 py-3 sm:max-w-[70%]",
           entry.mine ? "bubble-mine text-ink" : "bubble-theirs text-ink",
         )}
       >
@@ -246,13 +248,13 @@ export function MessageList({
 
   if (ordered.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-        <WaitingMark className="waiting-pulse text-line-strong" />
+      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
+        <div className="empty-rings" />
         <div>
           <p className="text-title text-ink">
             {state === "waiting_for_peer" ? "Waiting for someone to join" : "No messages yet"}
           </p>
-          <p className="mt-1 text-[14px] text-ink-muted">
+          <p className="mt-2 text-[14px] text-ink-muted">
             Messages are encrypted in this browser before they leave it.
           </p>
         </div>
@@ -324,13 +326,15 @@ export function Composer({
   }
 
   return (
-    <div className="safe-bottom border-t border-line bg-surface px-4 pt-3 sm:px-6">
+    <div className="composer-bar safe-bottom px-4 pt-3 sm:px-6">
       {busy ? (
         <div className="upload-bar mb-3" role="status" aria-label="Encrypting and uploading file" />
       ) : null}
       {failedFile !== null ? (
-        <div className="mb-2 flex items-center gap-3 rounded-md border border-danger/40 border-l-4 border-l-danger bg-surface-raised p-3">
-          <FileIcon className="shrink-0 text-ink-muted" />
+        <div className="mb-2 flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/5 p-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-danger/10">
+            <FileIcon className="text-danger" />
+          </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-[14px] font-medium text-ink">{failedFile.name}</p>
             <p className="text-caption text-danger">Upload failed · not sent</p>
@@ -368,7 +372,7 @@ export function Composer({
           label="Attach a file"
           disabled={disabled || busy}
           onClick={() => fileRef.current?.click()}
-          className="border border-line"
+          className="rounded-lg border border-line/50 hover:border-accent/30"
         >
           <AttachIcon />
         </IconButton>
@@ -377,7 +381,7 @@ export function Composer({
           value={draft}
           disabled={disabled}
           rows={1}
-          placeholder="Write a message"
+          placeholder="Write a message…"
           aria-label="Message"
           onChange={(event) => {
             setDraft(event.target.value);
@@ -389,19 +393,20 @@ export function Composer({
               void submit();
             }
           }}
-          className="max-h-[160px] min-h-touch flex-1 resize-none rounded-md border border-line bg-surface-raised px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-faint"
+          className="composer-input max-h-[160px] min-h-touch flex-1 resize-none rounded-lg border border-line/50 bg-surface-sunken/50 px-4 py-2.5 text-[15px] text-ink transition-all placeholder:text-ink-faint"
         />
         <Button
           onClick={() => void submit()}
           disabled={disabled || draft.trim().length === 0}
           aria-label="Send message"
+          className="rounded-lg"
         >
           <SendIcon />
           <span className="hidden sm:inline">Send</span>
         </Button>
       </div>
-      <p className="pb-2 pt-2 text-caption text-ink-faint">
-        {busy ? "Encrypting and uploading file…" : "Enter to send, Shift plus Enter for a new line"}
+      <p className="pb-2 pt-2 text-center text-caption text-ink-faint/60">
+        {busy ? "Encrypting and uploading file…" : "Enter to send · Shift + Enter for new line"}
       </p>
     </div>
   );
