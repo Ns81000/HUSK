@@ -36,6 +36,7 @@ test-results/
 playwright-report/
 pw-*.log
 verify.log
+workspace_files_metadata.txt
 
 # Live-test debug artifacts
 live-tests/debug-*.png
