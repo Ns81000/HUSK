@@ -82,6 +82,19 @@ export function createRoomStore(
   /** localId -> arrival time, capped so a long session cannot grow unbounded. */
   const seenRelays = new Map<string, number>();
   const SEEN_RELAYS_LIMIT = 1000;
+  /**
+   * Highest server seq observed this session. Local-only entries (system
+   * notes, unacked sends) take a fractional seq just past it, so they sort
+   * between the messages around them instead of being pinned to the bottom
+   * of the transcript forever.
+   */
+  let lastSeenSeq = 0;
+
+  function observeSeq(seq: number): void {
+    if (seq > lastSeenSeq) {
+      lastSeenSeq = seq;
+    }
+  }
 
   function rememberRelay(localId: string): void {
     if (seenRelays.size >= SEEN_RELAYS_LIMIT) {
@@ -137,7 +150,11 @@ export function createRoomStore(
         ...current.entries,
         {
           id: nextId(),
-          seq: Number.MAX_SAFE_INTEGER,
+          // Fractional seq just past the last server message: the note renders
+          // at the bottom now (it is the newest event) and stays there when
+          // later messages with higher seq arrive, instead of being pinned to
+          // the end of the transcript by MAX_SAFE_INTEGER.
+          seq: lastSeenSeq + 0.5,
           mine: false,
           senderId: "system",
           ts: Date.now(),
@@ -209,6 +226,7 @@ export function createRoomStore(
     switch (message.t) {
       case "welcome": {
         stopGrace();
+        observeSeq(message.seq);
         store.setState({
           selfId: message.you,
           participants: message.participants,
@@ -233,6 +251,7 @@ export function createRoomStore(
       }
       case "ack": {
         clearAckTimer(message.localId);
+        observeSeq(message.seq);
         store.setState((current) => ({
           entries: current.entries.map((entry) =>
             entry.id === message.localId ? { ...entry, seq: message.seq, delivery: "sent" } : entry,
@@ -245,6 +264,7 @@ export function createRoomStore(
         if (key === null) {
           return;
         }
+        observeSeq(message.seq);
         const mine = message.senderId === store.getState().selfId;
         if (seenRelays.has(message.localId)) {
           // Receiver-side dedup: a resend after a lost ack must not produce a
@@ -350,7 +370,12 @@ export function createRoomStore(
         ...current.entries,
         {
           id,
-          seq: Number.MAX_SAFE_INTEGER,
+          // Fractional seq past the last observed server message: the bubble
+          // renders at the bottom (it is the newest event) and keeps its
+          // chronological place while the ack is in flight, instead of
+          // jumping below any peer message that arrives first. The ack
+          // replaces this with the server-assigned seq.
+          seq: lastSeenSeq + 0.75,
           mine: true,
           senderId: current.selfId,
           ts: Date.now(),
@@ -392,6 +417,7 @@ export function createRoomStore(
         malformedCount: 0,
       });
       seenRelays.clear();
+      lastSeenSeq = 0;
       try {
         roomKey = await importRoomKey(fragment);
       } catch {
@@ -519,6 +545,7 @@ export function createRoomStore(
       roomKey = null;
       keyFragment = null;
       seenRelays.clear();
+      lastSeenSeq = 0;
       clearAllAckTimers();
       stopGrace();
       store.setState({

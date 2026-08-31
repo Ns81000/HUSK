@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateRoomKeyFragment, importRoomKey, seal } from "./crypto";
+import { PEER_GRACE_MS } from "./config";
 import type { ConnectionHandlers } from "./connection";
 import { orderedEntries, type ChatEntry, type ConnectionLike } from "./store";
 import type { SealedBody, SealedEnvelope, ServerMessage } from "./protocol";
@@ -414,14 +415,70 @@ describe("message ordering", () => {
     expect(orderedEntries(tied).map((e) => e.id)).toEqual(["early", "late"]);
   });
 
-  it("orderedEntries always sorts system messages after real messages", () => {
-    // System entries use MAX_SAFE_INTEGER seq regardless of their wall-clock ts.
+  it("orderedEntries slots system notes into their chronological position", () => {
+    // System notes carry a fractional seq just past the last server message,
+    // so a note written between two messages keeps that place in the
+    // transcript instead of being pinned to the bottom.
     const mixed = [
-      entry({ id: "sys", seq: Number.MAX_SAFE_INTEGER, ts: 1, system: "left" }),
-      entry({ id: "m9", seq: 9, ts: 999 }),
       entry({ id: "m2", seq: 2, ts: 2 }),
+      entry({ id: "sys", seq: 2.5, ts: 3, system: "left" }),
+      entry({ id: "m3", seq: 3, ts: 4 }),
     ];
-    expect(orderedEntries(mixed).map((e) => e.id)).toEqual(["m2", "m9", "sys"]);
+    expect(orderedEntries(mixed).map((e) => e.id)).toEqual(["m2", "sys", "m3"]);
+  });
+
+  it("a system note keeps its place while later messages arrive", async () => {
+    vi.useFakeTimers();
+    FakeConnection.instances = [];
+    vi.stubEnv("VITE_WORKER_URL", "https://relay.example");
+    vi.resetModules();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = await connectedStore();
+      const conn = lastConn();
+      welcome(conn);
+      const key = await importRoomKey(FRAGMENT);
+      const payload = await seal<SealedBody>(key, { kind: "text", text: "before", sentAt: 1 });
+
+      peerRelay(conn, payload, { localId: "m1", seq: 1, ts: 1 });
+      await flushDecrypt();
+      // Peer leaves, the grace timer expires, the system note is written.
+      conn.handlers.onMessage({
+        t: "presence",
+        event: "leave",
+        who: "p2",
+        participants: [{ id: "me", joinedAt: 1 }],
+      });
+      await vi.advanceTimersByTimeAsync(PEER_GRACE_MS);
+      expect(store.getState().entries.some((entry) => entry.system !== undefined)).toBe(true);
+
+      // The peer rejoins and sends another message: the note must stay
+      // between the two messages, not slide to the bottom.
+      conn.handlers.onMessage({
+        t: "presence",
+        event: "join",
+        who: "p2",
+        participants: [
+          { id: "me", joinedAt: 1 },
+          { id: "p2", joinedAt: 2 },
+        ],
+      });
+      peerRelay(conn, payload, { localId: "m2", seq: 2, ts: 2 });
+      await flushDecrypt();
+
+      const ordered = orderedEntries(store.getState().entries).map((e) => e.id);
+      expect(ordered.indexOf("m1")).toBeLessThan(ordered.indexOf("m2"));
+      const sysIndex = ordered.findIndex((id) => {
+        const found = store.getState().entries.find((e) => e.id === id);
+        return found?.system !== undefined;
+      });
+      expect(sysIndex).toBeGreaterThan(ordered.indexOf("m1"));
+      expect(sysIndex).toBeLessThan(ordered.indexOf("m2"));
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it("out-of-order relays render in seq order", async () => {
