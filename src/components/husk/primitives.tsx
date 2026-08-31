@@ -28,10 +28,8 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 const toneClass = {
   primary: "btn-tactile-primary text-[#04180c] font-semibold",
-  quiet:
-    "bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 text-white/90 shadow-sm shadow-black/20 hover:-translate-y-0.5 active:translate-y-0.5 active:scale-[0.97]",
-  danger:
-    "bg-danger/10 border border-danger/30 text-danger hover:bg-danger/20 hover:border-danger/50 shadow-sm shadow-black/20 hover:-translate-y-0.5 active:translate-y-0.5 active:scale-[0.97]",
+  quiet: "btn-tactile-quiet font-medium",
+  danger: "btn-tactile-danger font-semibold",
 } satisfies Record<ButtonTone, string>;
 
 export function Button({
@@ -55,7 +53,7 @@ export function Button({
         toneClass[tone],
         loading && "cursor-wait opacity-90",
         isInactive &&
-          "cursor-not-allowed bg-white/10 text-white/30 border-white/5 shadow-none filter-none transform-none",
+          "cursor-not-allowed shadow-none filter-none transform-none",
         full === true && "w-full",
         className,
       )}
@@ -76,7 +74,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/5 border border-white/10 text-white/80 transition-all duration-200 hover:bg-white/10 hover:text-white hover:border-white/20 disabled:text-white/30",
+        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-xl btn-tactile-icon text-white/90 disabled:opacity-40 disabled:pointer-events-none",
         className,
       )}
     />

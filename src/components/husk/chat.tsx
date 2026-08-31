@@ -246,36 +246,55 @@ export function MessageList({
     [retryMessage],
   );
 
-  if (ordered.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
-        <div className="empty-rings" />
-        <div>
-          <p className="text-title text-ink">
-            {state === "waiting_for_peer" ? "Waiting for someone to join" : "No messages yet"}
-          </p>
-          <p className="mt-2 text-[14px] text-ink-muted">
-            Messages are encrypted in this browser before they leave it.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 space-y-4 overflow-y-auto px-4 py-6 sm:px-6"
+      className="relative flex flex-1 flex-col overflow-y-auto px-4 py-2 sm:px-6"
     >
-      {ordered.map((entry) => (
-        <MessageItem key={entry.id} entry={entry} onDownload={onDownload} onRetry={handleRetry} />
-      ))}
-      {state === "waiting_for_peer" && participants.length <= 1 ? (
-        <p className="pt-2 text-center text-caption text-ink-faint">
-          Nobody else is here yet — share the invite link above.
-        </p>
-      ) : null}
+      {ordered.length === 0 ? (
+        <div className="relative z-10 flex flex-1 flex-col items-center justify-center gap-3 py-6 px-4 text-center">
+          <img
+            src="/icons/husk-mark.svg"
+            alt="Husk"
+            width={56}
+            height={64}
+            className="mx-auto h-14 w-auto drop-shadow-[0_4px_16px_rgba(60,231,103,0.3)] select-none transition-transform duration-300 hover:scale-105"
+          />
+          <div>
+            <p className="text-[17px] font-semibold text-ink">
+              {state === "waiting_for_peer" ? "Waiting for someone to join" : "No messages yet"}
+            </p>
+            <p className="mt-1 text-[13px] text-ink-muted">
+              Messages are encrypted in this browser before they leave it.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="relative z-10 space-y-4 py-3">
+          {/* Subtle persistent background watermark when messages are active */}
+          <div
+            className="pointer-events-none fixed inset-x-0 top-1/2 -translate-y-1/2 flex items-center justify-center select-none"
+            aria-hidden="true"
+          >
+            <img
+              src="/icons/husk-mark.svg"
+              alt=""
+              width={140}
+              height={160}
+              className="h-36 w-auto opacity-[0.06] drop-shadow-[0_8px_32px_rgba(60,231,103,0.15)]"
+            />
+          </div>
+          {ordered.map((entry) => (
+            <MessageItem key={entry.id} entry={entry} onDownload={onDownload} onRetry={handleRetry} />
+          ))}
+          {state === "waiting_for_peer" && participants.length <= 1 ? (
+            <p className="pt-2 text-center text-caption text-ink-faint">
+              Nobody else is here yet — share the invite link above.
+            </p>
+          ) : null}
+        </div>
+      )}
       <div ref={bottomRef} />
     </div>
   );
@@ -326,9 +345,9 @@ export function Composer({
   }
 
   return (
-    <div className="composer-bar safe-bottom px-4 pt-3 sm:px-6">
+    <div className="composer-bar safe-bottom px-4 pt-2 pb-2 sm:px-6">
       {busy ? (
-        <div className="upload-bar mb-3" role="status" aria-label="Encrypting and uploading file" />
+        <div className="upload-bar mb-2" role="status" aria-label="Encrypting and uploading file" />
       ) : null}
       {failedFile !== null ? (
         <div className="mb-2 flex items-center gap-3 rounded-lg border border-danger/30 bg-danger/5 p-3">
@@ -352,7 +371,7 @@ export function Composer({
           </IconButton>
         </div>
       ) : null}
-      <div className="flex items-end gap-2">
+      <div className="flex items-center gap-2">
         <input
           ref={fileRef}
           type="file"
@@ -372,7 +391,7 @@ export function Composer({
           label="Attach a file"
           disabled={disabled || busy}
           onClick={() => fileRef.current?.click()}
-          className="rounded-lg border border-line/50 hover:border-accent/30"
+          className="shrink-0 rounded-xl"
         >
           <AttachIcon />
         </IconButton>
@@ -393,19 +412,19 @@ export function Composer({
               void submit();
             }
           }}
-          className="composer-input max-h-[160px] min-h-touch flex-1 resize-none rounded-lg border border-line/50 bg-surface-sunken/50 px-4 py-2.5 text-[15px] text-ink transition-all placeholder:text-ink-faint"
+          className="composer-input max-h-[160px] min-h-[44px] flex-1 resize-none rounded-xl border border-line/50 bg-surface-sunken/50 px-4 py-2.5 text-[15px] text-ink transition-all placeholder:text-ink-faint"
         />
         <Button
           onClick={() => void submit()}
           disabled={disabled || draft.trim().length === 0}
           aria-label="Send message"
-          className="rounded-lg"
+          className="shrink-0 h-11 px-4 rounded-xl font-medium"
         >
           <SendIcon />
           <span className="hidden sm:inline">Send</span>
         </Button>
       </div>
-      <p className="pb-2 pt-2 text-center text-caption text-ink-faint/60">
+      <p className="pt-1.5 pb-0 text-center text-[11px] text-ink-faint/50">
         {busy ? "Encrypting and uploading file…" : "Enter to send · Shift + Enter for new line"}
       </p>
     </div>

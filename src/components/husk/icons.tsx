@@ -31,7 +31,7 @@ export function SendIcon({ className }: IconProps) {
 export function AttachIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>
-      <path d="M17 8.5 9.9 15.6a2.5 2.5 0 0 0 3.5 3.5l7.1-7.1a4.5 4.5 0 0 0-6.4-6.4l-7 7a6.5 6.5 0 0 0 9.2 9.2l5.3-5.3" />
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
     </svg>
   );
 }

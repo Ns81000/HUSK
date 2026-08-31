@@ -188,20 +188,36 @@ function RoomScreen() {
       />
     );
   }
+  const [shareDismissed, setShareDismissed] = useState(false);
+  const hadPeerRef = useRef(false);
+  if (participants.length > 1) {
+    hadPeerRef.current = true;
+  }
   const shareLink = origin === "" ? "" : `${origin}/r/${roomId}#${keyFragment ?? ""}`;
-  const waiting = state === "waiting_for_peer" && participants.length <= 1;
+  const waiting =
+    state === "waiting_for_peer" &&
+    participants.length <= 1 &&
+    !hadPeerRef.current &&
+    !shareDismissed;
 
   return (
     <main className="flex h-screen flex-col bg-canvas">
       <header className="chat-header safe-top flex items-center gap-3 px-4 pb-3 sm:px-6">
-        <IconButton
-          label="Back to start"
+        <button
+          type="button"
+          aria-label="Back to start"
           onClick={() => void navigate({ to: "/" })}
-          className="-ml-2"
+          className="-ml-1 flex items-center justify-center p-1.5 transition-transform duration-200 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3ce767] rounded-lg"
         >
-          <BackIcon className="lg:hidden" />
-          <HuskMark size={22} className="hidden lg:block" />
-        </IconButton>
+          <BackIcon className="h-5 w-5 text-ink-muted hover:text-ink lg:hidden" />
+          <img
+            src="/icons/husk-mark.svg"
+            alt="Husk"
+            width={28}
+            height={32}
+            className="h-7 w-auto drop-shadow-[0_2px_8px_rgba(60,231,103,0.25)] select-none hidden lg:block"
+          />
+        </button>
         <div className="min-w-0 flex-1">
           <p className="tabular truncate text-[15px] font-semibold text-ink">Room {roomId}</p>
           <ConnectionIndicator status={status} state={state} />
@@ -212,7 +228,11 @@ function RoomScreen() {
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <ShareCard shareLink={shareLink} visible={waiting} />
+        <ShareCard
+          shareLink={shareLink}
+          visible={waiting}
+          onDismiss={() => setShareDismissed(true)}
+        />
         <MessageList onDownload={onDownload} />
       </div>
 
@@ -296,9 +316,11 @@ function useIsDesktop(): boolean {
 function ShareCard({
   shareLink,
   visible,
+  onDismiss,
 }: {
   readonly shareLink: string;
   readonly visible: boolean;
+  readonly onDismiss?: () => void;
 }) {
   const notify = useToast();
   const [copied, setCopied] = useState(false);
@@ -347,9 +369,19 @@ function ShareCard({
 
   return (
     <div className="flex justify-center px-4 pt-6 sm:px-6">
-      <div className={cn("share-card w-full max-w-md p-6 text-center", collapsing && "collapse-out")}>
-        <div className="mx-auto flex h-12 w-12 items-center justify-center">
-          <ShieldIcon className="h-7 w-7 text-accent waiting-glow" />
+      <div className={cn("share-card relative w-full max-w-md p-6 text-center", collapsing && "collapse-out")}>
+        {onDismiss ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="Dismiss invite card"
+            className="absolute top-3.5 right-3.5 flex h-7 w-7 items-center justify-center rounded-lg text-ink-muted hover:text-ink hover:bg-white/5 transition-colors"
+          >
+            <span className="text-sm font-semibold leading-none">✕</span>
+          </button>
+        ) : null}
+        <div className="mx-auto flex h-13 w-13 items-center justify-center rounded-2xl btn-tactile-primary text-[#04180c] shadow-lg shadow-black/40">
+          <ShieldIcon className="h-6 w-6 stroke-[2.2]" />
         </div>
         <h2 className="mt-4 text-[17px] font-semibold text-ink">Waiting for someone to join</h2>
         <p className="mt-1.5 text-[14px] text-ink-muted">

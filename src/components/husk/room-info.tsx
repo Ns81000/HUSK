@@ -86,56 +86,59 @@ export function RoomInfoPanel({
   }
 
   return (
-    <div className="flex h-full flex-col gap-6">
-      <div>
-        <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">Room</p>
-        <p className="tabular mt-1.5 text-[28px] font-semibold leading-tight text-ink">{roomId}</p>
-        <p className="mt-1.5 text-caption text-ink-muted">
-          {participants} {participants === 1 ? "participant" : "participants"} connected
-        </p>
-      </div>
-
-      <div className="info-divider" />
-
-      <div>
-        <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">
-          Invite link
-        </p>
-        <div className="mt-2 flex items-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-line/30 bg-surface-sunken/40 px-3 py-2.5">
-            <LinkIcon className="h-4 w-4 shrink-0 text-ink-faint" />
-            <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>
-          </div>
-          <IconButton
-            label={copied ? "Invite link copied" : "Copy invite link"}
-            onClick={() => void copy()}
-            className="rounded-lg border border-line/30"
-          >
-            {copied ? <CheckIcon className="swap-check text-ok" /> : <CopyIcon />}
-          </IconButton>
-        </div>
-        {copyFallback ? (
-          <p className="mt-2 text-caption text-ink-muted">
-            Clipboard access was refused. Ask your browser to allow it and retry.
+    <div className="flex h-full flex-col justify-between">
+      <div className="space-y-5">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">
+            Room
           </p>
-        ) : null}
-        <p className="mt-2 text-caption text-ink-faint/70">
-          The part after the hash is the encryption key. It never reaches the server.
-        </p>
+          <p className="tabular mt-1 text-[24px] font-semibold leading-tight text-ink">{roomId}</p>
+          <p className="mt-1 text-caption text-ink-muted">
+            {participants} {participants === 1 ? "participant" : "participants"} connected
+          </p>
+        </div>
+
+        <div className="info-divider" />
+
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-widest text-ink-faint">
+            Invite link
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line/30 bg-surface-sunken/40 px-3 py-2.5">
+              <LinkIcon className="h-4 w-4 shrink-0 text-ink-faint" />
+              <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>
+            </div>
+            <IconButton
+              label={copied ? "Invite link copied" : "Copy invite link"}
+              onClick={() => void copy()}
+              className="rounded-xl shrink-0"
+            >
+              {copied ? <CheckIcon className="swap-check text-ok" /> : <CopyIcon />}
+            </IconButton>
+          </div>
+          {copyFallback ? (
+            <p className="mt-2 text-caption text-ink-muted">
+              Clipboard access was refused. Ask your browser to allow it and retry.
+            </p>
+          ) : null}
+          <p className="mt-1.5 text-[12px] text-ink-faint/70">
+            The key travels in the URL fragment — the server never sees it.
+          </p>
+        </div>
+
+        <div className="info-divider" />
+
+        <div className="flex items-start gap-3 rounded-xl border border-line/20 bg-surface-sunken/30 p-3.5 text-caption text-ink-muted">
+          <ShieldIcon className="mt-0.5 shrink-0 text-ok" />
+          <span className="text-[13px] leading-relaxed">
+            Messages and files are encrypted with AES-256-GCM in your browser. When everyone leaves, the room is deleted permanently.
+          </span>
+        </div>
       </div>
 
-      <div className="info-divider" />
-
-      <div className="flex items-start gap-3 rounded-lg border border-line/20 bg-surface-sunken/30 p-3.5 text-caption text-ink-muted">
-        <ShieldIcon className="mt-0.5 shrink-0 text-ok" />
-        <span>
-          Messages and files are encrypted with AES-256-GCM in this browser. The relay stores
-          nothing and holds no key.
-        </span>
-      </div>
-
-      <div className="mt-auto">
-        <Button tone="danger" full onClick={onLeave} className="rounded-lg">
+      <div className="pt-4">
+        <Button tone="danger" full onClick={onLeave} className="rounded-xl h-11 text-[15px] font-semibold">
           <LeaveIcon />
           Leave room
         </Button>
