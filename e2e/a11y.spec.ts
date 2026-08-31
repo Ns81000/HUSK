@@ -1,6 +1,6 @@
 /**
- * Axe smoke specs (audit Phase 5, item 5): landing screen, PIN-entry screen
- * and the room screen — in both themes — with zero violations.
+ * Axe smoke specs: landing screen and the room screen — in both themes —
+ * with zero violations.
  *
  * These run against the real production build served by wrangler/workerd
  * (see playwright.config.ts). Run with `pnpm test:a11y`.
@@ -39,23 +39,17 @@ for (const theme of THEMES) {
   test(`landing screen — zero axe violations, ${theme} theme`, async ({ page }) => {
     useTheme(page, theme);
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Husk", level: 1 })).toBeVisible();
-    expect(await axeViolations(page)).toEqual([]);
-  });
-
-  test(`PIN entry screen — zero axe violations, ${theme} theme`, async ({ page }) => {
-    useTheme(page, theme);
-    await page.goto("/");
-    await page.getByRole("button", { name: "Join with a PIN" }).click();
-    await expect(page.getByRole("heading", { name: "Enter the room PIN" })).toBeVisible();
-    expect(page.getByRole("button", { name: "1" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "HUSK", level: 1 })).toBeVisible();
+    // Let the staggered entrance animations settle before measuring contrast.
+    await page.waitForTimeout(700);
     expect(await axeViolations(page)).toEqual([]);
   });
 
   test(`room screen — zero axe violations, ${theme} theme`, async ({ page }) => {
     useTheme(page, theme);
-    await page.goto("/r/123456");
+    await page.goto("/r/ab3xk9m2");
     await expect(page.getByRole("heading", { name: "This link has no key" })).toBeVisible();
+    await page.waitForTimeout(700);
     expect(await axeViolations(page)).toEqual([]);
   });
 }

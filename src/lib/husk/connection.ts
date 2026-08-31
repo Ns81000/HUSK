@@ -48,12 +48,12 @@ export type ConnectionHandlers = {
   readonly fetchJoinToken: () => Promise<JoinResult>;
 };
 
-export function roomSocketUrl(pin: string, joinToken: string): string {
+export function roomSocketUrl(roomId: string, joinToken: string): string {
   const base = WORKER_URL;
   if (base.length === 0) {
     throw new Error("VITE_WORKER_URL is not configured");
   }
-  const url = new URL(`${base}/room/${pin}/socket`);
+  const url = new URL(`${base}/room/${roomId}/socket`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("jt", joinToken);
   return url.toString();
@@ -75,7 +75,7 @@ export class RoomConnection {
   private readonly outbox: OutboxEntry[] = [];
 
   constructor(
-    private readonly pin: string,
+    private readonly roomId: string,
     private readonly handlers: ConnectionHandlers,
   ) {}
 
@@ -134,7 +134,7 @@ export class RoomConnection {
   }
 
   private open(joinToken: string): void {
-    const socket = new WebSocket(roomSocketUrl(this.pin, joinToken));
+    const socket = new WebSocket(roomSocketUrl(this.roomId, joinToken));
     this.socket = socket;
 
     socket.addEventListener("open", () => {

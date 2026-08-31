@@ -11,8 +11,8 @@ export const ROOM_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 /** Alarm cadence used to evaluate expiry conditions. */
 export const ALARM_INTERVAL_MS = 60 * 1000;
 
-/** The single PIN shape accepted by every room route. */
-export const PIN_PATTERN = /^[1-9][0-9]{5}$/;
+/** The single room-id shape accepted by every room route. */
+export const ROOM_ID_PATTERN = /^[a-z0-9]{8}$/;
 
 /** Join rate limiting. */
 export const JOIN_WINDOW_SECONDS = 5 * 60;

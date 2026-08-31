@@ -14,7 +14,7 @@ class FakeConnection implements ConnectionLike {
   resetBackoffCalls = 0;
 
   constructor(
-    readonly pin: string,
+    readonly roomId: string,
     readonly handlers: ConnectionHandlers,
   ) {
     FakeConnection.instances.push(this);
@@ -88,7 +88,7 @@ async function flushDecrypt(): Promise<void> {
 
 async function makeStore() {
   const { createRoomStore } = await import("./store");
-  return createRoomStore((pin, handlers) => new FakeConnection(pin, handlers));
+  return createRoomStore((roomId, handlers) => new FakeConnection(roomId, handlers));
 }
 
 async function connectedStore() {

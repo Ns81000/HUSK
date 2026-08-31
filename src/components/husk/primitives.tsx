@@ -17,35 +17,51 @@ import {
   type Ref,
 } from "react";
 import { cn } from "@/lib/utils";
+import { SpinnerIcon } from "./icons";
 
 type ButtonTone = "primary" | "quiet" | "danger";
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   readonly tone?: ButtonTone;
   readonly full?: boolean;
+  readonly loading?: boolean;
   readonly ref?: Ref<HTMLButtonElement>;
 };
 
 const toneClass = {
   primary:
-    "bg-accent text-accent-ink hover:bg-accent-hover disabled:bg-line disabled:text-ink-faint",
-  quiet: "bg-surface text-ink border border-line hover:bg-surface-sunken disabled:text-ink-faint",
+    "bg-accent text-accent-ink hover:bg-accent-hover disabled:bg-line disabled:text-ink-faint disabled:opacity-70",
+  quiet:
+    "bg-surface text-ink border border-line hover:bg-surface-sunken disabled:text-ink-faint disabled:opacity-70",
   danger:
-    "bg-surface text-danger border border-line hover:bg-surface-sunken disabled:text-ink-faint",
+    "bg-surface text-danger border border-line hover:bg-surface-sunken disabled:text-ink-faint disabled:opacity-70",
 } satisfies Record<ButtonTone, string>;
 
-export function Button({ tone = "primary", full, className, ...rest }: ButtonProps) {
+export function Button({
+  tone = "primary",
+  full,
+  loading = false,
+  className,
+  disabled,
+  children,
+  ...rest
+}: ButtonProps) {
   return (
     <button
       {...rest}
+      disabled={disabled === true || loading}
+      aria-busy={loading || undefined}
       className={cn(
-        "touch-target inline-flex items-center justify-center gap-2 rounded-md px-4 text-[15px] font-medium transition-colors",
+        "touch-target press inline-flex items-center justify-center gap-2 rounded-md px-4 text-[15px] font-medium",
         "disabled:cursor-not-allowed",
         toneClass[tone],
         full === true && "w-full",
         className,
       )}
-    />
+    >
+      {loading ? <SpinnerIcon className="h-4 w-4" /> : null}
+      {children}
+    </button>
   );
 }
 
@@ -60,7 +76,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "touch-target inline-flex items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink disabled:text-ink-faint",
+        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink disabled:text-ink-faint",
         className,
       )}
     />
@@ -81,40 +97,65 @@ export function Panel({
   );
 }
 
-/** Custom switch. Never a native checkbox. */
-export function Switch({
-  checked,
+/**
+ * Segmented control with a sliding indicator. Two segments, one choice —
+ * used for the theme toggle.
+ */
+export function SegmentedControl<T extends string>({
+  value,
   onChange,
+  options,
   label,
 }: {
-  readonly checked: boolean;
-  readonly onChange: (next: boolean) => void;
+  readonly value: T;
+  readonly onChange: (next: T) => void;
+  readonly options: readonly {
+    readonly value: T;
+    readonly text: ReactNode;
+    /** Accessible name for icon-only segments. */
+    readonly label?: string;
+  }[];
   readonly label: string;
 }) {
+  const index = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
+    <div
+      role="radiogroup"
       aria-label={label}
-      onClick={() => onChange(!checked)}
-      className="touch-target inline-flex items-center gap-3 rounded-md px-1 text-[13px] text-ink-muted"
+      className="relative flex rounded-pill border border-line bg-surface-sunken p-1"
     >
       <span
-        className={cn(
-          "relative h-6 w-touch rounded-pill border transition-colors",
-          checked ? "border-accent bg-accent" : "border-line-strong bg-surface-sunken",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-[3px] h-4 w-4 rounded-pill transition-all",
-            checked ? "left-[25px] bg-accent-ink" : "left-[3px] bg-ink-faint",
-          )}
-        />
-      </span>
-      <span>{label}</span>
-    </button>
+        aria-hidden
+        className="absolute inset-y-1 rounded-pill bg-surface shadow-panel transition-transform duration-150 ease-out"
+        style={{
+          width: `calc((100% - 8px) / ${options.length})`,
+          left: 4,
+          transform: `translateX(${index * 100}%)`,
+        }}
+      />
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={option.label}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "press relative z-10 flex h-8 min-w-touch items-center justify-center gap-1.5 rounded-pill px-3 text-[13px] font-medium transition-colors",
+              active ? "text-ink" : "text-ink-faint hover:text-ink-muted",
+            )}
+          >
+            {option.text}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -200,7 +241,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim p-4 sm:items-center"
+      className="modal-scrim fixed inset-0 z-50 flex items-end justify-center bg-scrim p-4 sm:items-center"
       onClick={onCancel}
     >
       <div
@@ -208,7 +249,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-full max-w-sm rounded-lg border border-line bg-surface p-6 shadow-panel"
+        className="modal-panel w-full max-w-sm rounded-lg border border-line bg-surface p-6 shadow-panel"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id={titleId} className="text-title text-ink">
@@ -256,8 +297,10 @@ export function ToastProvider({ children }: { readonly children: ReactNode }) {
           <div
             key={toast.id}
             className={cn(
-              "pointer-events-auto max-w-sm rounded-md border bg-surface px-4 py-3 text-[14px] shadow-panel",
-              toast.tone === "danger" ? "border-danger text-danger" : "border-line text-ink",
+              "toast-in pointer-events-auto max-w-sm rounded-md border border-l-4 bg-surface px-4 py-3 text-[14px] shadow-panel",
+              toast.tone === "danger"
+                ? "border-line border-l-danger text-danger"
+                : "border-line border-l-accent text-ink",
             )}
           >
             {toast.text}

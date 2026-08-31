@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Drawer } from "vaul";
 import { Composer, MessageList } from "@/components/husk/chat";
-import { ErrorMark } from "@/components/husk/icons";
-import { Button, Modal, Panel, useToast } from "@/components/husk/primitives";
-import { ConnectionIndicator, RoomInfo } from "@/components/husk/room-info";
+import { BackIcon, CheckIcon, HuskMark, InfoIcon } from "@/components/husk/icons";
+import { Button, IconButton, Modal, Panel, useToast } from "@/components/husk/primitives";
+import { ConnectionIndicator, RoomInfoPanel } from "@/components/husk/room-info";
 import {
   EmptyFileError,
   FileTooLargeError,
@@ -16,12 +17,13 @@ import {
 import { importRoomKey } from "@/lib/husk/crypto";
 import { isTerminal, type RoomState } from "@/lib/husk/room-machine";
 import { useRoomStore } from "@/lib/husk/store";
+import { cn } from "@/lib/utils";
 import type { SealedBody } from "@/lib/husk/protocol";
 
-export const Route = createFileRoute("/r/$pin")({
+export const Route = createFileRoute("/r/$roomId")({
   head: ({ params }) => ({
     meta: [
-      { title: `Husk room ${params.pin}` },
+      { title: `Husk room ${params.roomId}` },
       {
         name: "description",
         content:
@@ -71,14 +73,15 @@ function closedCopyFor(state: RoomState): ClosedCopy {
   const entry = (CLOSED_COPY as Record<string, ClosedCopy | undefined>)[state];
   return entry ?? CLOSED_COPY.closed_not_found;
 }
-
 function RoomScreen() {
-  const { pin } = Route.useParams();
+  const { roomId } = Route.useParams();
   const navigate = useNavigate();
   const notify = useToast();
   const [keyFragment, setKeyFragment] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [origin, setOrigin] = useState("");
+  const isDesktop = useIsDesktop();
 
   const state = useRoomStore((store) => store.state);
   const status = useRoomStore((store) => store.status);
@@ -97,12 +100,11 @@ function RoomScreen() {
     if (fragment.length === 0) {
       return;
     }
-    void connect(pin, fragment);
+    void connect(roomId, fragment);
     return () => {
       useRoomStore.getState().leave();
     };
-  }, [pin, connect]);
-
+  }, [roomId, connect]);
   const onSendFile = useCallback(
     async (file: File) => {
       if (keyFragment === null) {
@@ -120,7 +122,7 @@ function RoomScreen() {
       }
       const key = await importRoomKey(keyFragment);
       try {
-        const grant = await requestFileUpload(pin, selfId, file.size);
+        const grant = await requestFileUpload(roomId, selfId, file.size);
         const uploaded = await encryptAndUpload(key, file, grant, () => undefined);
         const body: SealedBody = {
           kind: "file",
@@ -144,7 +146,7 @@ function RoomScreen() {
         throw error;
       }
     },
-    [keyFragment, pin, status, selfId, sendFileMessage, cancelFile],
+    [keyFragment, roomId, status, selfId, sendFileMessage, cancelFile],
   );
 
   const onDownload = useCallback(
@@ -153,7 +155,7 @@ function RoomScreen() {
         return;
       }
       const key = await importRoomKey(keyFragment);
-      const blob = await downloadAndDecrypt(key, pin, body, body.mime, () => undefined);
+      const blob = await downloadAndDecrypt(key, roomId, body, body.mime, () => undefined);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -162,7 +164,7 @@ function RoomScreen() {
       URL.revokeObjectURL(url);
       notify("File decrypted and downloaded.");
     },
-    [keyFragment, pin, notify],
+    [keyFragment, roomId, notify],
   );
 
   if (keyFragment !== null && keyFragment.length === 0) {
@@ -186,39 +188,77 @@ function RoomScreen() {
       />
     );
   }
-
-  const shareLink = origin === "" ? "" : `${origin}/r/${pin}#${keyFragment ?? ""}`;
+  const shareLink = origin === "" ? "" : `${origin}/r/${roomId}#${keyFragment ?? ""}`;
+  const waiting = state === "waiting_for_peer" && participants.length <= 1;
 
   return (
-    <main className="flex h-screen flex-col lg:flex-row">
-      <aside className="hidden w-80 shrink-0 border-r border-line bg-surface p-6 lg:block">
-        <RoomInfo
-          pin={pin}
-          shareLink={shareLink}
-          participants={participants.length}
-          onLeave={() => setConfirmLeave(true)}
-        />
-      </aside>
-
-      <section className="flex min-h-0 flex-1 flex-col">
-        <header className="safe-top flex items-center justify-between gap-4 border-b border-line bg-surface px-4 pb-3 sm:px-6">
-          <div>
-            <p className="tabular text-title text-ink">Room {pin}</p>
-            <ConnectionIndicator status={status} state={state} />
-          </div>
-          <Button tone="quiet" onClick={() => setConfirmLeave(true)} className="lg:hidden">
-            Leave
-          </Button>
-        </header>
-
-        <MessageList onDownload={onDownload} />
-
-        <div className="border-t border-line bg-surface px-4 py-3 lg:hidden">
-          <RoomInfoCompact pin={pin} shareLink={shareLink} participants={participants.length} />
+    <main className="flex h-screen flex-col">
+      <header className="safe-top flex items-center gap-3 border-b border-line bg-surface px-4 pb-3 sm:px-6">
+        <IconButton
+          label="Back to start"
+          onClick={() => void navigate({ to: "/" })}
+          className="-ml-2"
+        >
+          <BackIcon className="lg:hidden" />
+          <HuskMark size={22} className="hidden lg:block" />
+        </IconButton>
+        <div className="min-w-0 flex-1">
+          <p className="tabular truncate text-title text-ink">Room {roomId}</p>
+          <ConnectionIndicator status={status} state={state} />
         </div>
+        <IconButton label="Room info" onClick={() => setInfoOpen(true)}>
+          <InfoIcon />
+        </IconButton>
+      </header>
 
-        <Composer onSendFile={onSendFile} disabled={status !== "open"} />
-      </section>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <ShareCard shareLink={shareLink} visible={waiting} />
+        <MessageList onDownload={onDownload} />
+      </div>
+
+      <Composer onSendFile={onSendFile} disabled={status !== "open"} />
+
+      {isDesktop ? (
+        <div aria-hidden={!infoOpen}>
+          {infoOpen ? (
+            <div className="fixed inset-0 z-40">
+              <div
+                className="modal-scrim absolute inset-0 bg-scrim"
+                onClick={() => setInfoOpen(false)}
+              />
+              <aside
+                role="dialog"
+                aria-label="Room info"
+                className="drawer-panel absolute inset-y-0 right-0 flex w-80 max-w-[85vw] flex-col border-l border-line bg-surface p-6 shadow-panel"
+              >
+                <RoomInfoPanel
+                  roomId={roomId}
+                  shareLink={shareLink}
+                  participants={participants.length}
+                  onLeave={() => setConfirmLeave(true)}
+                />
+              </aside>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <Drawer.Root open={infoOpen} onOpenChange={setInfoOpen}>
+          <Drawer.Portal>
+            <Drawer.Overlay className="fixed inset-0 z-40 bg-scrim" />
+            <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 max-h-[85vh] rounded-t-xl border-t border-line bg-surface p-6 outline-none">
+              <div className="mx-auto mb-4 h-1.5 w-12 rounded-pill bg-line-strong" aria-hidden />
+              <div className="max-h-[calc(85vh-5rem)] overflow-y-auto">
+                <RoomInfoPanel
+                  roomId={roomId}
+                  shareLink={shareLink}
+                  participants={participants.length}
+                  onLeave={() => setConfirmLeave(true)}
+                />
+              </div>
+            </Drawer.Content>
+          </Drawer.Portal>
+        </Drawer.Root>
+      )}
 
       <Modal
         open={confirmLeave}
@@ -229,33 +269,104 @@ function RoomScreen() {
         onConfirm={() => {
           leave();
           setConfirmLeave(false);
+          setInfoOpen(false);
         }}
       />
     </main>
   );
 }
+/** 1024px matches the lg breakpoint used across the room layout. */
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (): void => setIsDesktop(mql.matches);
+    mql.addEventListener("change", onChange);
+    setIsDesktop(mql.matches);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return isDesktop;
+}
 
-function RoomInfoCompact({
-  pin,
+/**
+ * The first-room empty state: a prominent share card that auto-collapses the
+ * moment the first peer joins. Rendered above the message list so both the
+ * empty history and early messages keep their place.
+ */
+function ShareCard({
   shareLink,
-  participants,
+  visible,
 }: {
-  readonly pin: string;
   readonly shareLink: string;
-  readonly participants: number;
+  readonly visible: boolean;
 }) {
+  const notify = useToast();
+  const [copied, setCopied] = useState(false);
+  const [collapsing, setCollapsing] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const wasVisible = useRef(visible);
+
+  useEffect(() => {
+    if (wasVisible.current && !visible && !hidden) {
+      wasVisible.current = visible;
+      setCollapsing(true);
+      const timer = setTimeout(() => {
+        setCollapsing(false);
+        setHidden(true);
+      }, 260);
+      return () => clearTimeout(timer);
+    }
+    wasVisible.current = visible;
+    if (visible) {
+      setHidden(false);
+    }
+    return undefined;
+  }, [visible, hidden]);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  if (hidden || !visible) {
+    return null;
+  }
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      setCopied(true);
+      notify("Invite link copied.");
+    } catch {
+      notify("Clipboard access was refused — copy the link manually.", "danger");
+    }
+  }
+
   return (
-    <div className="flex items-center gap-3">
-      <input
-        readOnly
-        value={shareLink}
-        aria-label="Invite link"
-        onFocus={(event) => event.target.select()}
-        className="min-w-0 flex-1 rounded-md border border-line bg-surface-sunken px-3 py-2 text-caption text-ink-muted"
-      />
-      <span className="tabular text-caption text-ink-faint">
-        {participants} in room {pin}
-      </span>
+    <div className="flex justify-center px-4 pt-6 sm:px-6">
+      <Panel className={cn("w-full max-w-md text-center", collapsing && "collapse-out")}>
+        <HuskMark size={36} className="waiting-pulse mx-auto" />
+        <h2 className="text-title mt-4 text-ink">Waiting for someone to join</h2>
+        <p className="mt-1 text-[14px] text-ink-muted">
+          Share the invite link. It carries the room key in its fragment — the relay never sees it.
+        </p>
+        <div className="mt-4 flex items-center gap-2 rounded-md border border-line bg-surface-sunken px-3 py-2 text-left">
+          <span className="truncate text-caption text-ink-muted">{shareLink || "…"}</span>
+        </div>
+        <Button onClick={() => void copy()} className="mt-3" full>
+          {copied ? (
+            <>
+              <CheckIcon className="swap-check h-4 w-4" />
+              Copied
+            </>
+          ) : (
+            "Copy invite link"
+          )}
+        </Button>
+      </Panel>
     </div>
   );
 }
@@ -273,9 +384,9 @@ function ClosedScreen({
 }) {
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
-      <Panel className="max-w-md text-center">
-        <ErrorMark className="mx-auto text-line-strong" />
-        <h1 className="mt-4 text-title text-ink">{title}</h1>
+      <Panel className="fade-in max-w-md text-center">
+        <HuskMark size={48} className="mx-auto" />
+        <h1 className="mt-6 text-title text-ink">{title}</h1>
         <p className="mt-2 text-[14px] text-ink-muted">{body}</p>
         <div className="mt-6 flex flex-col gap-2">
           {onRetry !== undefined ? (

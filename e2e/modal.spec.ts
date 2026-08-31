@@ -13,14 +13,14 @@ import AxeBuilder from "@axe-core/playwright";
 
 const THEMES = ["light", "dark"] as const;
 
-function useTheme(page: Page, theme: (typeof THEMES)[number]): void {
+function setPageTheme(page: Page, theme: (typeof THEMES)[number]): void {
   void page.addInitScript((value) => {
     window.localStorage.setItem("husk-theme", value);
   }, theme);
 }
 
 async function openLeaveModal(page: Page, theme: (typeof THEMES)[number]): Promise<void> {
-  useTheme(page, theme);
+  setPageTheme(page, theme);
   // Mock relay endpoints: the modal flow must not need a live Worker.
   await page.route("**/room/create", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: "{}" }),
@@ -37,12 +37,17 @@ async function openLeaveModal(page: Page, theme: (typeof THEMES)[number]): Promi
 
   await page.goto("/");
   await page.getByRole("button", { name: "Create a room" }).click();
-  // The room header shows the PIN in a <p>, not a heading element.
-  await expect(page.getByText(/^Room \d{6}$/, { exact: true })).toBeVisible();
+  // The room header shows the room id in a <p>, not a heading element.
+  await expect(page.getByText(/^Room [a-z0-9]{8}$/, { exact: true })).toBeVisible();
+
+  // The leave control lives inside the room info drawer (desktop default
+  // viewport): open the drawer first.
+  await page.getByRole("button", { name: "Room info" }).click();
+  await expect(page.getByRole("dialog", { name: "Room info" })).toBeVisible();
 
   const invoker = page.getByRole("button", { name: "Leave room" });
   await invoker.click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog").filter({ hasText: "Leave this room?" });
   await expect(dialog).toBeVisible();
 }
 
@@ -76,9 +81,10 @@ for (const theme of THEMES) {
 
   test(`modal restores focus to the invoker on close — ${theme} theme`, async ({ page }) => {
     await openLeaveModal(page, theme);
+    const dialog = page.getByRole("dialog").filter({ hasText: "Leave this room?" });
 
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog")).toBeHidden();
+    await expect(dialog).toBeHidden();
     expect(await activeElementText(page)).toBe("Leave room");
 
     // Note: the confirm action is intentionally not asserted here — confirming
@@ -89,14 +95,15 @@ for (const theme of THEMES) {
   test(`modal closes on scrim click and axe stays clean — ${theme} theme`, async ({ page }) => {
     await openLeaveModal(page, theme);
 
+    // Let the drawer + modal entrance animations settle before measuring.
+    await page.waitForTimeout(500);
     const violations = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
       .analyze();
     expect(violations.violations.map((violation) => violation.id)).toEqual([]);
-
-    // Click far outside the dialog panel: hits the scrim, not the dialog.
+    // Click far outside the dialog panel: hits the modal scrim, not the dialog.
     await page.mouse.click(30, 360);
-    await expect(page.getByRole("dialog")).toBeHidden();
+    await expect(page.getByRole("dialog").filter({ hasText: "Leave this room?" })).toBeHidden();
     expect(await activeElementText(page)).toBe("Leave room");
   });
 }

@@ -13,11 +13,11 @@ import type { DurableObjectNamespace } from "../src/types";
 const TICKET_SECRET = "integration-test-secret";
 const CHUNK_BYTES = 1024 * 1024;
 
-/** Fresh PIN per test so every test gets its own Durable Object. */
-let pinCounter = 100_000;
+/** Fresh room id per test so every test gets its own Durable Object. */
+let roomIdCounter = 100_000;
 function freshPin(): string {
-  pinCounter += 1;
-  return String(pinCounter);
+  roomIdCounter += 1;
+  return roomIdCounter.toString(36).padStart(8, "0");
 }
 
 function api(path: string, init?: RequestInit): Promise<Response> {
@@ -30,8 +30,8 @@ function apiAbsolute(url: string, init?: RequestInit): Promise<Response> {
   return SELF.fetch(new Request(`http://localhost${parsed.pathname}${parsed.search}`, init));
 }
 
-async function createRoom(pin: string): Promise<Response> {
-  return api("/room/create", { method: "POST", body: JSON.stringify({ pin }) });
+async function createRoom(roomId: string): Promise<Response> {
+  return api("/room/create", { method: "POST", body: JSON.stringify({ roomId }) });
 }
 
 /** Unique caller IP per call so the join rate-limit budget is per-test. */
@@ -41,11 +41,11 @@ async function joinRoomFrom(pin: string, ip?: string): Promise<Response> {
   return api("/room/join", {
     method: "POST",
     headers: { "CF-Connecting-IP": callerIp },
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({ roomId: pin }),
   });
 }
 
-type JoinBody = { ok: boolean; pin?: string; joinToken?: string };
+type JoinBody = { ok: boolean; roomId?: string; joinToken?: string };
 
 async function joinRoom(pin: string): Promise<Response> {
   return joinRoomFrom(pin);

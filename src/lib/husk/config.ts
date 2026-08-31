@@ -6,7 +6,9 @@
  * call sites.
  */
 
-export const PIN_LENGTH = 6;
+export const ROOM_ID_LENGTH = 8;
+/** Lowercase alphanumeric room ids, mirrored by worker/src/config.ts. */
+export const ROOM_ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 export const MAX_PARTICIPANTS = 10;
 
 /** Grace window before a peer disconnect becomes user-visible. */

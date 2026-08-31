@@ -1,7 +1,7 @@
 /**
  * Join rate limiting logic.
  *
- * Counts attempts per IP and per PIN inside a fixed window and applies
+ * Counts attempts per IP and per room id inside a fixed window and applies
  * exponential backoff once the window budget is exhausted. Only counters and
  * timestamps are stored; no message data of any kind. The counters themselves
  * live in the HuskGatekeeper Durable Object (see gate.ts), not KV.
@@ -85,7 +85,7 @@ export function isRecordExpired(record: RateRecord, now: number): boolean {
 
 /**
  * Asks the gatekeeper Durable Object for a join decision across every counter
- * key (per IP and per PIN). Fails closed: an unreachable gatekeeper must not
+ * key (per IP and per room id). Fails closed: an unreachable gatekeeper must not
  * silently disable the anti-brute-force budget.
  */
 export async function checkJoinAllowed(

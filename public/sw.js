@@ -16,7 +16,7 @@
  *
  * Bump CACHE_VERSION to invalidate every cache after a shell-asset change.
  */
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = `husk-shell-${CACHE_VERSION}`;
 const BUNDLE_CACHE = `husk-bundles-${CACHE_VERSION}`;
 

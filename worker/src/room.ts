@@ -1,7 +1,7 @@
 /**
  * HuskRoom Durable Object.
  *
- * One instance per active PIN. Holds every piece of room state in memory:
+ * One instance per active room id. Holds every piece of room state in memory:
  * participants, the monotonic sequence counter and the room's deadlines. It
  * relays opaque ciphertext between sockets and can never decrypt anything,
  * because the room key is never sent to the server.
@@ -176,10 +176,10 @@ export class HuskRoom {
     if (url.pathname.endsWith("/create") || url.pathname.endsWith("/join")) {
       const creating = url.pathname.endsWith("/create");
       if (creating && this.exists) {
-        return Response.json({ error: "pin_taken" }, { status: 409 });
+        return Response.json({ error: "room_taken" }, { status: 409 });
       }
       if (!creating && !this.exists) {
-        // Generic error: never reveal whether a PIN exists.
+        // Generic error: never reveal whether a room exists.
         return Response.json({ error: "unavailable" }, { status: 404 });
       }
       if (creating) {
@@ -206,19 +206,19 @@ export class HuskRoom {
       const token = request.headers.get("x-husk-join-token") ?? "";
       // Token shape: `<exp>.<nonce>.<sig>`; the nonce makes every mint unique
       // (two same-second joins from one IP would otherwise collide on
-      // `pin|ip|exp` and burn each other's one-time token).
+      // `roomId|ip|exp` and burn each other's one-time token).
       const parts = token.split(".");
       const tokenExpiresAt = parts.length === 3 ? Number(parts[0]) : Number.NaN;
       const tokenNonce = parts.length === 3 ? (parts[1] ?? "") : "";
       const tokenSignature = parts.length === 3 ? (parts[2] ?? "") : "";
-      const pin = url.pathname.split("/")[2] ?? "";
+      const roomId = url.pathname.split("/")[2] ?? "";
       const tokenValid =
         parts.length === 3 &&
         tokenNonce !== "" &&
         (await verifyTicket(
           this.env.HUSK_TICKET_SECRET,
           "join",
-          `${pin}|${ip}|${tokenExpiresAt}|${tokenNonce}`,
+          `${roomId}|${ip}|${tokenExpiresAt}|${tokenNonce}`,
           tokenExpiresAt,
           tokenSignature,
           Date.now(),
@@ -275,12 +275,12 @@ export class HuskRoom {
       return new Response(null, { status: 101, webSocket: client });
     }
 
-    const initMatch = /^\/room\/([1-9][0-9]{5})\/file$/.exec(url.pathname);
+    const initMatch = /^\/room\/([a-z0-9]{8})\/file$/.exec(url.pathname);
     if (initMatch && request.method === "POST") {
       return this.handleFileInit(request, initMatch[1] ?? "");
     }
 
-    const chunkMatch = /^\/room\/([1-9][0-9]{5})\/file\/([0-9a-f-]{36})\/(\d+)$/.exec(url.pathname);
+    const chunkMatch = /^\/room\/([a-z0-9]{8})\/file\/([0-9a-f-]{36})\/(\d+)$/.exec(url.pathname);
     if (chunkMatch && request.method === "PUT") {
       return this.handleChunkPut(
         url,
@@ -291,7 +291,7 @@ export class HuskRoom {
       );
     }
 
-    const getMatch = /^\/room\/([1-9][0-9]{5})\/file\/([0-9a-f-]{36})$/.exec(url.pathname);
+    const getMatch = /^\/room\/([a-z0-9]{8})\/file\/([0-9a-f-]{36})$/.exec(url.pathname);
     if (getMatch && request.method === "GET") {
       return this.handleFileGet(url, getMatch[1] ?? "", getMatch[2] ?? "");
     }
@@ -299,10 +299,10 @@ export class HuskRoom {
     return new Response("not_found", { status: 404 });
   }
 
-  private async handleFileInit(request: Request, pin: string): Promise<Response> {
+  private async handleFileInit(request: Request, roomId: string): Promise<Response> {
     // Reserve/cancel mutate the shared byte counter; chaining them keeps the
     // read-check-write sequence free of interleaved concurrent requests.
-    const run = () => this.reserveFileStorage(request, pin);
+    const run = () => this.reserveFileStorage(request, roomId);
     const result = this.fileOpQueue.then(run, run);
     this.fileOpQueue = result.then(
       () => undefined,
@@ -311,7 +311,7 @@ export class HuskRoom {
     return result;
   }
 
-  private async reserveFileStorage(request: Request, pin: string): Promise<Response> {
+  private async reserveFileStorage(request: Request, roomId: string): Promise<Response> {
     if (!this.exists) {
       return Response.json({ error: "unavailable" }, { status: 404 });
     }
@@ -352,7 +352,7 @@ export class HuskRoom {
         await signTicket(
           this.env.HUSK_TICKET_SECRET,
           "chunk",
-          `${pin}/${fileId}/${index}`,
+          `${roomId}/${fileId}/${index}`,
           putExpiresAt,
         ),
       );
@@ -363,7 +363,7 @@ export class HuskRoom {
     const getSig = await signTicket(
       this.env.HUSK_TICKET_SECRET,
       "get",
-      `${pin}/${fileId}`,
+      `${roomId}/${fileId}`,
       getExpiresAt,
     );
     return Response.json({
@@ -379,7 +379,7 @@ export class HuskRoom {
   private async handleChunkPut(
     url: URL,
     request: Request,
-    pin: string,
+    roomId: string,
     fileId: string,
     index: number,
   ): Promise<Response> {
@@ -388,7 +388,7 @@ export class HuskRoom {
     const valid = await verifyTicket(
       this.env.HUSK_TICKET_SECRET,
       "chunk",
-      `${pin}/${fileId}/${index}`,
+      `${roomId}/${fileId}/${index}`,
       expiresAt,
       signature,
       Date.now(),
@@ -414,13 +414,13 @@ export class HuskRoom {
     return Response.json({ ok: true });
   }
 
-  private async handleFileGet(url: URL, pin: string, fileId: string): Promise<Response> {
+  private async handleFileGet(url: URL, roomId: string, fileId: string): Promise<Response> {
     const expiresAt = Number(url.searchParams.get("exp"));
     const signature = url.searchParams.get("sig") ?? "";
     const valid = await verifyTicket(
       this.env.HUSK_TICKET_SECRET,
       "get",
-      `${pin}/${fileId}`,
+      `${roomId}/${fileId}`,
       expiresAt,
       signature,
       Date.now(),

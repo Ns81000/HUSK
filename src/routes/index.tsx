@@ -1,12 +1,11 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
-import { Button, Panel, Switch, useToast } from "@/components/husk/primitives";
-import { Keypad, PinDisplay } from "@/components/husk/keypad";
-import { ShieldIcon } from "@/components/husk/icons";
-import { createRoom, joinRoom, WorkerNotConfiguredError } from "@/lib/husk/api";
+import { useState, type CSSProperties } from "react";
+import { Button, Panel, SegmentedControl } from "@/components/husk/primitives";
+import { Grainient } from "@/components/husk/Grainient";
+import { HuskMark, MoonIcon, ShieldIcon, SunIcon } from "@/components/husk/icons";
+import { createRoom, WorkerNotConfiguredError } from "@/lib/husk/api";
 import { generateRoomKeyFragment } from "@/lib/husk/crypto";
-import { PIN_LENGTH, WORKER_URL } from "@/lib/husk/config";
-import { isValidPin } from "@/lib/husk/pin";
+import { WORKER_URL } from "@/lib/husk/config";
 import { useTheme } from "@/lib/husk/theme";
 
 export const Route = createFileRoute("/")({
@@ -31,26 +30,25 @@ export const Route = createFileRoute("/")({
   component: Landing,
 });
 
-type Mode = "choose" | "join";
+function enter(delayMs: number): CSSProperties {
+  return { "--enter-delay": `${delayMs}ms` } as CSSProperties;
+}
 
 function Landing() {
   const navigate = useNavigate();
-  const notify = useToast();
   const { theme, setTheme } = useTheme();
-  const [mode, setMode] = useState<Mode>("choose");
-  const [pin, setPin] = useState("");
-  const [busy, setBusy] = useState<"create" | "join" | null>(null);
+  const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
   const configured = WORKER_URL.length > 0;
 
   async function onCreate() {
-    setBusy("create");
+    setBusy(true);
     setFailure(null);
     try {
       const created = await createRoom();
       const fragment = generateRoomKeyFragment();
-      await navigate({ to: "/r/$pin", params: { pin: created }, hash: fragment });
+      await navigate({ to: "/r/$roomId", params: { roomId: created }, hash: fragment });
     } catch (error) {
       setFailure(
         error instanceof WorkerNotConfiguredError
@@ -58,116 +56,76 @@ function Landing() {
           : "The room could not be created. Check your connection and try again.",
       );
     } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onJoin() {
-    if (!isValidPin(pin)) {
-      setFailure("Enter the full six digit PIN.");
-      return;
-    }
-    setBusy("join");
-    setFailure(null);
-    try {
-      const result = await joinRoom(pin);
-      if (!result.ok) {
-        setFailure(
-          result.failure === "rate_limited"
-            ? "Too many attempts. Wait a few minutes before trying again."
-            : "That room is not available.",
-        );
-        return;
-      }
-      notify("Room found. Paste the invite link if you do not have the key yet.");
-      await navigate({ to: "/r/$pin", params: { pin }, hash: window.location.hash.slice(1) });
-    } catch (error) {
-      setFailure(
-        error instanceof WorkerNotConfiguredError
-          ? "This build has no relay configured. Set VITE_WORKER_URL to your deployed Worker."
-          : "Could not reach the relay.",
-      );
-    } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
   return (
-    <main className="safe-top mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-8 px-4 py-12 sm:px-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-display text-ink">Husk</h1>
-          <p className="mt-2 max-w-md text-[15px] text-ink-muted">
-            A room that exists only while you are in it. Messages and files are encrypted in your
-            browser; the relay sees ciphertext and nothing else.
-          </p>
-        </div>
-        <Switch
-          checked={theme === "dark"}
-          onChange={(next) => setTheme(next ? "dark" : "light")}
-          label="Dark"
+    <main className="relative flex min-h-screen flex-col">
+      {configured ? <Grainient /> : null}
+
+      <div className="fixed right-4 top-4 z-20">
+        <SegmentedControl
+          label="Theme"
+          value={theme}
+          onChange={setTheme}
+          options={[
+            { value: "light", text: <SunIcon className="h-4 w-4" />, label: "Light theme" },
+            { value: "dark", text: <MoonIcon className="h-4 w-4" />, label: "Dark theme" },
+          ]}
         />
-      </header>
+      </div>
 
-      {!configured ? (
-        <Panel className="border-warn">
-          <h2 className="text-title text-ink">Relay not configured</h2>
-          <p className="mt-2 text-[14px] text-ink-muted">
-            Husk needs its Cloudflare Worker deployed before rooms can be created. Follow the
-            deployment steps in the project README, then set VITE_WORKER_URL. Nothing here is
-            simulated: without the relay there is no room to join.
-          </p>
-        </Panel>
-      ) : null}
-
-      {mode === "choose" ? (
-        <Panel className="space-y-4">
-          <Button full disabled={busy !== null || !configured} onClick={() => void onCreate()}>
-            {busy === "create" ? "Creating room" : "Create a room"}
-          </Button>
-          <Button
-            tone="quiet"
-            full
-            disabled={busy !== null || !configured}
-            onClick={() => setMode("join")}
-          >
-            Join with a PIN
-          </Button>
-          {failure !== null ? <p className="text-[14px] text-danger">{failure}</p> : null}
-        </Panel>
-      ) : (
-        <Panel className="space-y-6">
-          <div className="space-y-4">
-            <h2 className="text-title text-ink">Enter the room PIN</h2>
-            <PinDisplay value={pin} />
-            <Keypad
-              onDigit={(digit) => setPin((current) => (current + digit).slice(0, PIN_LENGTH))}
-              onBackspace={() => setPin((current) => current.slice(0, -1))}
-            />
-          </div>
-          {failure !== null ? <p className="text-[14px] text-danger">{failure}</p> : null}
-          <div className="flex gap-2">
-            <Button tone="quiet" full onClick={() => setMode("choose")}>
-              Back
-            </Button>
-            <Button full disabled={busy !== null} onClick={() => void onJoin()}>
-              {busy === "join" ? "Joining" : "Join"}
-            </Button>
-          </div>
-          <p className="text-caption text-ink-muted">
-            A PIN alone cannot decrypt a room. You also need the invite link, which carries the key
-            in its fragment.
-          </p>
-        </Panel>
-      )}
-
-      <section className="flex items-start gap-3 text-caption text-ink-muted">
-        <ShieldIcon className="mt-0.5 shrink-0 text-ok" />
-        <p>
-          Husk is a relayed architecture, not peer to peer. Its privacy comes from client-side
-          AES-256-GCM encryption and from holding room state only in memory at the edge.
+      <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
+        <div className="enter" style={enter(0)}>
+          <HuskMark size={64} className="mx-auto sm:hidden" />
+          <HuskMark size={48} className="mx-auto hidden sm:block" />
+        </div>
+        <h1 className="enter text-display mt-8 text-ink" style={enter(50)}>
+          HUSK
+        </h1>
+        <p className="enter text-body mt-2 text-ink-muted" style={enter(100)}>
+          Ephemeral encrypted rooms
         </p>
-      </section>
+
+        <div className="enter mt-10 w-full max-w-[320px]" style={enter(150)}>
+          <Button
+            full
+            loading={busy}
+            disabled={!configured}
+            onClick={() => void onCreate()}
+            className="h-12"
+          >
+            {busy ? "Creating room" : "Create a Room"}
+          </Button>
+          {failure !== null ? (
+            <p className="fade-in mt-4 text-[14px] text-danger" role="alert">
+              {failure}
+            </p>
+          ) : null}
+        </div>
+        <section
+          className="enter mt-16 flex items-start gap-3 text-caption text-ink-muted"
+          style={enter(220)}
+        >
+          <ShieldIcon className="mt-0.5 shrink-0 text-ok" />
+          <p className="max-w-sm text-left">
+            Messages and files are encrypted with AES-256-GCM in your browser. The relay holds
+            ciphertext and nothing else — when the room empties, it is gone.
+          </p>
+        </section>
+
+        {!configured ? (
+          <Panel className="fade-in mt-8 max-w-md border-warn text-left">
+            <h2 className="text-title text-ink">Relay not configured</h2>
+            <p className="mt-2 text-[14px] text-ink-muted">
+              Husk needs its Cloudflare Worker deployed before rooms can be created. Follow the
+              deployment steps in the project README, then set VITE_WORKER_URL. Nothing here is
+              simulated: without the relay there is no room to join.
+            </p>
+          </Panel>
+        ) : null}
+      </div>
     </main>
   );
 }

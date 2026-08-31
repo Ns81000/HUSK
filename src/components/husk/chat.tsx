@@ -1,8 +1,18 @@
 /** Message list, message composer and file cards. */
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { AttachIcon, DeleteIcon, DownloadIcon, FileIcon, SendIcon, WaitingMark } from "./icons";
-import { Button, IconButton, useToast } from "./primitives";
+import {
+  AttachIcon,
+  CheckIcon,
+  DeleteIcon,
+  DownloadIcon,
+  FileIcon,
+  SendIcon,
+  SpinnerIcon,
+  WaitingMark,
+  WarnIcon,
+} from "./icons";
+import { Button, IconButton } from "./primitives";
 import { tokenize } from "@/lib/husk/linkify";
 import { orderedEntries, useRoomStore, type ChatEntry } from "@/lib/husk/store";
 import { cn } from "@/lib/utils";
@@ -69,31 +79,37 @@ export function FileCard({
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="flex items-center gap-3 rounded-md border border-line bg-surface-raised p-3">
-      <FileIcon className="shrink-0 text-ink-muted" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[14px] font-medium text-ink">{body.name}</p>
-        <p className="text-caption text-ink-muted">
-          {formatSize(body.size)}
-          {progress !== null && progress < 1 ? ` · ${Math.round(progress * 100)}%` : ""}
-          {failed ? " · download failed" : ""}
-        </p>
+    <div className="w-56 rounded-md border border-line bg-surface p-3 sm:w-64">
+      <div className="flex items-center gap-3">
+        <FileIcon className="shrink-0 text-ink-muted" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-medium text-ink">{body.name}</p>
+          <p className="text-caption text-ink-muted">
+            {formatSize(body.size)}
+            {failed ? " · download failed" : ""}
+          </p>
+        </div>
+        <IconButton
+          label={failed ? "Retry download" : "Download file"}
+          onClick={() => {
+            setFailed(false);
+            setProgress(0);
+            void onDownload()
+              .then(() => setProgress(1))
+              .catch(() => {
+                setFailed(true);
+                setProgress(null);
+              });
+          }}
+        >
+          {progress !== null && progress < 1 ? (
+            <SpinnerIcon className="h-4 w-4" />
+          ) : (
+            <DownloadIcon />
+          )}
+        </IconButton>
       </div>
-      <IconButton
-        label={failed ? "Retry download" : "Download file"}
-        onClick={() => {
-          setFailed(false);
-          setProgress(0);
-          void onDownload()
-            .then(() => setProgress(1))
-            .catch(() => {
-              setFailed(true);
-              setProgress(null);
-            });
-        }}
-      >
-        <DownloadIcon />
-      </IconButton>
+      {progress !== null && progress < 1 ? <div className="upload-bar mt-2" aria-hidden /> : null}
     </div>
   );
 }
@@ -122,11 +138,17 @@ function DeliveryNote({
   readonly onRetry: (id: string) => void;
 }) {
   if (entry.delivery === "sending") {
-    return <span className="text-caption text-ink-faint">Sending</span>;
+    return (
+      <span className="flex items-center gap-1 text-caption text-ink-faint">
+        <SpinnerIcon className="h-3 w-3" />
+        Sending
+      </span>
+    );
   }
   if (entry.delivery === "failed") {
     return (
-      <span className="flex items-center gap-2 text-caption text-danger">
+      <span className="flex items-center gap-1.5 text-caption text-danger">
+        <WarnIcon className="h-3 w-3" />
         Not sent
         <button
           type="button"
@@ -138,9 +160,13 @@ function DeliveryNote({
       </span>
     );
   }
-  return <span className="text-caption text-ink-faint">{formatTime(entry.ts)}</span>;
+  return (
+    <span className="flex items-center gap-1 text-caption text-ink-faint">
+      <CheckIcon className="h-3 w-3 text-ok" />
+      {formatTime(entry.ts)}
+    </span>
+  );
 }
-
 const MessageItem = memo(function MessageItem({
   entry,
   onDownload,
@@ -151,12 +177,17 @@ const MessageItem = memo(function MessageItem({
   readonly onRetry: (id: string) => void;
 }) {
   if (entry.system !== undefined) {
-    return <p className="text-center text-caption text-ink-faint">{entry.system}</p>;
+    return (
+      <p className="system-marker px-2 text-center text-caption" role="note">
+        <span className="shrink-0">{entry.system}</span>
+      </p>
+    );
   }
   if (entry.delivery === "unverified") {
     return (
-      <p className="text-center text-caption text-warn">
-        A message could not be verified and was discarded.
+      <p className="system-marker px-2 text-center text-caption text-warn" role="note">
+        <WarnIcon className="h-3.5 w-3.5 shrink-0" />
+        <span className="shrink-0">A message could not be verified and was discarded.</span>
       </p>
     );
   }
@@ -164,10 +195,8 @@ const MessageItem = memo(function MessageItem({
     <div className={cn("flex flex-col gap-1", entry.mine ? "items-end" : "items-start")}>
       <div
         className={cn(
-          "max-w-[85%] rounded-lg border px-4 py-3 sm:max-w-[70%]",
-          entry.mine
-            ? "border-accent bg-accent text-accent-ink"
-            : "border-line bg-surface text-ink",
+          "bubble max-w-[85%] rounded-lg px-4 py-3 sm:max-w-[70%]",
+          entry.mine ? "bubble-mine text-ink" : "bubble-theirs text-ink",
         )}
       >
         <EntryBody body={entry.body} onDownload={onDownload} />
@@ -187,6 +216,7 @@ export function MessageList({
 }) {
   const entries = useRoomStore((store) => store.entries);
   const state = useRoomStore((store) => store.state);
+  const participants = useRoomStore((store) => store.participants);
   const retryMessage = useRoomStore((store) => store.retryMessage);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -217,7 +247,7 @@ export function MessageList({
   if (ordered.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-        <WaitingMark className="text-line-strong" />
+        <WaitingMark className="waiting-pulse text-line-strong" />
         <div>
           <p className="text-title text-ink">
             {state === "waiting_for_peer" ? "Waiting for someone to join" : "No messages yet"}
@@ -234,15 +264,21 @@ export function MessageList({
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 space-y-3 overflow-y-auto px-4 py-6 sm:px-6"
+      className="flex-1 space-y-4 overflow-y-auto px-4 py-6 sm:px-6"
     >
       {ordered.map((entry) => (
         <MessageItem key={entry.id} entry={entry} onDownload={onDownload} onRetry={handleRetry} />
       ))}
+      {state === "waiting_for_peer" && participants.length <= 1 ? (
+        <p className="pt-2 text-center text-caption text-ink-faint">
+          Nobody else is here yet — share the invite link above.
+        </p>
+      ) : null}
       <div ref={bottomRef} />
     </div>
   );
 }
+const MAX_TEXTAREA_HEIGHT = 5 * 28 + 20; // ~5 lines
 
 export function Composer({
   onSendFile,
@@ -256,7 +292,15 @@ export function Composer({
   const [failedFile, setFailedFile] = useState<File | null>(null);
   const sendText = useRoomStore((store) => store.sendText);
   const fileRef = useRef<HTMLInputElement>(null);
-  const notify = useToast();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  function autoGrow(): void {
+    const el = textareaRef.current;
+    if (el !== null) {
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+    }
+  }
 
   async function submit() {
     if (draft.trim().length === 0) {
@@ -264,6 +308,7 @@ export function Composer({
     }
     const value = draft;
     setDraft("");
+    requestAnimationFrame(autoGrow);
     await sendText(value);
   }
 
@@ -274,15 +319,17 @@ export function Composer({
       .then(() => setFailedFile(null))
       .catch(() => {
         setFailedFile(file);
-        notify("File could not be sent.", "danger");
       })
       .finally(() => setBusy(false));
   }
 
   return (
     <div className="safe-bottom border-t border-line bg-surface px-4 pt-3 sm:px-6">
+      {busy ? (
+        <div className="upload-bar mb-3" role="status" aria-label="Encrypting and uploading file" />
+      ) : null}
       {failedFile !== null ? (
-        <div className="mb-2 flex items-center gap-3 rounded-md border border-danger bg-surface-raised p-3">
+        <div className="mb-2 flex items-center gap-3 rounded-md border border-danger/40 border-l-4 border-l-danger bg-surface-raised p-3">
           <FileIcon className="shrink-0 text-ink-muted" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-[14px] font-medium text-ink">{failedFile.name}</p>
@@ -326,19 +373,23 @@ export function Composer({
           <AttachIcon />
         </IconButton>
         <textarea
+          ref={textareaRef}
           value={draft}
           disabled={disabled}
           rows={1}
           placeholder="Write a message"
           aria-label="Message"
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            autoGrow();
+          }}
           onKeyDown={(event) => {
             if (shouldSubmitOnEnter(event)) {
               event.preventDefault();
               void submit();
             }
           }}
-          className="max-h-40 min-h-touch flex-1 resize-none rounded-md border border-line bg-surface-raised px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-faint"
+          className="max-h-[160px] min-h-touch flex-1 resize-none rounded-md border border-line bg-surface-raised px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-faint"
         />
         <Button
           onClick={() => void submit()}
@@ -350,7 +401,7 @@ export function Composer({
         </Button>
       </div>
       <p className="pb-2 pt-2 text-caption text-ink-faint">
-        {busy ? "Encrypting and uploading file" : "Enter to send, Shift plus Enter for a new line"}
+        {busy ? "Encrypting and uploading file…" : "Enter to send, Shift plus Enter for a new line"}
       </p>
     </div>
   );

@@ -51,7 +51,9 @@ type Events = {
   malformed: number;
 };
 
-function makeHandlers(grant: JoinResult = { ok: true, joinToken: "tok" }) {
+function makeHandlers(
+  grant: JoinResult = { ok: true, roomId: "123456", joinToken: "tok" },
+) {
   const events: Events = { statuses: [], ended: [], messages: [], malformed: 0 };
   const handlers: ConnectionHandlers = {
     onMessage: (message) => {

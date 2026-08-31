@@ -70,11 +70,11 @@ export function assertFileSendable(size: number): void {
  * holds a WebSocket in the room.
  */
 export async function requestFileUpload(
-  pin: string,
+  roomId: string,
   member: string,
   size: number,
 ): Promise<FileGrant> {
-  const response = await fetch(`${WORKER_URL}/room/${pin}/file`, {
+  const response = await fetch(`${WORKER_URL}/room/${roomId}/file`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ size, member }),
@@ -197,13 +197,13 @@ class ByteQueue {
  */
 export async function downloadAndDecrypt(
   key: CryptoKey,
-  pin: string,
+  roomId: string,
   file: FileReference,
   mime: string,
   onProgress: (fraction: number) => void,
 ): Promise<Blob> {
   const response = await fetch(
-    `${WORKER_URL}/room/${pin}/file/${file.fileId}?exp=${file.exp}&sig=${encodeURIComponent(file.sig)}`,
+    `${WORKER_URL}/room/${roomId}/file/${file.fileId}?exp=${file.exp}&sig=${encodeURIComponent(file.sig)}`,
   );
   if (!response.ok || response.body === null) {
     throw new Error("Download failed");

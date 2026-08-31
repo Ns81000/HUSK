@@ -40,14 +40,14 @@ export type ConnectionLike = {
   sendControl(frame: { t: "cancel"; fileId: string }): boolean;
 };
 
-export type ConnectionSpawner = (pin: string, handlers: ConnectionHandlers) => ConnectionLike;
+export type ConnectionSpawner = (roomId: string, handlers: ConnectionHandlers) => ConnectionLike;
 
 type RoomStore = {
   state: RoomState;
   status: ConnectionStatus;
   /** Browser connectivity signal (navigator.onLine via window events). */
   online: boolean;
-  pin: string;
+  roomId: string;
   selfId: string;
   participants: readonly Participant[];
   entries: readonly ChatEntry[];
@@ -55,7 +55,7 @@ type RoomStore = {
   lastLeaveAt: number | null;
   malformedCount: number;
   error: string | null;
-  connect: (pin: string, keyFragment: string) => Promise<void>;
+  connect: (roomId: string, keyFragment: string) => Promise<void>;
   retry: () => Promise<void>;
   notifyOnline: () => void;
   notifyOffline: () => void;
@@ -72,7 +72,7 @@ function nextId(): string {
 }
 
 export function createRoomStore(
-  spawnConnection: ConnectionSpawner = (pin, handlers) => new RoomConnection(pin, handlers),
+  spawnConnection: ConnectionSpawner = (roomId, handlers) => new RoomConnection(roomId, handlers),
 ) {
   let connection: ConnectionLike | null = null;
   let roomKey: CryptoKey | null = null;
@@ -255,7 +255,7 @@ export function createRoomStore(
           }));
           return;
         }
-        const roomBefore = { pin: store.getState().pin, state: store.getState().state };
+        const roomBefore = { roomId: store.getState().roomId, state: store.getState().state };
         try {
           const body = await open<SealedBody>(key, message.payload);
           if (isStale(roomBefore)) {
@@ -317,9 +317,9 @@ export function createRoomStore(
   }
 
   /** Guards against a late async decrypt writing into a reset room. */
-  function isStale(before: { pin: string; state: RoomState }): boolean {
+  function isStale(before: { roomId: string; state: RoomState }): boolean {
     const current = store.getState();
-    return current.pin !== before.pin || current.state !== before.state;
+    return current.roomId !== before.roomId || current.state !== before.state;
   }
 
   async function publish(body: SealedBody): Promise<void> {
@@ -358,7 +358,7 @@ export function createRoomStore(
     // Node 21+ exposes a `navigator` without `onLine`; a missing flag counts
     // as online so tests and SSR never start in a phantom-offline state.
     online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
-    pin: "",
+    roomId: "",
     selfId: "",
     participants: [],
     entries: [],
@@ -366,9 +366,9 @@ export function createRoomStore(
     malformedCount: 0,
     error: null,
 
-    async connect(pin, fragment) {
+    async connect(roomId, fragment) {
       store.setState({
-        pin,
+        roomId,
         state: "joining",
         entries: [],
         error: null,
@@ -387,7 +387,7 @@ export function createRoomStore(
       }
       keyFragment = fragment;
       connection?.close();
-      connection = spawnConnection(pin, {
+      connection = spawnConnection(roomId, {
         onMessage: (message) => {
           void handleServerMessage(message);
         },
@@ -407,18 +407,18 @@ export function createRoomStore(
             `Husk: dropped a malformed relay frame (total ${store.getState().malformedCount}).`,
           );
         },
-        fetchJoinToken: () => joinRoom(pin),
+        fetchJoinToken: () => joinRoom(roomId),
       });
       connection.connect();
     },
 
     async retry() {
-      const pin = store.getState().pin;
+      const roomId = store.getState().roomId;
       const fragment = keyFragment;
-      if (pin.length === 0 || fragment === null) {
+      if (roomId.length === 0 || fragment === null) {
         return;
       }
-      await store.getState().connect(pin, fragment);
+      await store.getState().connect(roomId, fragment);
     },
 
     notifyOffline() {

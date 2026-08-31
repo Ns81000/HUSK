@@ -126,10 +126,10 @@ describe("Husk token palette WCAG AA contrast (4.5:1, both themes)", () => {
     });
   }
 
-  it("the phase-5 audit's originally failing pairs are pinned at their fixed values", () => {
-    // Guards against an accidental revert to the pre-Phase-5 tokens.
+  it("the redesign palette's audit-sensitive tokens are pinned at their fixed values", () => {
+    // Guards against an accidental revert to the pre-redesign tokens.
     expect(light.get("warn")).toEqual([0.5, 0.09, 78]);
-    expect(light.get("ink-faint")).toEqual([0.535, 0.006, 250]);
-    expect(dark.get("ink-faint")).toEqual([0.64, 0.005, 250]);
+    expect(light.get("ink-faint")).toEqual([0.507, 0.042, 135.3]);
+    expect(dark.get("ink-faint")).toEqual([0.758, 0.036, 134.6]);
   });
 });

@@ -18,16 +18,18 @@ export type ThemeControls = {
 };
 
 export function useTheme(): ThemeControls {
-  const [theme, setThemeState] = useState<Theme>("light");
+  // Dark is the product default: a fresh browser with no stored preference
+  // and no OS preference lands on dark.
+  const [theme, setThemeState] = useState<Theme>("dark");
 
   useEffect(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     const preferred =
       stored === "dark" || stored === "light"
         ? stored
-        : window.matchMedia("(prefers-color-scheme: dark)").matches
-          ? "dark"
-          : "light";
+        : window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
     setThemeState(preferred);
     applyTheme(preferred);
   }, []);
