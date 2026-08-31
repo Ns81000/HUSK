@@ -2,34 +2,32 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type CSSProperties } from "react";
 import { Button, Panel } from "@/components/husk/primitives";
 import { MoltenMetal } from "@/components/husk/MoltenMetal";
-import { HuskMark, ShieldIcon } from "@/components/husk/icons";
+import { ShieldIcon } from "@/components/husk/icons";
 import { createRoom, WorkerNotConfiguredError } from "@/lib/husk/api";
 import { generateRoomKeyFragment } from "@/lib/husk/crypto";
 import { WORKER_URL } from "@/lib/husk/config";
 
-export const Route = createFileRoute("/")(
-  {
-    head: () => ({
-      meta: [
-        { title: "Husk — ephemeral encrypted rooms" },
-        {
-          name: "description",
-          content:
-            "Husk creates temporary end-to-end encrypted rooms for chat and files. Nothing is stored: when everyone leaves, the room is gone.",
-        },
-        { property: "og:title", content: "Husk — ephemeral encrypted rooms" },
-        {
-          property: "og:description",
-          content:
-            "Temporary end-to-end encrypted chat and file sharing. The relay never holds your key.",
-        },
-        { property: "og:type", content: "website" },
-        { name: "twitter:card", content: "summary_large_image" },
-      ],
-    }),
-    component: Landing,
-  },
-);
+export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Husk — ephemeral encrypted rooms" },
+      {
+        name: "description",
+        content:
+          "Husk creates temporary end-to-end encrypted rooms for chat and files. Nothing is stored: when everyone leaves, the room is gone.",
+      },
+      { property: "og:title", content: "Husk — ephemeral encrypted rooms" },
+      {
+        property: "og:description",
+        content:
+          "Temporary end-to-end encrypted chat and file sharing. The relay never holds your key.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+  }),
+  component: Landing,
+});
 
 function enter(delayMs: number): CSSProperties {
   return { "--enter-delay": `${delayMs}ms` } as CSSProperties;
@@ -87,8 +85,13 @@ function Landing() {
 
       <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
         <div className="enter" style={enter(0)}>
-          <HuskMark size={64} className="mx-auto sm:hidden" />
-          <HuskMark size={48} className="mx-auto hidden sm:block" />
+          <img
+            src="/icons/husk-mark.svg"
+            alt="Husk Logo"
+            width={56}
+            height={64}
+            className="mx-auto h-14 w-auto drop-shadow-[0_4px_16px_rgba(60,231,103,0.3)] select-none transition-transform duration-300 hover:scale-105"
+          />
         </div>
         <h1 className="enter text-display mt-8 text-ink" style={enter(50)}>
           HUSK

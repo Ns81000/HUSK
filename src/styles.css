@@ -357,12 +357,7 @@
     content: "";
     flex: 1;
     height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      oklch(0.4 0.04 136 / 0.4),
-      transparent
-    );
+    background: linear-gradient(90deg, transparent, oklch(0.4 0.04 136 / 0.4), transparent);
   }
 
   /* Glassmorphic chat header. */
@@ -397,13 +392,16 @@
       transparent 50%,
       oklch(0.7 0.2 145 / 0.15)
     );
-    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
     mask-composite: exclude;
     animation: border-shimmer 4s ease-in-out infinite;
     pointer-events: none;
   }
   @keyframes border-shimmer {
-    0%, 100% {
+    0%,
+    100% {
       opacity: 0.5;
     }
     50% {
@@ -505,7 +503,9 @@
 
   /* File card hover accent. */
   .file-card {
-    transition: border-color 160ms ease, box-shadow 160ms ease;
+    transition:
+      border-color 160ms ease,
+      box-shadow 160ms ease;
   }
   .file-card:hover {
     border-color: oklch(0.5 0.1 140 / 0.35);
@@ -515,12 +515,7 @@
   /* Room info section divider. */
   .info-divider {
     height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      oklch(0.4 0.04 136 / 0.4),
-      transparent
-    );
+    background: linear-gradient(90deg, transparent, oklch(0.4 0.04 136 / 0.4), transparent);
   }
 }
 
@@ -553,4 +548,3 @@
     opacity: 1;
   }
 }
-

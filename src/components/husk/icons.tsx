@@ -1,5 +1,6 @@
 /** Single-weight custom icon set (1.5px stroke, 24px grid). */
 
+import { useId } from "react";
 import { cn } from "@/lib/utils";
 
 type IconProps = { readonly className?: string };
@@ -185,6 +186,10 @@ export function HuskMark({
   readonly size?: number;
   readonly className?: string;
 }) {
+  const id = useId();
+  const topId = `hm-top-${id}`;
+  const leftId = `hm-left-${id}`;
+  const rightId = `hm-right-${id}`;
   const h = (size * 96) / 84;
   return (
     <svg
@@ -196,22 +201,22 @@ export function HuskMark({
       className={cn("husk-mark", className)}
     >
       <defs>
-        <linearGradient id="hm-top" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={topId} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#9dffbf" />
           <stop offset="100%" stopColor="#5cf28c" />
         </linearGradient>
-        <linearGradient id="hm-left" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={leftId} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#3ce767" />
           <stop offset="100%" stopColor="#2ec158" />
         </linearGradient>
-        <linearGradient id="hm-right" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id={rightId} x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%" stopColor="#22a24c" />
           <stop offset="100%" stopColor="#157a37" />
         </linearGradient>
       </defs>
-      <polygon points="42,8 76,28 42,48 8,28" fill="url(#hm-top)" />
-      <polygon points="8,28 42,48 42,88 8,68" fill="url(#hm-left)" />
-      <polygon points="76,28 76,68 42,88 42,48" fill="url(#hm-right)" />
+      <polygon points="42,8 76,28 42,48 8,28" fill={`url(#${topId})`} />
+      <polygon points="8,28 42,48 42,88 8,68" fill={`url(#${leftId})`} />
+      <polygon points="76,28 76,68 42,88 42,48" fill={`url(#${rightId})`} />
       <polyline
         points="8,28 42,8 76,28"
         fill="none"
@@ -219,6 +224,7 @@ export function HuskMark({
         strokeWidth="1.5"
         opacity="0.7"
       />
+      <polyline points="8,68 42,88 76,68" fill="none" stroke="#0a3f2670" strokeWidth="1.5" />
     </svg>
   );
 }

@@ -30,11 +30,11 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 const toneClass = {
   primary:
-    "bg-accent text-white hover:brightness-110 disabled:bg-white/10 disabled:text-white/40 disabled:border-white/5 disabled:shadow-none shadow-[0_0_15px_rgba(82,39,255,0.4)] hover:shadow-[0_0_25px_rgba(82,39,255,0.6)] border border-accent-hover",
+    "bg-gradient-to-b from-[#3ce767] to-[#26be51] text-[#061d10] font-semibold border border-[#5cf28c]/40 shadow-sm shadow-black/25 hover:brightness-105 hover:border-[#9dffbf]/60 disabled:bg-white/10 disabled:text-white/30 disabled:border-white/5 disabled:shadow-none",
   quiet:
-    "glass-panel hover:bg-white/10 text-white disabled:text-white/40 disabled:opacity-70",
+    "bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 text-white/90 disabled:text-white/30 disabled:border-white/5",
   danger:
-    "glass-panel border-danger/30 text-danger hover:bg-danger/10 hover:border-danger/50 disabled:text-white/40 disabled:opacity-70",
+    "bg-danger/10 border border-danger/30 text-danger hover:bg-danger/20 hover:border-danger/50 disabled:text-white/30 disabled:opacity-60",
 } satisfies Record<ButtonTone, string>;
 
 export function Button({
@@ -52,7 +52,7 @@ export function Button({
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
       className={cn(
-        "touch-target press inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[15px] font-medium transition-all duration-300",
+        "touch-target press inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[15px] font-medium transition-all duration-200",
         "disabled:cursor-not-allowed",
         toneClass[tone],
         full === true && "w-full",
@@ -76,7 +76,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={cn(
-        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-xl text-white/70 transition-all duration-300 hover:bg-white/10 hover:text-white disabled:text-white/30 glass-panel",
+        "touch-target press press-sm inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/5 border border-white/10 text-white/80 transition-all duration-200 hover:bg-white/10 hover:text-white hover:border-white/20 disabled:text-white/30",
         className,
       )}
     />
@@ -91,7 +91,12 @@ export function Panel({
   readonly className?: string;
 }) {
   return (
-    <section className={cn("rounded-2xl glass-panel p-6 shadow-2xl", className)}>
+    <section
+      className={cn(
+        "rounded-2xl border border-white/10 bg-black/40 backdrop-blur-xl p-6 shadow-2xl",
+        className,
+      )}
+    >
       {children}
     </section>
   );
@@ -187,7 +192,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="modal-panel w-full max-w-sm rounded-2xl glass-panel p-6 shadow-2xl"
+        className="modal-panel w-full max-w-sm rounded-2xl p-6 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id={titleId} className="text-xl font-semibold text-white">
@@ -235,10 +240,10 @@ export function ToastProvider({ children }: { readonly children: ReactNode }) {
           <div
             key={toast.id}
             className={cn(
-              "toast-in pointer-events-auto max-w-sm rounded-xl border-l-4 glass-panel px-5 py-3.5 text-[14px] font-medium shadow-2xl transition-all duration-300",
+              "toast-in pointer-events-auto max-w-sm rounded-xl border-l-4 border border-white/10 bg-black/80 backdrop-blur-xl px-5 py-3.5 text-[14px] font-medium shadow-2xl transition-all duration-300",
               toast.tone === "danger"
-                ? "border-l-danger text-white border-white/10"
-                : "border-l-accent text-white border-white/10",
+                ? "border-l-danger text-white"
+                : "border-l-[#3ce767] text-white",
             )}
           >
             {toast.text}
