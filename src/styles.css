@@ -622,6 +622,16 @@
     outline: none;
   }
 
+  /* The composer auto-grows and never scrolls, so hide its scrollbar track,
+     which otherwise renders as a persistent line on the right edge. */
+  .composer-input {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .composer-input::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Drawer: slide-out panel with scrim. */
   .drawer-panel {
     animation: drawer-in 260ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
