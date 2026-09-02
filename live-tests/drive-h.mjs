@@ -43,7 +43,7 @@ assert((await waitForParticipants(pageA, 2)) === 2, `both connected`);
 // D19: 0-byte file -> EmptyFileError path, NO grant request.
 const before = eventsA.posts.filter((p) => p.url.endsWith("/file")).length;
 await attachFile(pageA, makeFile("zero.bin", 0));
-await pageA.getByText("Upload failed · not sent").waitFor({ timeout: 10_000 });
+await pageA.getByText("That file is empty").waitFor({ timeout: 10_000 });
 assert(true, `0-byte file shows the failed-upload banner`);
 await sleep(1000);
 const after = eventsA.posts.filter((p) => p.url.endsWith("/file")).length;

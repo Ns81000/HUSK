@@ -32,22 +32,28 @@ export type FileReference = {
 
 export class FileTooLargeError extends Error {
   constructor() {
-    super("File exceeds the maximum allowed size");
+    super(`That file is larger than the ${MAX_FILE_BYTES / (1024 * 1024)} MB limit.`);
     this.name = "FileTooLargeError";
   }
 }
 
 export class EmptyFileError extends Error {
   constructor() {
-    super("Empty files cannot be sent");
+    super("That file is empty — nothing to encrypt and send.");
     this.name = "EmptyFileError";
   }
 }
 
-/** Carries the fileId so a failed upload can cancel its reserved storage. */
+/**
+ * Carries the fileId so a failed upload can cancel its reserved storage, plus a
+ * user-facing message explaining which step of the upload actually failed.
+ */
 export class UploadFailedError extends Error {
-  constructor(readonly fileId: string | null) {
-    super("Upload failed");
+  constructor(
+    readonly fileId: string | null,
+    message = "Upload failed — check your connection and try again.",
+  ) {
+    super(message);
     this.name = "UploadFailedError";
   }
 }
@@ -87,10 +93,16 @@ export async function requestFileUpload(
     });
   } catch {
     // Timeout or network failure: the caller has no reservation to clean up.
-    throw new UploadFailedError(null);
+    throw new UploadFailedError(
+      null,
+      "Couldn't reach the room server — check your connection and try again.",
+    );
   }
   if (!response.ok) {
-    throw new UploadFailedError(null);
+    throw new UploadFailedError(
+      null,
+      "The room couldn't accept the file — it may be closed or full.",
+    );
   }
   // SAFETY: the grant endpoint is our own Worker and returns this exact shape;
   // the fields are validated below before use.
@@ -121,7 +133,10 @@ export async function encryptAndUpload(
 
   const total = Math.max(1, Math.ceil(file.size / FILE_CHUNK_BYTES));
   if (grant.chunkUrls.length < total) {
-    throw new UploadFailedError(grant.fileId);
+    throw new UploadFailedError(
+      grant.fileId,
+      "The room offered too little storage for that file — try again.",
+    );
   }
   const ivs: string[] = [];
   const lengths: number[] = [];
@@ -135,7 +150,10 @@ export async function encryptAndUpload(
 
     const chunkUrl = grant.chunkUrls[index];
     if (chunkUrl === undefined) {
-      throw new UploadFailedError(grant.fileId);
+      throw new UploadFailedError(
+        grant.fileId,
+        "The room offered too little storage for that file — try again.",
+      );
     }
     let response: Response;
     try {
@@ -148,12 +166,15 @@ export async function encryptAndUpload(
     } catch {
       // Timeout or network failure mid-upload: the typed error carries the
       // fileId so the caller cancels the reserved storage.
-      throw new UploadFailedError(grant.fileId);
+      throw new UploadFailedError(
+        grant.fileId,
+        "Lost connection mid-upload — the file was not sent. Try sending it again.",
+      );
     }
     // 409 means this chunk row already holds our bytes (a retried request);
     // any other failure aborts the upload.
     if (!response.ok && response.status !== 409) {
-      throw new UploadFailedError(grant.fileId);
+      throw new UploadFailedError(grant.fileId, "The server stopped the upload — try again.");
     }
     onProgress((index + 1) / total);
   }

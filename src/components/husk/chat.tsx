@@ -32,6 +32,16 @@ function formatTime(ts: number): string {
 }
 
 /**
+ * Best user-facing copy for a failed upload. Every upload error carries its
+ * own message; the fallback keeps the banner honest for unexpected failures.
+ */
+function uploadFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message.length > 0
+    ? error.message
+    : "Upload failed — check your connection and try again.";
+}
+
+/**
  * Enter submits; Shift+Enter is a newline; and Enter that merely commits an
  * IME composition (isComposing, incl. the keyCode-229 path some browsers
  * emit) must never submit the half-converted text.
@@ -316,6 +326,7 @@ export function Composer({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [failedFile, setFailedFile] = useState<File | null>(null);
+  const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const sendText = useRoomStore((store) => store.sendText);
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -341,10 +352,15 @@ export function Composer({
   function send(file: File): void {
     setBusy(true);
     setFailedFile(null);
+    setFailedMessage(null);
     void onSendFile(file)
-      .then(() => setFailedFile(null))
-      .catch(() => {
+      .then(() => {
+        setFailedFile(null);
+        setFailedMessage(null);
+      })
+      .catch((error: unknown) => {
         setFailedFile(file);
+        setFailedMessage(uploadFailureMessage(error));
       })
       .finally(() => setBusy(false));
   }
@@ -361,7 +377,9 @@ export function Composer({
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-[14px] font-medium text-ink">{failedFile.name}</p>
-            <p className="text-caption text-danger">Upload failed · not sent</p>
+            <p className="text-caption text-danger">
+              {failedMessage ?? "Upload failed — check your connection and try again."}
+            </p>
           </div>
           <Button
             tone="quiet"
@@ -371,7 +389,13 @@ export function Composer({
           >
             Retry
           </Button>
-          <IconButton label="Discard failed upload" onClick={() => setFailedFile(null)}>
+          <IconButton
+            label="Discard failed upload"
+            onClick={() => {
+              setFailedFile(null);
+              setFailedMessage(null);
+            }}
+          >
             <DeleteIcon className="text-ink-muted" />
           </IconButton>
         </div>

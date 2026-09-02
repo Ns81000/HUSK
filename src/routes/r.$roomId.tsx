@@ -142,7 +142,10 @@ function RoomScreen() {
         // No doomed request: the file lands in the composer's failed state
         // and the user retries once the room is connected (welcome assigns
         // the participant id the membership check requires).
-        throw new UploadFailedError(null);
+        throw new UploadFailedError(
+          null,
+          "You're not connected to the room yet — wait a moment and try again.",
+        );
       }
       const key = await importRoomKey(keyFragment);
       try {

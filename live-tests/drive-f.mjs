@@ -141,7 +141,7 @@ const browser = await launch();
     await pageB.getByText("slow.bin").waitFor({ timeout: 240_000 });
   } catch {
     clearInterval(statusPoller);
-    const banner = await pageA.getByText("Upload failed · not sent").count();
+    const banner = await pageA.getByText(/again/i).count();
     const notSent = await pageA.getByText("Not sent").count();
     log("A failure banner visible:", banner > 0, "| message 'Not sent' notes:", notSent);
     log("A >=400 responses:", JSON.stringify(eventsA.badResponses));
