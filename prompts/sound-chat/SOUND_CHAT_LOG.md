@@ -525,3 +525,226 @@ repairs` (log + master plan).
   reality, the authorized `eslint.config.js` and `NOTICE.md` edits, completed
   Phase 0/1, `?url`-asset wording, the mandatory full document reads, and the
   commit-first verification workflow.
+
+---
+
+## Independent verification pass — Phase 0/1 audit + pre-Phase-2 hardening
+
+Session type: **verification and hardening only. No phase was started** (Phase 2
+is still unimplemented). The CSP question was **not** reopened: option (b), the
+patched artifact, stands — re-verified, not re-decided.
+
+### What this session did
+
+- Read the master plan, this log and the deep dive in full first, then
+  re-measured every claim they make about the completed phases instead of
+  trusting them, using an external audit report as a checklist to test rather
+  than as a source of truth. Every audit item was re-tested and classified.
+- Result: 7 real defects, 2 wrong claims and 1 arithmetic error in phases whose
+  suite was 196 unit tests + 58 real-Chromium cases, all green. The ones that
+  can bite Phase 2 are fixed and regression-guarded; the whole class of failure
+  is now the master plan's binding **Section 10** (new Rule 12).
+- No sound/codec/CSP/security defect was found. Every defect was in a *seam*:
+  a callback mock that could not throw, a chunk that was never the wrong size, a
+  teardown that never ran twice, a `close()` that never rejected, a byte count
+  typed by hand.
+
+### Battery re-run BEFORE any edit (own numbers, at `274e7c7`, clean tree)
+
+| Step | Result |
+| :--- | :--- |
+| `pnpm exec tsc --noEmit` (root / `worker`) | exit 0 / exit 0 |
+| `pnpm test` | **23 files, 196 tests passed** (17 s) |
+| `pnpm run lint` | exit 0 — 0 errors, 2 pre-existing `react-refresh` warnings |
+| `pnpm run lint:anti-slop` | 147 warnings, 0 errors |
+| `pnpm run build` | entry `index-CNYxg7aS.js` 307.00 kB / **gzip 95.75 kB**, no codec in it |
+| harness `vite build` | `assets/ggwave-Cm_DI0UB.js` = **147139 bytes** |
+| harness Playwright (full, real CSP) | **58 passed (4.3 m)**; `[csp] real-csp samples=92160 violations=0`; `csp-mode=real server-csp-has-unsafe-eval=false`; `self-transmit-live decodes=2` vs `self-transmit-pause-listening decodes=0 skipped=111`; `device-96000 decodes=2` |
+| `git diff --name-status d91b774 HEAD` (worker, husk lib/components, routes, routeTree, tools, e2e, live-tests, package.json, all three configs) | **0 lines** — boundary held; `src/server.ts` = exactly `+ 'wasm-unsafe-eval'`; `eslint.config.js` = 3 ignore entries; `.gitignore` = `+ggwave` |
+
+### The findings, classified
+
+| # | Finding | Evidence gathered this session | Class → decision |
+| :-- | :--- | :--- | :--- |
+| 1 | `onDecoded` sat inside the codec `try/catch` in `audio-io.ts`, so an application callback that throws was reported as a dead codec module and the mic feed latched off | In-process probe of the real `startListening`: decode calls 1, `onModuleError` 1 with the *consumer's* error, second chunk never reached the codec (`handle.chunks` frozen at 1) | **Real bug** → fixed (three-layer error contract) |
+| 2 | `SoundChatCodec.decode` accepted any non-zero chunk length | Raw-module sweep: chunks of 1 / 192 / 512 / 1000 / **1023** samples de-synchronise the fixed-length Rx permanently (a following complete block decodes 0 times); **1024 / 2048 / 3072 are fine** | **Real, unreachable today** (capture always yields 1024) but reachable from Phase 2/3 code → guard added for whole-frame multiples |
+| 3 | `bytesToFloat32` threw a bare `RangeError` for a non-4-byte-aligned view | Node: `RangeError: start offset of Float32Array should be a multiple of 4`. Only call site passes `Uint8Array.from(view)` (offset 0) | **Latent** → typed `CodecUsageError` |
+| 4 | `vendor/NOTICE.md` recorded 147140 bytes; the file and the committed blob are 147139. A harness comment still said 148131 (pre-patch upstream size) | Recomputed SHA-256 over the real bytes = the value NOTICE already recorded (the hash was right, the size was typed). `git cat-file -s HEAD:…vendor/ggwave.js` = 147139 | **Doc error** → fixed, now machine-checked |
+| 5 | `onVisibilityChange` never dispatches the initial hidden state | Code reading: it is a change-only subscription; the consumer can read `visibilityState` itself | **By-design** → no change; Phase 3 decides the contract |
+| 6 | `teardownAudio` used `void context?.close()` | Real Chromium probe: a second `close()` rejects `InvalidStateError: Cannot close a closed AudioContext.` and the `void` form produced **2 `unhandledrejection` events** | **Real (low)** → rejection-handled |
+| 7 | `SoundChatCodec.rxDurationFrames()` is dead code | Measured: returns 0 on a fixed-length Rx; zero callers outside the class + `.d.ts` | **Real** → removed |
+
+### Wrong claims found (corrected in the docs this session)
+
+1. **"An empty payload kills the codec module for the rest of the page session"**
+   (master plan §3 hard limits, `codec.ts` guard comment, deep dive §5.3).
+   Re-ran the trap on a throwaway module: `RuntimeError: divide by zero`, then the
+   module encoded a full 368640-byte waveform. The "dead for the session"
+   behaviour is **our own deliberate latch**, not a wasm fact. The wording is
+   corrected everywhere; the latch stays, because a trap in Emscripten leaves
+   C++ state undefined — "terminal by policy" is the honest statement.
+2. **The audit's "test-count discrepancy" is not one.** Phase 0's 21 files /
+   171 tests plus Phase 1's `audio-io` (16) + `transport-machine` (9) = 23 / 196,
+   exactly what this session measured; the 75/75 figure is the Sound Chat
+   subset. Historical entries are history, per Rule 7 — nothing was rewritten.
+3. **Arithmetic**: Section 4's "~39 bytes usable per block" is 43
+   (64 − 5-byte header − 16-byte tag) before multi-block `seq` overhead. The
+   plan now states the arithmetic and requires Phase 2 to measure the real
+   capacity and make every document agree.
+
+### Additional measurements (Phase 2 design inputs)
+
+- **Tx determinism, byte-exact**: the same payload/protocol/volume produces
+  identical bytes on repeated calls *and* across two independently instantiated
+  modules (368640 bytes each; different payload → 338008 differing bytes). A
+  recorded transmission therefore replays perfectly: **the dedupe window is the
+  replay defence**, and nonce discipline exists to stop key+nonce reuse, not
+  replay. Phase 2 must not blur the two.
+- **Artifact tamper check**: the vendored file differs from the clone's upstream
+  copy (148131 LF bytes) in **one contiguous region** (1803 → 811 characters,
+  `craftInvokerFunction` → `createNamedFunction`); everything before and after is
+  byte-identical. 0 `eval(`, 0 `new Function`, exactly one `newFunc(` (the
+  now-unreferenced declaration), 1 `WebAssembly.instantiate`.
+- **Patched-artifact arity**: `.length === 0` for every export while `.argCount`
+  is preserved (`encode` 4, `decode` 2, `init` 1) and a wrong argument count still
+  raises `BindingError: function encode called with 2 arguments, expected 4`.
+  Nothing in this repo relies on `Function.length`.
+- **Built asset identity**: the emitted `assets/ggwave-*.js` is byte-identical to
+  `src/lib/sound-chat/vendor/ggwave.js` (sha256 `B097B329…577F`, 147139 bytes) —
+  now asserted by the harness build-output test instead of trusted.
+- The `.git` directory of the `ggwave` research clone is gone (it is a plain
+  source tree now), so the upstream commit id in `NOTICE.md` can only be
+  re-verified by content, not by `git -C ggwave`. Recorded, not fixed: the clone
+  is kept as required and the artifact hash is what the test checks.
+
+### What was changed, file by file
+
+- `src/lib/sound-chat/codec.ts` — `decode()` refuses a chunk that is not a whole
+  number of 1024-sample frames, *outside* `#guard()` so a caller's mistake cannot
+  latch the module dead; `bytesToFloat32()` reports an unaligned view as
+  `CodecUsageError` instead of a raw `RangeError`; `rxDurationFrames()` deleted;
+  header comment now states the three-layer error contract and the
+  "terminal by policy, not by measurement" rule. All property lengths stay
+  inside `#guard()` so a genuine trap still latches.
+- `src/lib/sound-chat/audio-io.ts` — the audio callback now has two layers:
+  codec failures stop the feed and go to `onModuleError`; `onDecoded` errors go
+  to the new `onDecodedError` and the feed keeps running (falls back to
+  `console.error`, never a silent swallow); `ListenOptions.onModuleError` is
+  documented to cover both a real module death *and* our own broken frame
+  contract, with `instanceof` for the copy; `createAudioContext()`'s
+  rate-mismatch close and `teardownAudio()` are rejection-handled.
+- `src/lib/sound-chat/codec-guards.test.ts` (**new**, 8 tests) — partial-frame
+  refusal with `state === "ready"` and no desync; whole multiples stay legal;
+  empty chunk; encode guards leave the module usable; unaligned / un-sized byte
+  views; a closed codec refuses as a usage error.
+- `src/lib/sound-chat/provenance.test.ts` (**new**, 3 tests) — parses
+  `NOTICE.md` and asserts the recorded size and SHA-256 against the real bytes,
+  asserts no dynamic execution (`eval(`, `new Function`, one unreferenced
+  `newFunc(` declaration, `createNamedFunction` present, one
+  `WebAssembly.instantiate`), and asserts the upstream MIT text ships beside it.
+- `src/lib/sound-chat/audio-io.test.ts` — the mock `close()` now **rejects** the
+  way measured Chromium does (this is what makes class 5 testable at all); plus
+  three seam tests: a throwing consumer keeps the feed alive and reports
+  separately, the no-handler fallback reports to `console.error`, and a misuse
+  error reaches `onModuleError` with its type intact; plus a double-teardown test
+  that would fail as an unhandled rejection if the handling were removed.
+- `src/lib/sound-chat/spike/frame-alignment.test.ts` — the partial-frame test now
+  pins the **guard** (`CodecUsageError`, `state === "ready"`, the next block still
+  decoding at frames 89/90) instead of the old silently-fatal fact
+  (`expect(second).toEqual([])`). The measured fact itself is cited in the file
+  header and the plan's seam set.
+- `src/lib/sound-chat/harness/fake-mic.spec.ts` — stale `148131` comment
+  corrected; the build-output test now also asserts the emitted codec asset is
+  byte-identical to the vendored artifact.
+- `src/lib/sound-chat/vendor/NOTICE.md` — `147140` → `147139` bytes.
+- `prompts/sound-chat/SOUND_CHAT_MASTER_PLAN.md` — new binding **Section 10**
+  (10.1: 14 defect classes, each with the guard it needs and the test that must
+  fail before the fix; 10.2: crypto/protocol properties P1–P12; 10.3: the
+  hostile-input seam set; 10.4: definition of done), new **Rule 12** making it
+  binding, the Section 5 battery now includes the seam/provenance run, Section 4's
+  capacity arithmetic corrected, post-Phase-1 accuracy notes for the Section 3
+  rows, Phase 2/3/4 gates extended, and new Section 8 checklist items.
+
+### Battery re-run AFTER the fixes (own numbers)
+
+| Step | Result |
+| :--- | :--- |
+| `pnpm exec tsc --noEmit` (root / `worker`) | exit 0 / exit 0 |
+| `pnpm test` | **25 files, 210 tests passed** (23.1 s) — +2 files / +14 tests |
+| `pnpm exec vitest run src/lib/sound-chat` | **11 files, 89 tests passed** (was 75) |
+| `pnpm run lint` | exit 0 — 0 errors, 2 pre-existing warnings |
+| `pnpm run lint:anti-slop` | 148 warnings, 0 errors (one more file scanned) |
+| `pnpm run build` | entry `index-CNYxg7aS.js` 307.00 kB / **gzip 95.75 kB**, no codec — unchanged |
+| harness `vite build` | green; codec `?url` asset emitted |
+| harness Playwright (full, real CSP) | **58 passed (4.3 m)**; `[csp] real-csp samples=92160 violations=0`; `csp-mode=real server-csp-has-unsafe-eval=false`; `self-transmit-live decodes=3` vs `self-transmit-pause-listening decodes=0 skipped=111`; `device-96000 decodes=2`; the byte-identity assertion passed |
+| seam logs observed | `[guards] after refused partial frames, decodes at frames=89,90`; `[align] partial-frame first=89,90 refused=CodecUsageError after=1,89,90` |
+
+Note: the two new test files were written by the editor tooling with CRLF and
+failed prettier; they were converted to LF and formatted with the repo's own
+prettier before commit. No config file was touched to make that pass.
+
+### Honest caveat about the new tests
+
+They were **not** run against the pre-fix code (the old behaviour was measured
+directly instead: the `onDecoded → onModuleError` probe, the raw-module
+partial-frame sweep, and the real-Chromium double-`close()` probe). The plan's
+Section 10.1 now makes "must fail before the fix" an explicit requirement for
+every remaining phase, and Phase 4 has to prove it in the harness — including
+corrupting a *copy* of the artifact to show the provenance test can fail.
+
+### Tooling incident (recorded so it is not repeated)
+
+A throwaway Playwright probe configuration written by this session inherited the
+default output directory and **emptied the gitignored `test-results/` scratch
+directory** (harness build output and this session's first logs). No tracked file
+was affected, the harness build was regenerated with
+`pnpm exec vite build --config src/lib/sound-chat/harness/vite.config.ts`, and the
+probe was re-run from an isolated folder with `rootDir`/`outputDir` pinned. That
+rule is now Section 10.1 class 14. The earlier session's scratch runners
+(`test-results/run-battery.ps1`, `probe-*.mjs`) referenced in the Phase 0 entry
+are gone from disk with it.
+
+### Handed to Phase 2 (do not redo, re-verify)
+
+1. The five applied fixes above — Phase 2 must show they still hold after its own
+   changes (it is the first real consumer of `onDecoded`, so fix 1 stops being
+   theoretical: parsing, AEAD verification, dedupe and ACK logic all run there).
+2. Section 10.2 P1–P12 — per-direction keys, no key+nonce reuse across reloads,
+   AAD over the whole header, replay defeated by the bounded dedupe window,
+   tag failure = nothing decoded, "heard but unreadable" distinguished from
+   silence, pairing never acoustic, derivation arithmetic + iterations logged,
+   no secret logged or persisted, **measured** capacity, ACK timing scaled to the
+   measured transmit duration, bounded protocol state.
+3. Section 10.3 — extend the hostile-input set with everything Phase 2 adds.
+4. Measure the real single- and two-block payload capacity and make Section 3,
+   Section 4 and the UI's character counter agree with it.
+5. Nothing in the locked configuration changed: two instances, `AUDIBLE_FASTEST`,
+   fixed-length 64-byte blocks, 48000/1024, no DSS, no variable-length, no
+   ultrasound, no WebRTC/STUN/TURN, `'wasm-unsafe-eval'` only.
+
+### Commit record for this pass
+
+- Implementation + master plan: `a6d8781e6f34b381ccae24963f9d44c579459590`
+  (9 files, +652/−33) — `worker/**`, `src/lib/husk/**`,
+  `src/components/husk/**`, routes, `routeTree.gen.ts`, `package.json`, the
+  eslint/vite/playwright/vitest configs, `.gitignore` and `src/server.ts` were
+  not touched at all in this pass; the `ggwave` research clone is untouched and
+  kept.
+- Documentation (this entry): the next commit on `main` after `a6d8781`.
+- Both pushed to `origin/main`; branch clean afterwards.
+
+### Claims corrected this session
+
+1. "An empty payload kills the module for the rest of the page session" → it
+   traps (`divide by zero`) and the module stays usable; the latch is our policy.
+2. "`NOTICE.md`: the patched file is 147140 bytes" → 147139 (hash was already
+   right, and is now machine-checked).
+3. "harness comment: the vendored artifact is 148131 bytes" → 147139, which is
+   also what the emitted asset must equal byte-for-byte.
+4. "usable plaintext per block ~39 bytes" → 43 before `seq` overhead.
+5. "21 files/171 tests vs 23/196 tests is a discrepancy" → it is arithmetic, and
+   the 75/75 figure is the Sound Chat subset.
+6. "a thrown codec call means the module is dead" → the module may well be
+   alive; the session is restarted by policy, and misuse guards deliberately
+   never latch (this is what the old comment implied incorrectly).
+
