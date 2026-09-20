@@ -512,3 +512,16 @@ violations=0 (patched artifact, no dynamic execution)`;
   routeTree, tools, e2e, package.json, playwright.config.ts, vite.config.ts,
   .gitignore: untouched. No WebRTC/STUN/TURN, no variable-length mode, no DSS,
   no ultrasound.
+
+### Commit record for Phase 1
+
+- Implementation: `e3dd342 feat(sound-chat): Phase 1 core transport - CSP-safe
+patched artifact, codec, audio-io, state machine` (10 files).
+- Documentation: `b710906 docs(sound-chat): Phase 1 log entry and master-plan
+repairs` (log + master plan).
+- Pushed to `origin/main`; branch is clean afterward.
+- The master plan was repaired in the same documentation commit to remove
+  stale post-Phase-1 instructions: it now records the patched-artifact CSP
+  reality, the authorized `eslint.config.js` and `NOTICE.md` edits, completed
+  Phase 0/1, `?url`-asset wording, the mandatory full document reads, and the
+  commit-first verification workflow.
