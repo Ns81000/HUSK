@@ -337,3 +337,178 @@ the repo-wide eslint failure whose every remaining error is outside this phase's
 ownership. The one thing Phase 0 could not prove — and says so loudly — is that
 the codec runs under HUSK's CSP as planned: it does not, and that decision is now
 on the table for a human.
+
+---
+
+## Phase 1 — Core transport module (and Phase 0 pending closeout)
+
+Session of 2026-09-20. Started from `4654e95` with a clean tree; the human had
+pushed two audit-document commits and a prompt-folder reorganisation between
+sessions — all docs-only, nothing inside this phase's ownership. Per the human's
+explicit instruction, **no repo change outside this phase's files was assumed
+to be a fix**: every log claim was re-measured before being built on.
+
+### Baseline re-verification (before any edit)
+
+- `git status --short`: clean. `src/server.ts` still has exactly
+  `'wasm-unsafe-eval'` and no `'unsafe-eval'` — the blocker state, as logged.
+- In-process spike suites: **50/50 green** (7 files, includes the 261-payload
+  fuzz with 144 degraded variants, all byte-exact).
+- Harness build (`vite build --config src/lib/sound-chat/harness/vite.config.ts`):
+  green; emits `ggwave-JKZypKNC.js` (148.13 kB) as its own asset.
+- App production build (`pnpm run build`): green, and **contains no codec
+  asset** — nothing in the app module graph imports the loader yet (expected
+  until the Phase 3 route wires it). Measured, not assumed.
+- `pnpm run lint` baseline: **2085 problems (2083 errors, 2 warnings)**.
+  Re-measured per-directory: `ggwave/**` 144, `test-results/**` 1,804,
+  `src/lib/sound-chat/vendor/ggwave.js` 9, and — differing from the earlier
+  entry's claim — `src/components/husk/**` measured **0 errors / 2 warnings**
+  (warnings do not fail `eslint .`). The human states they changed nothing;
+  the earlier "errors in src/components/husk/**" claim does not reproduce and
+  its cause is unknown (not assumed: possibly line-ending state at the time it
+  was recorded). Flagged here so the record is honest.
+
+### Pending item 1 — CSP/artifact decision (closed: option b, patch)
+
+The human delegated the choice ("choose the best"). Chosen: **(b) patch the
+vendored artifact** — keeps the app CSP exactly as strict, avoids the emsdk
+dependency of (c) and the unprototyped messaging boundary of (d), and the one
+line of (a) that the plan explicitly rejects.
+
+The patch, derived from the artifact's own bytes (region extracted verbatim
+first): `craftInvokerFunction`'s generated-source invoker — everything from
+`var argsList="";` through `return newFunc(Function,args1).apply(null,args2)`
+(1,809 bytes) — was replaced (816 bytes) with a plain closure that performs
+the identical steps: argument-count check, `toWireType` conversion of `this`
+and each argument into a wired list, destructor stack (`runDestructors` when
+`needsDestructorStack`, individual dtor calls otherwise), and
+`retType.fromWireType(rv)` return; the function is named via the artifact's own
+CSP-safe `createNamedFunction`. `newFunc` is now unreferenced. `newFunc(Function`
+was the file's **only** dynamic-execution site (verified: 2 occurrences of
+`newFunc` total, and Phase 0's sufficiency measurement — with `'unsafe-eval'`
+the same page ran with 0 violations).
+
+- Hashes: unpatched 148,131 bytes, SHA-256
+  `D5FDB0A1…AB6B` (unchanged upstream identity, blob `b9ca2267`);
+  **patched 147,140 bytes, SHA-256
+  `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`**.
+- Honesty note: the first patch pass dropped `craftInvokerFunction`'s closing
+  brace (5 suites went red with a SyntaxError). Repaired, then `node --check`
+  added to the routine; everything after was measured on the repaired file.
+- `NOTICE.md` now records both hashes and the patch; it no longer claims the
+  artifact is byte-identical to upstream.
+- Immediate regression: the 50 in-process tests re-ran green on the patched
+  artifact, including the 405-payload fuzz — the generic invoker's semantics
+  are exercised thousands of times per run.
+- Harness test flipped: `codec loading vs HUSK's CSP` now asserts the chosen
+  reality — under the app's real CSP the page encodes the locked block to
+  **samples=92160 with `violations=0`** (measured this session), plus a
+  control probe proving the violation detector still fires under a CSP with no
+  wasm allowance. The `SOUND_CHAT_HARNESS_RELAXED_CSP` switch and its skip
+  paths are **removed**; the browser matrix now always runs under the real
+  CSP. The env var is dead.
+
+### Pending item 2 — lint scope (closed)
+
+`eslint.config.js` (not on the off-limits list; mandated by the kickoff)
+gains three ignores: `ggwave/**` (research clone — kept, see below),
+`test-results/**` (build/probe artifacts), and the minified
+`src/lib/sound-chat/vendor/ggwave.js`. Result: **`pnpm run lint` exits 0**
+(0 errors, 2 pre-existing `react-refresh` warnings in `src/components/husk/**`).
+This edit goes beyond the master plan's original approved-edit list; it was
+explicitly instructed by the kickoff ("apply the decision so `pnpm run lint`
+returns to green") and should be folded into the plan at the deferred
+master-plan update.
+
+### Pending item 3 — `?url` asset vs chunk (closed, with a deferral)
+
+- Measured in the app's own production build: no codec asset is emitted today
+  because no app-graph module imports the loader — the ?url import cannot be
+  in the app build before Phase 3 wires a route to it. This is a fact of the
+  bundler graph, not a failure.
+- Mechanism confirmed with a probe build (`test-results/sound-chat-asset-probe`,
+  same Vite install, entry importing the real `load-ggwave.ts`): the codec
+  lands as **`dist/assets/ggwave-Cm_DI0UB.js` (147,139 bytes, hashed name)**
+  under `/assets/*`, which `public/_headers` marks
+  `Cache-Control: public, max-age=31536000, immutable`. The 1-byte difference
+  from the on-disk 147,140 is Vite's emission normalisation.
+- **Deferral, recorded deliberately:** the final in-graph confirmation (asset
+  present in the app's own `dist/assets/`, served with the immutable header)
+  belongs to Phase 3 route wiring, re-checked in Phase 5.
+
+### Pending item 4 — 44100 Hz guard (closed)
+
+Implemented in the new `audio-io.ts`: `createAudioContext()` creates the
+context as `{ sampleRate: 48000 }`, verifies `context.sampleRate`, and throws
+the dedicated **`AudioContextRateError`** (user-legible message naming both
+rates) when the browser forces a different rate, closing the half-built
+context first. Re-measured live in this session's harness run to justify the
+guard: `device-44100-native` and `device-44100-mismatched` both decoded
+**0** blocks (graceful, exactly the silence the guard exists to prevent),
+while `device-96000` decoded. The harness's own spike path deliberately keeps
+creating non-48000 contexts so this matrix stays measurable.
+
+### Phase 1 delivery
+
+- `src/lib/sound-chat/codec.ts` — the spike codec promoted verbatim (same
+  guards: no negative instance id, no empty-payload encode, every view copied
+  via `Uint8Array.from`, any throw = module dead + restart offer, Rx narrowed
+  to `AUDIBLE_FASTEST`, `disableLog()` before init, payloadLength 64, volume
+  25). `spike/codec.ts` is now a documented `export * from "../codec"`, so the
+  Phase 0 harness and spike suites exercise the **real** module — no copy to
+  drift.
+- `src/lib/sound-chat/audio-io.ts` — microphone access as a discriminated
+  result (granted / denied / missing / unsupported, clean constraints), lazy
+  user-gesture `AudioContext` lifecycle with the 48000 verification above,
+  `ensureRunning` for autoplay policy, `startListening` (ScriptProcessor
+  1024/1/1, one chunk per `onaudioprocess`, decoded immediately, never
+  accumulated; codec death stops the feed and reports once), Rx-feed pause on
+  the AudioContext clock for the transmit window **plus the 500 ms measured
+  tail** (background-throttle-proof), `transmit` / `transmitAndPause` via
+  `AudioBufferSourceNode`, `teardownAudio` with explicit `track.stop()` on all
+  tracks, and an `onVisibilityChange` subscription for the transport to hold
+  sends while hidden.
+- `src/lib/sound-chat/transport-machine.ts` — pure state machine in the
+  `room-machine.ts` discipline: idle, listening, transmitting, awaiting_turn,
+  awaiting_ack, backoff, error (recoverable — START again), module_error
+  (only RESTART leaves it; STOP cannot erase it). Illegal transitions are
+  no-ops.
+- Tests: `transport-machine.test.ts` (9 tests incl. the **full 8-state ×
+  13-event transition table** asserted exhaustively) and `audio-io.test.ts`
+  (16 tests over mocked `AudioContext`/`getUserMedia`/codec: permission
+  states, rate guard, one-chunk-per-callback feeding, pause+tail resume,
+  module-death latching, teardown track stops, visibility subscription).
+
+### Verification battery (this session's own numbers)
+
+- `pnpm exec tsc --noEmit`: **exit 0**, repo-wide.
+- `pnpm run lint`: **exit 0** (0 errors, 2 pre-existing warnings).
+- `pnpm exec vitest run src/lib/sound-chat`: **75/75 green** (50 spike +
+  16 audio-io + 9 transport-machine), ~13 s.
+- Harness build: green.
+- `pnpm run build` (app): green (no codec asset pre-Phase-3, measured above).
+- Playwright harness, **no relaxed-CSP env var set**: **58/58 passed in 3.9m,
+  exit 0** — first time the full browser matrix has ever run under HUSK's
+  real CSP. Key lines, all measured this run: `[csp] real-csp samples=92160
+violations=0 (patched artifact, no dynamic execution)`;
+  `device-44100-native decodes=0` / `device-44100-mismatched decodes=0` /
+  `device-96000 decodes=1`; `self-transmit-live decodes=3` vs
+  `self-transmit-pause-listening decodes=0 skipped=111` (Phase 0's
+  pause-before-transmit rule reproduced); `[browser-tx] pass unique=1`;
+  asset-split build test green.
+
+### Housekeeping decisions recorded this session
+
+- The `ggwave/` research clone is **kept**: the CSP patch re-derivation, the
+  Phase 2 protocol design (against `ggwave.cpp`), and any artifact upgrade all
+  need it. Deletion belongs to the final cleanup phase, once no phase can
+  still need it. It is now eslint-ignored.
+- New files this session: `src/lib/sound-chat/{codec,audio-io,transport-machine}.ts`
+  plus their tests; modified: `spike/codec.ts` (re-export),
+  `harness/fake-mic.spec.ts` (CSP reality), `vendor/ggwave.js` (the patch),
+  `vendor/NOTICE.md` (provenance), `eslint.config.js` (lint scope). Nothing
+  outside the sound-chat namespace plus `eslint.config.js` was touched;
+  `worker/**`, `src/lib/husk/**`, `src/components/husk/**`, routes,
+  routeTree, tools, e2e, package.json, playwright.config.ts, vite.config.ts,
+  .gitignore: untouched. No WebRTC/STUN/TURN, no variable-length mode, no DSS,
+  no ultrasound.
