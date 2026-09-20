@@ -38,7 +38,7 @@ function buildCsp(scriptHashes: readonly string[]): string {
     // restoration bootstrap + the constant theme pre-paint snippet). Each one
     // is hashed per response below, so no inline script outside the
     // server-rendered document can ever run.
-    `script-src 'self' ${scriptHashes.join(" ")}`.trim(),
+    `script-src 'self' 'wasm-unsafe-eval' ${scriptHashes.join(" ")}`.trim(),
     // Inter is self-hosted from /fonts; inline style attributes from the SSR
     // shell require 'unsafe-inline'.
     "style-src 'self' 'unsafe-inline'",
