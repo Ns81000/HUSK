@@ -58,44 +58,21 @@ declare global {
 }
 
 /**
- * The measured Phase 0 blocker (see `SOUND_CHAT_LOG.md`).
+ * The Phase 1 CSP reality (see `SOUND_CHAT_LOG.md`).
  *
- * The vendored artifact's embind glue ends `craftInvokerFunction` with
- * `return newFunc(Function, args1).apply(null, args2)`, and `newFunc` calls
- * `constructor.apply(obj, argumentList)` — i.e. the *global* `Function`
- * constructor compiles one invoker per registered binding at init. There is no
- * textual `new Function`/`eval(` in the file (which is why a grep-based review
- * missed it), so under HUSK's real CSP (`'wasm-unsafe-eval'`, deliberately not
- * `'unsafe-eval'`) the very first `encode`/`decode` throws
- * `EvalError: Evaluating a string as JavaScript violates ... script-src` and the
- * codec is unusable.
+ * Phase 0 measured the blocker: the vendored artifact's embind glue ended
+ * `craftInvokerFunction` with `return newFunc(Function, args1).apply(null,
+ * args2)` — the *global* `Function` constructor compiled one invoker per
+ * registered binding at init, so under HUSK's real CSP the very first codec
+ * call threw an EvalError and the codec was unusable. The chosen fix (human
+ * decision, option b) patches the vendored artifact's `craftInvokerFunction`
+ * to build a plain closure invoker with identical semantics — no dynamic
+ * execution — so the app's CSP stays exactly as strict as before.
  *
- * Widening the app's CSP is a human decision (the plan's approved edit is the
- * single `'wasm-unsafe-eval'` token), so by default the browser matrix is
- * skipped with that message rather than silently relaxed. Running it for
- * measurement is opt-in:
- *
- *   $env:SOUND_CHAT_HARNESS_RELAXED_CSP = "1"
- *   pnpm exec playwright test --config src/lib/sound-chat/harness/playwright.config.ts
- *
- * In relaxed mode only the *served harness document's* CSP gains `'unsafe-eval'`
- * — `src/server.ts` is untouched — every matrix line is tagged with the mode,
- * and the always-on "real CSP blocks the codec" test below keeps asserting the
- * blocker itself.
+ * The matrix below therefore runs under the *real* CSP, always. There is no
+ * relaxation switch any more; `SOUND_CHAT_HARNESS_RELAXED_CSP` is dead.
  */
-const RELAXED_CSP = process.env["SOUND_CHAT_HARNESS_RELAXED_CSP"] === "1";
-const CSP_MODE = RELAXED_CSP ? "relaxed(+unsafe-eval,MEASUREMENT-ONLY)" : "real";
-const BLOCKED_MESSAGE =
-  "the vendored codec cannot load under HUSK's real CSP (embind compiles " +
-  "invokers with the global Function constructor, which needs 'unsafe-eval'); " +
-  "see SOUND_CHAT_LOG.md and run with SOUND_CHAT_HARNESS_RELAXED_CSP=1 to " +
-  "measure the audio pipeline anyway";
-
-/** The CSP the harness document is served with. Only ever relaxed opt-in. */
-function harnessCsp(): string {
-  if (!RELAXED_CSP) return realCsp;
-  return realCsp.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'");
-}
+const CSP_MODE = "real";
 
 function variantById(id: string): ChannelVariant {
   const found = CHANNEL_MATRIX.find((variant) => variant.id === id);
@@ -141,7 +118,7 @@ async function installHarnessRoute(page: Page): Promise<void> {
     route.fulfill({
       status: 200,
       contentType: "text/html; charset=utf-8",
-      headers: { "content-security-policy": harnessCsp() },
+      headers: { "content-security-policy": realCsp },
       body: HARNESS_HTML,
     }),
   );
@@ -292,7 +269,6 @@ function assertVariantContract(variant: ChannelVariant, result: HarnessResult): 
 test.describe("Phase 0 fake-microphone degradation matrix", () => {
   for (const variant of CHANNEL_MATRIX) {
     test(`${variant.id} — ${variant.label}`, async () => {
-      test.skip(!RELAXED_CSP, BLOCKED_MESSAGE);
       const { wavPath, sampleCount } = writeVariantWav(variant);
       const result = await captureWithBrowser(wavPath, harnessOptions(variant));
       const observation = assertVariantContract(variant, result);
@@ -307,14 +283,15 @@ test.describe("Phase 0 fake-microphone degradation matrix", () => {
 });
 
 /**
- * The always-on record of the blocker, independent of the measurement switch:
- * under the app's real CSP the codec cannot even be instantiated, and adding
- * exactly `'unsafe-eval'` (nothing else) is enough to make the same page work.
- * This is the test a future session should delete *only* once the CSP question
- * has been decided and the codec loads for real.
+ * The always-on record of the CSP decision. Under the app's real CSP the codec
+ * must now load and run with *zero* violations — the patched artifact builds
+ * its embind invokers as plain closures, so no dynamic execution is ever
+ * requested. It also guards the patch indirectly: if the artifact ever
+ * regresses to compiling invokers with the global Function constructor, the
+ * violations array here becomes non-empty and this test fails.
  */
 test.describe("codec loading vs HUSK's CSP", () => {
-  test("needs 'unsafe-eval': embind compiles invokers with the global Function constructor", async () => {
+  test("loads and encodes under the real CSP with zero violations", async () => {
     const instance = await chromium.launch({ channel: "chromium" });
     try {
       const probe = async (csp: string) => {
@@ -357,21 +334,20 @@ test.describe("codec loading vs HUSK's CSP", () => {
       };
 
       const real = await probe(realCsp);
-      expect(real.encoded, "the real CSP must block the codec today").toBeNull();
-      expect(real.error).toContain("EvalError");
-      expect(real.violations.map((entry) => entry.blocked)).toEqual(["eval"]);
+      expect(real.encoded, "the patched codec must encode under the app's real CSP").toBe(
+        90 * 1024,
+      );
+      expect(real.error, "the codec must load without throwing").toBe("");
+      expect(real.violations).toEqual([]);
       console.log(
-        `[csp-blocker] real-csp blocked=${JSON.stringify(real.violations)} error="${real.error.slice(0, 90)}"`,
+        `[csp] real-csp samples=${real.encoded} violations=${real.violations.length} (patched artifact, no dynamic execution)`,
       );
 
-      const relaxed = await probe(
-        harnessCsp().replace("script-src 'self'", "script-src 'self' 'unsafe-eval'"),
-      );
-      expect(relaxed.violations).toEqual([]);
-      expect(relaxed.encoded, "'unsafe-eval' alone must be sufficient").toBe(90 * 1024);
-      console.log(
-        `[csp-blocker] with-unsafe-eval samples=${relaxed.encoded} violations=${relaxed.violations.length}`,
-      );
+      // Control: a CSP with no wasm allowance at all must still block the wasm
+      // instantiate — proving the probe itself can detect violations.
+      const bare = await probe("default-src 'self'; script-src 'self'");
+      expect(bare.encoded).toBeNull();
+      expect(bare.violations.length).toBeGreaterThan(0);
     } finally {
       await instance.close();
     }
@@ -385,7 +361,6 @@ test.describe("codec loading vs HUSK's CSP", () => {
  */
 test.describe("browser Tx path", () => {
   test("encodes in the page and decodes that same audio back through the fake mic", async () => {
-    test.skip(!RELAXED_CSP, BLOCKED_MESSAGE);
     sharedBrowser = await chromium.launch({ channel: "chromium" });
     const page = await openHarnessPage();
     const entry = await resolveHarnessEntry(page);

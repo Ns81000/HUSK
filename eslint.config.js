@@ -16,6 +16,13 @@ export default tseslint.config(
       ".agents/**",
       "tools/**",
       "live-tests/**",
+      // Sound Chat Phase 0/1 decisions (SOUND_CHAT_LOG.md): the ggwave
+      // research clone is reference material pending final cleanup;
+      // test-results holds build outputs and probe scripts; the vendored
+      // codec artifact is minified upstream code under a recorded hash.
+      "ggwave/**",
+      "test-results/**",
+      "src/lib/sound-chat/vendor/ggwave.js",
     ],
   },
   {
