@@ -1,5 +1,10 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { CODEC_SAMPLES_PER_FRAME, openSoundChatCodec, type SoundChatCodec } from "./codec";
+import {
+  CODEC_SAMPLES_PER_FRAME,
+  CodecUsageError,
+  openSoundChatCodec,
+  type SoundChatCodec,
+} from "./codec";
 import { concat, silence } from "../harness/matrix";
 import { PRIMARY_PAYLOAD, SEQUENCE_PAYLOADS, type TestPayload } from "../harness/payloads";
 
@@ -22,9 +27,12 @@ import { PRIMARY_PAYLOAD, SEQUENCE_PAYLOADS, type TestPayload } from "../harness
  *   means the window never holds a whole block, so nothing decodes — graceful,
  *   and the reason the transport is turn-based with the listener already
  *   listening.
- * - Feeding a partial frame (not 1024 samples) permanently de-synchronises the
- *   receiver: subsequent complete blocks stop decoding. Capture must therefore
- *   always present whole frames.
+ * - Feeding a partial frame (not a whole multiple of 1024 samples)
+ *   permanently de-synchronises the receiver: subsequent complete blocks stop
+ *   decoding. `SoundChatCodec.decode` therefore refuses a partial frame with a
+ *   `CodecUsageError` (master plan Section 10.1 classes 2 and 10) — the last
+ *   test in this file pins that contract, including that the module stays
+ *   usable afterwards. Capture must always present whole frames.
  *
  * Every scenario runs on its own codec module: a shifted receiver cannot be
  * recovered in place.
@@ -97,16 +105,32 @@ describe("fixed-length frame alignment", () => {
     expect(at).toEqual([]);
   });
 
-  it("loses synchronisation permanently after a partial frame is fed", async () => {
+  it("refuses a partial frame instead of silently losing the receiver", async () => {
     const codec = await fresh();
     const first = feed(codec, block(codec, PRIMARY_PAYLOAD));
     // One 192-sample fragment: what a naive "decode whatever the callback gave
-    // me" loop produces whenever a buffer is cut short.
-    codec.decode(new Float32Array(192));
+    // me" loop produces whenever a buffer is cut short. Measured before the
+    // guard existed: feeding it de-synchronised this instance permanently, so
+    // the codec now refuses it *before* it can reach the wasm core — and
+    // refuses it as our own misuse, leaving the module usable.
+    let thrown: unknown;
+    try {
+      codec.decode(new Float32Array(192));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(CodecUsageError);
+    expect(codec.state).toBe("ready");
+    // The instance is intact: the next complete block still decodes at the same
+    // frames. Frame 1 may be the *previous* block re-decoding out of the rolling
+    // window — the codec redelivers by design and the protocol dedupes
+    // (Section 3). A de-synchronised receiver decodes nothing at all.
     const second = feed(codec, block(codec, PRIMARY_PAYLOAD));
-    console.log(`[align] partial-frame first=${first.join(",")} second=${second.join(",")}`);
-    expect(first).toEqual([89, 90]);
-    expect(second).toEqual([]);
+    console.log(
+      `[align] partial-frame first=${first.join(",")} refused=${thrown instanceof Error ? thrown.name : "no"} after=${second.join(",")}`,
+    );
+    expect(second).toContain(89);
+    expect(second).toContain(90);
   });
 
   it("decodes two frame-aligned blocks inside one continuous stream", async () => {

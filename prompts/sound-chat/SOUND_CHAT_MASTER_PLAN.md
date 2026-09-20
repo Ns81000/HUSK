@@ -115,6 +115,33 @@ All of the following are backed by measured findings in
   limit — the point of encryption is that the _content_ stays protected even
   though the _transmission itself_ is not private.
 
+### Post-Phase-1 accuracy notes (independent verification pass, 2026-09-20)
+
+These repair statements in Section 3 that the completed phases made stale or
+imprecise. They do not reopen any locked decision; the CSP question in
+particular stays closed (option (b), patched artifact — see
+`src/lib/sound-chat/vendor/NOTICE.md` and the log).
+
+- **Codec artifact source row**: what ships is the vendored prebuilt artifact
+  **plus the recorded CSP patch**, so the file's SHA-256 is the patched hash
+  (`B097B329…577F`, 147,139 bytes), not the clone's unpatched `F4BD5E9E…`. The
+  clone's `F4BD5E9E…` remains the provenance of the bytes the patch was derived
+  from. A test now asserts the patched size and hash against `NOTICE.md`.
+- **CSP row**: unchanged and still accurate — `'wasm-unsafe-eval'` is present in
+  `script-src` and `'unsafe-eval'` is not. Verified live: the harness prints
+  `server-csp-has-unsafe-eval=false` and the codec encodes under the real CSP
+  with zero `securitypolicyviolation` events.
+- **Message-length row**: the "~70 usable bytes / 60–70 characters" figure stays
+  a **pre-implementation estimate** until Phase 2 measures the real payload
+  capacity of one and two blocks including `seq` overhead (Section 10.2 P10).
+  Every document stating a byte/character budget must then agree with that
+  measurement.
+- **Also recorded here**: the verification pass amended two Phase 1 files
+  (`audio-io.ts`, `codec.ts`) and one harness comment to close the defects it
+  found. Those amendments are inside the Sound Chat namespace, are listed
+  file-by-file in the log, and do not touch the locked configuration (two
+  instances, `AUDIBLE_FASTEST`, fixed-length 64-byte blocks, 48000/1024).
+
 ## 4. Wire format (locked)
 
 Each transmission is exactly one 64-byte fixed-length ggwave block:
@@ -128,8 +155,11 @@ bytes 5-N    : AEAD ciphertext + 16-byte auth tag
 remaining    : zero-padded to fill 64 bytes
 ```
 
-- Usable plaintext per block: **~39 bytes** after the 5-byte header and
-  16-byte AEAD tag are subtracted from 64.
+- Usable plaintext per block: **43 bytes**, not the "~39" earlier revisions
+  claimed — 64 minus the 5-byte header minus the 16-byte AEAD tag. Two blocks
+  therefore carry ~86 bytes *before* the multi-block `seq` overhead, which
+  Phase 2 measures and then records in every document that states a capacity
+  (Section 10.2, P10).
 - Messages longer than one block use a `seq` scheme across multiple blocks
   (finalize the exact multi-block header shape in Phase 2 — the single-block
   shape above is locked, the multi-block extension is not yet).
@@ -167,6 +197,10 @@ remaining    : zero-padded to fill 64 bytes
      `pnpm exec vite build --config src/lib/sound-chat/harness/vite.config.ts`,
      then `pnpm exec playwright test --config
 src/lib/sound-chat/harness/playwright.config.ts` (runs `pnpm dev` itself)
+   - Sound Chat seam, guard and artifact-integrity coverage, in-process:
+     `pnpm exec vitest run src/lib/sound-chat` — this includes the Section 10.3
+     hostile-input set and the machine-checked artifact/doc assertions in
+     `src/lib/sound-chat/provenance.test.ts`
    - `git diff --stat` reviewed by the agent to confirm only Section-6
      approved files changed
    - Independent commit-first verification: complete the phase work, commit it
@@ -211,6 +245,13 @@ src/lib/sound-chat/harness/playwright.config.ts` (runs `pnpm dev` itself)
     behaviour) is re-executed or re-measured in that session before it is
     relied on; anything that cannot be verified is logged as an open question,
     not treated as fact.
+12. **Section 10 is binding on every remaining phase.** The defect classes in
+    10.1, the crypto/protocol properties in 10.2, the hostile-input set in
+    10.3 and the definition of done in 10.4 are not advice — a phase that
+    cannot show them is not finished. Pass every phase's own new interface
+    through the classes in 10.1 *before* logging the phase complete: a
+    phase-boundary interface whose consumer does not exist yet (class 12) is
+    exactly where Phase 0/1's defects hid.
 
 ### Kickoff prompt template
 
@@ -410,6 +451,35 @@ at the end of Section 8.
 - A failed AEAD tag is treated exactly like "nothing decoded" — never
   rendered, never surfaced as corruption to the user; it just lets the
   sender's normal ack-timeout retry handle it.
+- **Carried-in fixes from the verification pass — re-verify, do not
+  reimplement.** The following are already applied and tested (log:
+  "Independent verification pass"): the consumer-error boundary in
+  `audio-io.ts` (a throwing callback no longer stops the feed or reports a dead
+  module), the whole-frame guard in `codec.decode` (whole multiples of 1024 stay
+  legal; a partial frame raises a usage error *outside* the module latch), the
+  `bytesToFloat32` alignment precondition, rejection-handled `close()`, the
+  removal of the dead `rxDurationFrames()`, and the machine-checked artifact
+  test. Phase 2 must show these still hold after its own changes.
+- **Every interface Phase 2 introduces must be passed through Section 10.1.**
+  A new callback, a new state, a new parser entry point: nothing an application
+  callback throws may stop the feed or latch anything off; every usage guard
+  must leave `codec.state === "ready"`; every new mock must be able to throw,
+  reject and return hostile shapes, with at least one test doing exactly that.
+- **Satisfy and test every property in Section 10.2 (P1–P12)**: per-direction
+  keys, no key+nonce reuse across reloads or sessions, AAD over the whole
+  header, replay defeated by a *bounded* dedupe window, tag failure = nothing
+  decoded, "heard but unreadable" distinguished from "silence", pairing code
+  never acoustic, derivation arithmetic (entropy bits, iterations, salt) in the
+  log, no secret ever logged or persisted, capacity measured not estimated,
+  ACK/retry timing scaled to the measured transmit duration, all protocol state
+  bounded.
+- **Extend `transport-machine.ts` and its exhaustive transition-table test** if
+  the protocol needs states or events Phase 1 did not define (collision
+  detection, "heard but unreadable", per-frame send progress). Never infer new
+  transport state from a scattered boolean.
+- **Log the measured capacity arithmetic** and correct every document that
+  states a byte or character budget (Section 4 and Section 3's message-length
+  row must agree with the measurement).
 
 ### Phase 3 — UI integration
 
@@ -431,6 +501,20 @@ at the end of Section 8.
   documented in the log.
 - Copy throughout says "plays a short sound" / "makes an audible tone" — never
   "silent" or "inaudible."
+- **Re-verify the Phase 1/2 interfaces against the real consumer before
+  building on them (Section 10.1, class 12).** In particular the fatal-error
+  callback: a codec-module failure and a broken frame contract must produce
+  different, honest copy ("restart Sound Chat" vs "restart listening"), and a
+  consumer error must be visible without killing the session.
+- **Cover the whole Section 10.3 failure surface in the UI, not just the happy
+  path**: mic denied / unsupported / wrong device rate; no peer heard; "a
+  transmission was heard but this pairing code cannot read it"; ack timeout →
+  retry → failure; collision; module died (really forced, not simulated);
+  tab hidden mid-send; a message exactly at the measured cap.
+- **Accessibility and honesty pass on every state**: `aria-live` on
+  transmit/listen/error transitions, keyboard-only path through pairing and
+  send, focus management, no emoji anywhere, and no copy that claims more than
+  the protocol proves (Section 10.2, P7).
 
 ### Phase 4 — The Gauntlet (mandatory adversarial hardening loop)
 
@@ -475,6 +559,16 @@ and documented as a by-design limit.
 - _Resource/performance_: long-running session memory growth (`AudioContext`
   nodes, listeners, timers all torn down correctly); many rapid short
   messages in sequence.
+- _Seam classes from Section 10.1 — mandatory, not optional_: for every class,
+  force the failure for real: an application callback that throws; a capture
+  chunk that is not a whole frame; a teardown that runs twice against a real
+  Chromium context; a `close()` that rejects; a wasm memory-growth event
+  between encode and use of the returned view; a dead-code sweep of every
+  symbol this feature added or promoted.
+- _Artifact and document integrity_: corrupt one byte of a **copy** of the
+  vendored artifact and confirm the provenance test actually fails (a test that
+  cannot fail proves nothing); confirm every size, hash, capacity and count
+  recorded in the docs matches the measurement the harness produced.
 
 ### Phase 5 — Final polish & sign-off
 
@@ -578,6 +672,30 @@ a checkmark.
       through pairing and chat; matches the design-token/primitive rules in
       Section 2
 
+**Seams, guards and honesty (Section 10 — the Phase 0/1 lesson)**
+
+- [ ] Every defect class in Section 10.1 has a guard *and* a test that violates
+      it, and both are green
+- [ ] No application callback's exception can stop the feed or be reported as a
+      codec failure; a consumer error is visible without killing the session
+- [ ] Every usage guard leaves the codec usable (`state === "ready"`); only a
+      genuine codec/module throw latches anything off
+- [ ] Mocks can throw, reject and misbehave; at least one test per seam
+      exercises that misbehaviour
+- [ ] Teardown/close idempotency proven against measured browser behaviour
+      (double teardown; rejection handled, not floating)
+- [ ] Every recorded artifact fact (size, hash, absence of dynamic execution)
+      and every capacity/budget is machine-checked by a test or shows its
+      arithmetic in the log
+- [ ] Dead code and unused exports swept; nothing left behind
+- [ ] Each phase's log carries a "claims corrected this phase" list
+- [ ] Replay rejected by the dedupe window; no key+nonce reuse across sessions
+      or reloads; the pairing code is never acoustic; nothing secret is logged
+      or persisted
+- [ ] Every finding has a classification (real bug / latent-unreachable / doc
+      error / by-design) and an explicit fix-now / fix-in-phase-*N* /
+      accepted-with-reason decision
+
 If every box above is checked with real evidence in the log, the feature is
 production-ready. If any box can't be checked, it goes back to the relevant
 phase — Phase 5 does not get to accept known gaps quietly.
@@ -639,3 +757,113 @@ Run the verification battery from Section 5 before declaring the phase done
 End by appending your findings to SOUND_CHAT_LOG.md and giving me the
 Phase 1 kickoff prompt, filled in from the template in the master plan.
 ```
+
+---
+
+## 10. Verification discipline: the defect classes that must not slip
+
+Added after the independent verification pass that closed Phase 1 (log:
+"Independent verification pass — Phase 0/1"). That pass re-measured everything
+and found **seven defects and two wrong claims** inside phases whose test suite
+was 196 unit tests plus 58 real-Chromium harness cases, all green. Every one of
+those defects lived in a *seam* no test could reach: a callback mock that could
+not throw, a capture chunk that was never the wrong size, a teardown that never
+ran twice, a `close()` that never rejected, a byte count typed by hand. **Depth
+in one dimension is not coverage.** This section is binding for Phases 2–5: it
+turns those classes into requirements, each with a guard *and* a test that
+violates the guard.
+
+### 10.1 Defect classes, the guard each needs, and the test that proves it
+
+| # | Class | How it slipped in Phase 0/1 | Required guard | Required test (must fail before the fix) |
+| :-- | :--- | :--- | :--- | :--- |
+| 1 | **Error-source attribution** | One `try/catch` wrapped *both* the codec call and the application callback, so a throwing consumer was reported as a dead codec module and the mic feed latched off | Every callback boundary isolates consumer errors; library failure, our own misuse, and consumer failure are three distinguishable kinds, and only library failure may latch anything off | Consumer callback throws → the feed keeps decoding and the error is reported through its own channel; codec throws → feed stops, reported as codec failure. Both in one file, asserting they are *different* |
+| 2 | **Unenforced invariant** | "Capture must present whole 1024-sample frames" was measured in Phase 0 and written into a comment plus a test that *demonstrates* the danger — never into a guard | Every measured invariant gets a guard at the API boundary that rejects the violation, and that guard sits **outside** any latch-on-throw wrapper (see class 10) | Feed 1 / 192 / 512 / 1000 / 1023 samples → typed usage error, module state still `ready`, and a following valid block still decodes |
+| 3 | **Over-strict guard** | — (would have been introduced by the obvious fix for class 2) | A guard rejects only what is actually fatal; legal inputs stay legal | Boundary lengths on **both** sides: 0, 1, 1023, 1024, 2048, 3072 samples — the last three must still decode |
+| 4 | **Mock fidelity** | The Phase 1 mocks structurally could not fail: `onDecoded` was a `vi.fn()` recorder, `close()` was `async close() { this.closed = true; }`, and every fired chunk was exactly 1024 samples | Mocks must be able to throw, reject, stall and return hostile shapes; the hostile behaviour is tested, not just the happy path | One test per seam where the mock misbehaves (throws / rejects / returns a short chunk / never fires) |
+| 5 | **Lifecycle & idempotency** | `teardownAudio` was tested once with a real context and once with `undefined` — never twice with the same context, which is exactly what React's dev double-mount does | Every teardown/close/stop path is idempotent and rejection-handled; nothing assumes it is called once | Call each teardown twice (and after an error) against a mock whose `close()` rejects when already closed — mirroring measured Chromium behaviour; assert no rejection escapes and tracks/listeners release |
+| 6 | **Unreleased resources** | Not enumerated as a per-phase obligation | Every timer, listener, AudioNode, `MediaStreamTrack` and wasm instance has an owner and a release point | Count before/after teardown: listeners removed, timers cleared, tracks stopped, no extra `init()` |
+| 7 | **Doc / artifact drift** | `NOTICE.md` recorded 147,140 bytes for a 147,139-byte file; a harness comment still quoted the pre-patch 148,131; the plan's own budget read "~39" where the arithmetic is 43 | Any fact a human types about an artifact or a budget is machine-checked, or it does not go in the document | A test parses the document and asserts it against reality: artifact size, SHA-256, absence of `eval(`/`new Function` |
+| 8 | **Evidence vs conclusion** | Phase 0's own run printed "module after empty-payload trap: usable" while the prose kept asserting the module dies permanently | Every phase ends by re-reading its own test/build output and listing the claims that output invalidates | A "claims corrected this phase" list in the log. An empty list is allowed; a missing list is not |
+| 9 | **Dead code / unused exports** | `rxDurationFrames()` shipped, returns 0 in fixed-length mode and is called nowhere; Rule 6 already called dead code a finding, but no check existed | Every phase re-checks every symbol it added or promoted: caller, test, doc reference | A search proving zero callers, then deletion — or an explicit "kept because …" line |
+| 10 | **Our misuse latched as module death** | `#guard()` latches `dead` on *any* throw inside a codec call, so a misuse guard placed inside it would mark a healthy module dead (this is how a naive class-2 fix breaks class 1) | Usage validation happens **before** the latch; only a genuine codec/module throw latches | Trigger every usage guard → `codec.state === "ready"` afterwards, and the next legitimate call succeeds |
+| 11 | **Numbers discipline** | Byte/char/time budgets were estimated by hand and repeated across three documents with different values | Every budget is measured in-phase, shows its arithmetic in the log, and estimates are labelled as estimates | A measured capacity number in the log, and the same number in every document that states it |
+| 12 | **Phase-boundary interfaces** | Phase 1 handed Phase 2/3 callbacks and a visibility subscription whose real consumers did not exist yet, so their failure modes were structurally untestable | A phase that hands an interface forward states its contract explicitly: what it guarantees, what it does *not* do, what it does on misuse | The receiving phase re-verifies the contract against reality **before** building on it, and adds the hostile-input test the earlier phase could not write |
+| 13 | **Crypto / protocol properties** | Not yet built (Phase 2) — listed here so they cannot be discovered late | See 10.2: every property gets a guard, not a comment | Tampered tag, tampered AAD, replayed frame, wrong pairing code, cross-direction confusion, reload/session-restart nonce reuse |
+| 14 | **Tooling hygiene** | A probe Playwright config inherited the default output directory and emptied the shared `test-results/` scratch directory (untracked, but it held that session's evidence) | Probe configurations pin `rootDir` **and** `outputDir` inside their own untracked folder; probe scripts and generated build outputs are never left in the shared scratch state | Confirm the shared scratch directory is intact after any probe run, and regenerate build outputs before the session ends |
+
+### 10.2 Phase 2 crypto/protocol properties (guard + test each — never a comment)
+
+These are *properties*, deliberately not a byte layout: Phase 2 chooses the
+mechanism and justifies it in the log, but it may not ship a design that fails
+any row here.
+
+| # | Property | Why it is non-negotiable | Test that must exist |
+| :-- | :--- | :--- | :--- |
+| P1 | **Per-direction keys** (distinct Tx and Rx keys derived from the pairing secret, e.g. via HKDF with a role/peer byte) | Both peers share one secret; one shared key with per-side counters starting at 0 collides on nonce immediately | Encrypt a frame in each direction with the same plaintext/counter and assert the keyed material differs; a confused-direction decode must fail its tag |
+| P2 | **No key+nonce reuse across sessions** (page reload, restart, re-pairing with the same code) | A deterministic counter that resets on reload silently reuses key+nonce under the same pairing code — AES-GCM's one catastrophic failure mode | Reload a session (fresh module state), send from the same code, and assert the session's nonce/key material differs; assert the nonce derivation includes a per-session random component |
+| P3 | **AAD binds the whole header** (`ver`, `msgId`, `fromPeerId`, `len`, `seq`) | Otherwise an attacker can re-point a captured block at a different message id or peer and the tag still verifies | Flip each header byte in turn and assert verification fails |
+| P4 | **Replay is defeated by the dedupe window, not by the nonce** (bounded, in-memory, per session) | The codec's waveforms are byte-identical for identical payloads — verified — so a recording replays perfectly and *decrypts*; only the receiver's seen-set stops it | Feed a captured frame twice (and a captured frame with a fresh envelope) → rendered once, second copy suppressed |
+| P5 | **A failed AEAD tag = "nothing decoded"** | Never render, never surface as corruption; the sender's own ACK timeout drives retry | Corrupt a tag → the callback is not invoked, no error UI, session continues |
+| P6 | **"Frames decoded but the tag failed" is distinguishable from "nothing heard"** | The codec already tells us *something* was in the air; that is the difference between a wrong pairing code and a silent room, and the UI copy depends on it | Two tests: no decode at all → "nothing received"; decode + tag failure → "a transmission was heard but this pairing code cannot read it" |
+| P7 | **The pairing code is never transmitted acoustically**, and the acoustic confirmation proves *"same key, live channel"* only — never identity | Anyone in the room can record and replay; the plan must not claim more than it can prove (constraint 5 in Section 2) | Assert the pairing material never appears in a transmitted frame; assert the confirmation is a key-check, and log the honest limitation |
+| P8 | **Key derivation is justified, not assumed** — WebCrypto offers PBKDF2/HKDF only (no Argon2); the manual code's entropy budget is stated, and keying does not use the raw code | A 4-digit code is ~13 bits; the log must state the real number and the iteration count, not "PBKDF2 or better" | A log entry with the arithmetic (alphabet size × length → bits, iterations, salt source) and a test that a wrong/short/mistyped code fails closed |
+| P9 | **Nothing secret is logged or persisted** — `disableLog()` stays on, no key/nonce/plaintext/pairing code in logs or storage, in-memory only | HUSK's no-persistence constraint and the codec's own console logging | Assert the pairing code and key bytes never appear in any thrown message or logged string; assert no storage write |
+| P10 | **Capacity is measured, not estimated** | Three documents already disagree on the byte budget (Section 4's "~39" is arithmetically 43 before `seq` overhead) | Measure real single-block and 2-block plaintext capacity in the suite, log it, and correct every document that states it |
+| P11 | **Turn-taking, ACK and retry obey measured time** — never transmit while hidden; Rx feed paused for the exact transmit window plus tail; retry reuses the same `msgId`; ACK timeout scaled to the measured per-block transmit duration (~2 s), not a network-style constant; collision → jittered backoff; a codec/module failure during a send goes to `module_error`, never a retry | The medium is a shared room channel with no collision avoidance whatsoever | Tests for: retry reuses `msgId` and the duplicate is suppressed on the receiving side; ack timeout → backoff → retry; hidden tab holds the send; module failure during send cannot loop |
+| P12 | **All protocol state is bounded** — dedupe window, retry queue, out-of-order `seq` buffers | An unbounded seen-set or buffer is a slow memory leak in a long session | Push well past the window and assert the structures stay bounded |
+
+### 10.3 The hostile-input seam set (every remaining phase keeps this green)
+
+Not a wish list — this is the regression surface that Phase 0/1 lacked. Extend
+it with everything a phase introduces; never delete a case because it "cannot
+happen".
+
+- **audio-io**: consumer callback throws; codec call throws; codec returns null;
+  the same payload decodes twice in a row; teardown twice with the same context;
+  teardown after a module error; teardown with partial state; listen after stop;
+  unsubscribe twice; a chunk that is not a whole frame; a `close()` that rejects
+  (mirror the measured Chromium `InvalidStateError`).
+- **codec**: empty payload; over-length payload; chunk lengths 0 / 1 / 1023 /
+  1024 / 2048 / 3072; a chunk that is a non-zero-offset view; encode or decode
+  after `close()`; encode or decode after a latched trap; a wasm memory growth
+  between encode and use of the returned view; a misuse guard that must leave
+  `state === "ready"`.
+- **protocol** (Phase 2): truncated frame; zero-length frame; unknown version;
+  unknown frame type; reserved byte values; wrong peer id; wrong `len` vs actual
+  ciphertext; duplicate `msgId`; out-of-order / missing / duplicated `seq`;
+  exactly-at-cap message; empty-after-header message; an ACK for a `msgId` that
+  was never sent; an ACK arriving twice.
+- **crypto** (Phase 2): wrong pairing code; one-character-off code; tampered
+  ciphertext; tampered tag; each header byte flipped (AAD); replayed frame;
+  replayed frame with a rewritten envelope; a frame from the previous session
+  (reload); two peers whose counters deliberately collide.
+- **transport** (Phase 2): ack timeout → backoff → retry with the same `msgId`;
+  both sides transmitting at once (collision); module failure mid-send; hidden
+  tab mid-send; stop mid-send; restart after `module_error`; a peer that never
+  ACKs; a peer that never transmits; duplicate decode events (the codec
+  redelivers 2–4 times by design) rendering once.
+
+### 10.4 Definition of done (added to every phase's gate)
+
+A phase is not done, and must not be logged as done, until all of these hold:
+
+1. The Section 5 battery passes, including the Sound Chat unit and harness
+   regressions, with the numbers this session observed.
+2. The seam set in 10.3 is **extended for everything the phase introduced** and
+   is green.
+3. Every invariant the phase relies on has both a guard and a test that violates
+   it; guards for our own misuse live outside any latch-on-throw wrapper.
+4. Every recorded fact (artifact size/hash, capacities, counts, timings) is
+   either machine-checked by a test or shows its arithmetic in the log.
+5. The log contains a **"claims corrected this phase"** list — an empty list is
+   allowed, a missing list is not.
+6. Every finding is classified (**real bug / latent-unreachable / doc error /
+   by-design**) with an explicit decision: fix now, fix in phase *N*, or accept
+   with the reason stated. A finding with no decision is not accepted.
+7. `git diff --stat` shows only Section 6 files, `worker/` shows zero diff, and
+   no probe script, WAV, or generated artifact is staged.
+
+
+
+

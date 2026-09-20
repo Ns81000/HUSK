@@ -21,7 +21,7 @@ upstream ggwave repository, carrying **one deliberate, documented patch**
   clone's CRLF working-tree copy (148150 bytes, SHA-256
   `F4BD5E9E3B79DB9C599D197C83D250E1A514C0295F4856A26065B6E427C252F3`) is the
   same content. Only the first hash survives a fresh checkout.
-- **Current (patched) file: 147140 bytes,
+- **Current (patched) file: 147139 bytes,
   SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`.**
 
 ## The patch: CSP-safe embind invokers

@@ -396,8 +396,17 @@ test.describe("build output", () => {
 
     const codecSource = readFileSync(resolve(assets, codecChunk), "utf8");
     const entrySource = readFileSync(resolve(assets, entryChunk), "utf8");
-    // The vendored artifact is 148131 bytes; the codec chunk must carry it.
+    // The vendored artifact is 147139 bytes (patched). NOTICE.md's recorded size
+    // and SHA-256 are machine-checked by
+    // `src/lib/sound-chat/provenance.test.ts`, so this comment cannot drift again.
     expect(codecSource.length).toBeGreaterThan(100_000);
+    // ...and the emitted asset must be the vendored bytes verbatim, not a
+    // re-encoded or minified copy of them.
+    expect(
+      readFileSync(resolve(assets, codecChunk)).equals(
+        readFileSync(resolve(process.cwd(), "src/lib/sound-chat/vendor/ggwave.js")),
+      ),
+    ).toBe(true);
     // ...and the main chunk must not: the codec is reached only by dynamic import.
     expect(entrySource.length).toBeLessThan(30_000);
     expect(entrySource).toContain("ggwave-");

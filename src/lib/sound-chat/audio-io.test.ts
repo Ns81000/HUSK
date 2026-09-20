@@ -11,7 +11,7 @@ import {
   transmit,
   transmitAndPause,
 } from "./audio-io";
-import type { SoundChatCodec } from "./codec";
+import { CodecUsageError, type SoundChatCodec } from "./codec";
 
 type MockTrack = { stop: ReturnType<typeof vi.fn>; label: string };
 type MockStream = { getAudioTracks: () => MockTrack[]; getTracks: () => MockTrack[] };
@@ -33,6 +33,8 @@ class MockAudioContext {
   state = "running";
   currentTime = 10;
   closed = false;
+  /** Counted so idempotency tests can prove a second teardown really closed. */
+  closeCalls = 0;
   resumeCalls = 0;
   readonly destination = { kind: "destination" };
   readonly processors: MockProcessor[] = [];
@@ -49,7 +51,17 @@ class MockAudioContext {
     return this as unknown as AudioContext;
   }
 
+  /**
+   * Measured in real Chromium (independent verification pass): closing an
+   * already-closed context rejects with `InvalidStateError`. The mock mirrors
+   * that, so a teardown path that assumes a single call is caught here instead
+   * of leaking an unhandled rejection in production.
+   */
   async close(): Promise<void> {
+    this.closeCalls += 1;
+    if (this.closed) {
+      throw new DOMException("Cannot close a closed AudioContext.", "InvalidStateError");
+    }
     this.closed = true;
   }
 
@@ -223,11 +235,17 @@ describe("audio context", () => {
   });
 });
 
-function listeningSetup(options?: { sampleRate?: number; decode?: () => Uint8Array | null }) {
+function listeningSetup(options?: {
+  sampleRate?: number;
+  decode?: () => Uint8Array | null;
+  onDecoded?: () => void;
+  onDecodedError?: (error: unknown) => void;
+}) {
   const { stream } = mockStream();
   const context = new MockAudioContext({ sampleRate: options?.sampleRate ?? 48000 });
-  const onDecoded = vi.fn();
+  const onDecoded = vi.fn(options?.onDecoded);
   const onModuleError = vi.fn();
+  const onDecodedError = vi.fn(options?.onDecodedError);
   const decode = vi.fn((chunk: Float32Array): Uint8Array | null =>
     options?.decode ? options.decode() : null,
   );
@@ -238,8 +256,18 @@ function listeningSetup(options?: { sampleRate?: number; decode?: () => Uint8Arr
     codec,
     onDecoded,
     onModuleError,
+    onDecodedError,
   });
-  return { context, codec, decode, onDecoded, onModuleError, handle, stream };
+  return {
+    context,
+    codec,
+    decode,
+    onDecoded,
+    onDecodedError,
+    onModuleError,
+    handle,
+    stream,
+  };
 }
 
 function fireChunk(processor: MockProcessor, length = 1024): void {
@@ -301,6 +329,70 @@ describe("listening", () => {
     expect(decode).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Independent verification pass, master plan Section 10.1 class 1. Before this
+   * was split, a throwing consumer stopped the feed and was reported as a dead
+   * codec; the codec was never the problem.
+   */
+  it("keeps the feed alive when the consumer callback throws", () => {
+    const { processor, decode, onDecoded, onDecodedError, onModuleError, handle } = setupFor({
+      decode: () => new Uint8Array([1, 2, 3]),
+      onDecoded: () => {
+        throw new Error("consumer bug");
+      },
+    });
+
+    fireChunk(processor);
+    expect(onDecoded).toHaveBeenCalledTimes(1);
+    expect(onDecodedError).toHaveBeenCalledTimes(1);
+    expect((onDecodedError.mock.calls[0]?.[0] as Error).message).toBe("consumer bug");
+    expect(onModuleError).not.toHaveBeenCalled();
+    expect(handle.chunks).toBe(1);
+
+    // Still feeding: the next chunk reaches the codec and is delivered again.
+    fireChunk(processor);
+    expect(decode).toHaveBeenCalledTimes(2);
+    expect(handle.chunks).toBe(2);
+  });
+
+  it("falls back to console.error when no consumer-error handler is given", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { stream } = mockStream();
+      const context = new MockAudioContext({ sampleRate: 48000 });
+      const handle = startListening({
+        context: context as unknown as AudioContext,
+        stream: stream as unknown as MediaStream,
+        codec: { decode: () => new Uint8Array([9]) } as unknown as SoundChatCodec,
+        onDecoded: () => {
+          throw new Error("silent killer");
+        },
+      });
+
+      context.processors[0]?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => new Float32Array(1024) },
+      });
+
+      // Reported, never swallowed (master plan constraint 6) — and still feeding.
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(handle.chunks).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("routes a misuse error to onModuleError with its type intact", () => {
+    const { processor, onDecodedError, onModuleError } = setupFor({
+      decode: () => {
+        throw new CodecUsageError("chunk of 192 samples is not a whole number of frames");
+      },
+    });
+    fireChunk(processor);
+    expect(onModuleError).toHaveBeenCalledTimes(1);
+    expect((onModuleError.mock.calls[0]?.[0] as Error).name).toBe("CodecUsageError");
+    expect(onDecodedError).not.toHaveBeenCalled();
+  });
+
   it("stops everything, including the media track, on stop()", () => {
     const { processor, decode, handle, stream } = setupFor();
     fireChunk(processor);
@@ -353,6 +445,27 @@ describe("teardown and visibility", () => {
     expect(stream.getTracks().every((each) => each.stop.mock.calls.length > 0)).toBe(true);
     expect(context.closed).toBe(true);
     teardownAudio(undefined, undefined);
+  });
+
+  /**
+   * Independent verification pass, master plan Section 10.1 class 5. Measured in
+   * real Chromium: the second `close()` rejects with `InvalidStateError`. React's
+   * dev double-mount makes a second teardown routine, and `void close()` alone
+   * leaked two unhandled rejections. The mock now rejects the same way, so this
+   * test fails if the rejection handling is ever removed.
+   */
+  it("survives a double teardown without leaking a rejection", async () => {
+    const { handle, stream, context } = listeningSetup();
+    teardownAudio(handle, context as unknown as AudioContext);
+    teardownAudio(handle, context as unknown as AudioContext);
+
+    // Let any rejected close() settle: an uncaught rejection fails this run.
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(context.closeCalls).toBe(2);
+    expect(context.closed).toBe(true);
+    expect(stream.getTracks().every((each) => each.stop.mock.calls.length > 0)).toBe(true);
   });
 
   it("subscribes to visibility changes and unsubscribes", () => {

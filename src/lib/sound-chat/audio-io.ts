@@ -22,6 +22,15 @@
  * - a hidden page's audio callbacks can stall; whole chunks are never torn,
  *   but a transmission spanning the gap is lost gracefully (decodes to null).
  *   The transport watches visibility and never starts a send while hidden.
+ * - three failure kinds are deliberately kept apart (independent verification
+ *   pass): a codec call that throws (the Rx path is unusable, the feed stops,
+ *   `onModuleError`), a thrown misuse guard from our own caller error (same
+ *   report, but the module itself is healthy), and an exception from the
+ *   *application's* `onDecoded` (reported on its own channel, feed keeps
+ *   running — a consumer bug must never present as a dead codec).
+ * - teardown is idempotent: `close()` on an already-closed context rejects
+ *   (measured Chromium `InvalidStateError`), so every close is
+ *   rejection-handled. Nothing here may ever leak an unhandled rejection.
  */
 
 import { CODEC_SAMPLES_PER_FRAME, type SoundChatCodec } from "./codec";
@@ -94,7 +103,9 @@ export class AudioContextRateError extends Error {
 export function createAudioContext(): AudioContext {
   const context = new AudioContext({ sampleRate: REQUIRED_SAMPLE_RATE });
   if (context.sampleRate !== REQUIRED_SAMPLE_RATE) {
-    void context.close();
+    // Closing at the wrong rate still has to be rejection-handled: a leaked
+    // unhandled rejection is a real error-report event (measured).
+    void context.close().catch(() => {});
     throw new AudioContextRateError(
       `this device's audio runs at ${context.sampleRate} Hz; Sound Chat needs ${REQUIRED_SAMPLE_RATE} Hz and cannot decode on it`,
     );
@@ -115,8 +126,21 @@ export type ListenOptions = {
   stream: MediaStream;
   codec: SoundChatCodec;
   onDecoded: (payload: Uint8Array) => void;
-  /** Called when a codec call throws — the module is dead and stays dead. */
+  /**
+   * Called when a codec call throws — the Rx path is unusable for the rest of
+   * the session and the feed has stopped. That covers a real module death and
+   * our own broken frame contract (a `CodecUsageError`), which leaves the
+   * instance permanently de-synchronised; classify with `instanceof` to pick
+   * the copy. Consumer errors never arrive here.
+   */
   onModuleError?: (error: unknown) => void;
+  /**
+   * Called when `onDecoded` itself throws. The feed keeps running: one bad
+   * consumer must not look like a dead codec. When omitted, the error is
+   * reported on `console.error` rather than silently swallowed (master plan
+   * constraint 6).
+   */
+  onDecodedError?: (error: unknown) => void;
 };
 
 export type ListenHandle = {
@@ -159,16 +183,29 @@ export function startListening(options: ListenOptions): ListenHandle {
       state.skipped += 1;
       return;
     }
+    // Layer 1 — the codec. Only this may declare the feed dead: a thrown codec
+    // call (or a misuse guard that means the Rx instance is permanently
+    // de-synchronised) ends the feed, and it is reported as codec failure.
+    let decoded: Uint8Array | null;
     try {
       // `getChannelData` hands back a reused buffer: finish with it
       // synchronously (the codec copies into wasm memory immediately).
-      const decoded = codec.decode(event.inputBuffer.getChannelData(0));
-      if (decoded !== null) onDecoded(decoded);
+      decoded = codec.decode(event.inputBuffer.getChannelData(0));
     } catch (error) {
-      // A thrown codec call means the module died; feeding it further is
-      // pointless, so the feed stops itself and the caller offers a restart.
       state.stopped = true;
       options.onModuleError?.(error);
+      return;
+    }
+    if (decoded === null) return;
+
+    // Layer 2 — the application. A consumer that throws is a consumer bug: it
+    // must not stop the mic feed and must never be reported as a dead codec
+    // (independent verification pass, master plan Section 10.1 class 1).
+    try {
+      onDecoded(decoded);
+    } catch (error) {
+      if (options.onDecodedError !== undefined) options.onDecodedError(error);
+      else console.error("Sound Chat: the decoded-payload consumer threw", error);
     }
   };
 
@@ -261,14 +298,17 @@ export function transmitAndPause(
 
 /**
  * Full teardown for unmount: stop the capture (and every media track), then
- * close the AudioContext. Safe to call with partial state.
+ * close the AudioContext. Safe to call with partial state, and safe to call
+ * more than once: measured in Chromium, `close()` on an already-closed context
+ * rejects with `InvalidStateError`, which `void` alone would surface as an
+ * unhandled rejection (React's dev double-mount makes a second call routine).
  */
 export function teardownAudio(
   listen: ListenHandle | undefined,
   context: AudioContext | undefined,
 ): void {
   listen?.stop();
-  void context?.close();
+  void context?.close().catch(() => {});
 }
 
 export type Unsubscribe = () => void;

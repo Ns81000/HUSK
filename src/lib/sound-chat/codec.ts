@@ -13,8 +13,14 @@
  * - every returned view aliases a static C++ buffer inside wasm memory: it is
  *   silently detached by the next memory growth and overwritten by the next
  *   call, so it is copied immediately and never held.
- * - a thrown codec call means the module is dead for the rest of the page
- *   session; the caller must offer a restart rather than retry.
+ * - a thrown codec call is treated as terminal *by policy*: measured, the wasm
+ *   module can still encode after an empty-payload trap, but a trap in
+ *   Emscripten leaves C++ state undefined, so the session is restarted rather
+ *   than reusing an instance that trapped — never retried.
+ * - every misuse guard (payload length, chunk length, view alignment) runs
+ *   *before* that latch, so a caller's mistake can never mark a healthy module
+ *   dead. This is the independent verification pass's finding: the obvious
+ *   frame-length guard placed inside `#guard()` would have done exactly that.
  */
 
 import type { GgwaveEnumValue, GgwaveInstance, GgwaveModule } from "./vendor/ggwave";
@@ -71,6 +77,15 @@ export function float32ToBytes(samples: Float32Array): Uint8Array {
 export function bytesToFloat32(bytes: Uint8Array): Float32Array {
   if (bytes.byteLength % 4 !== 0) {
     throw new CodecUsageError(`byte length ${bytes.byteLength} is not a multiple of 4`);
+  }
+  // `new Float32Array(buffer, byteOffset, length)` throws a raw `RangeError`
+  // for an unaligned offset, which says nothing about what the caller did
+  // wrong — and inside `#guard()` it would mark the module dead. Fail as our
+  // own misuse instead; do not silently copy, which would hide the caller bug.
+  if (bytes.byteOffset % 4 !== 0) {
+    throw new CodecUsageError(
+      `byte offset ${bytes.byteOffset} is not 4-byte aligned; pass an aligned view (or a copy)`,
+    );
   }
   return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
 }
@@ -153,19 +168,30 @@ export class SoundChatCodec {
    * Rx-only path: one capture chunk in, at most one decoded block out.
    * `null` covers every failure mode the codec can express — silence and a
    * corrupted transmission are indistinguishable from JavaScript.
+   *
+   * The chunk must hold a whole number of 1024-sample frames. Measured: a
+   * partial frame (1, 192, 512, 1000, 1023 samples) shifts the receiver's
+   * analysis grid and it never decodes again for the life of the instance, so a
+   * partial frame is refused here instead of silently poisoning the session.
+   * Whole multiples (1024, 2048, 3072 — all measured) stay legal.
+   *
+   * This check sits *outside* `#guard()`: it is the caller's mistake, so it must
+   * leave the module usable rather than latching it dead.
    */
   decode(chunk: Float32Array): Uint8Array | null {
     if (chunk.length === 0) return null;
+    if (chunk.length % CODEC_SAMPLES_PER_FRAME !== 0) {
+      throw new CodecUsageError(
+        `chunk of ${chunk.length} samples is not a whole number of ` +
+          `${CODEC_SAMPLES_PER_FRAME}-sample frames; a partial frame permanently ` +
+          "de-synchronises the fixed-length receiver",
+      );
+    }
     return this.#guard(() => {
       const view = this.#module.decode(this.#rx, float32ToBytes(chunk));
       if (view.length === 0) return null;
       return Uint8Array.from(view);
     });
-  }
-
-  /** Frames the Rx instance would still record if it were receiving. */
-  rxDurationFrames(): number {
-    return this.#guard(() => this.#module.rxDurationFrames(this.#rx));
   }
 
   close(): void {
