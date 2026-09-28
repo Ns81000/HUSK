@@ -13,6 +13,7 @@ const STATES: readonly TransportState[] = [
   "awaiting_turn",
   "awaiting_ack",
   "backoff",
+  "hidden_hold",
   "error",
   "module_error",
 ];
@@ -24,10 +25,15 @@ const EVENTS: readonly TransportEvent[] = [
   { type: "CHANNEL_QUIET" },
   { type: "TRANSMIT_BEGIN" },
   { type: "TRANSMIT_DONE" },
+  { type: "TRANSMIT_DONE_UNACKED" },
   { type: "ACK_RECEIVED" },
   { type: "ACK_TIMEOUT" },
   { type: "BACKOFF_EXPIRED" },
   { type: "MESSAGE_DECODED" },
+  { type: "HEARD_UNREADABLE" },
+  { type: "COLLISION_DETECTED" },
+  { type: "HIDDEN" },
+  { type: "VISIBLE" },
   { type: "MODULE_DIED" },
   { type: "RECOVERABLE_ERROR" },
   { type: "RESTART" },
@@ -39,7 +45,7 @@ const EVENTS: readonly TransportEvent[] = [
  * exhaustively below.
  */
 const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
-  //             idle        listening     transmitting  awaiting_turn awaiting_ack  backoff       error       module_error
+  //        idle        listening     transmitting  awaiting_turn awaiting_ack  backoff       hidden_hold   error       module_error
   START: [
     "listening",
     "listening",
@@ -47,17 +53,19 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "awaiting_ack",
     "backoff",
+    "hidden_hold",
     "listening",
     "module_error",
   ],
-  STOP: ["idle", "idle", "idle", "idle", "idle", "idle", "idle", "module_error"],
+  STOP: ["idle", "idle", "idle", "idle", "idle", "idle", "idle", "idle", "module_error"],
   PEER_STARTED_TRANSMITTING: [
     "idle",
     "awaiting_turn",
     "transmitting",
     "awaiting_turn",
-    "awaiting_ack",
     "backoff",
+    "backoff",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -68,6 +76,7 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "listening",
     "awaiting_ack",
     "backoff",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -78,6 +87,7 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "awaiting_ack",
     "transmitting",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -88,6 +98,18 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "awaiting_ack",
     "backoff",
+    "hidden_hold",
+    "error",
+    "module_error",
+  ],
+  TRANSMIT_DONE_UNACKED: [
+    "idle",
+    "listening",
+    "listening",
+    "awaiting_turn",
+    "awaiting_ack",
+    "backoff",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -98,6 +120,7 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "listening",
     "backoff",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -108,6 +131,7 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "backoff",
     "backoff",
+    "hidden_hold",
     "error",
     "module_error",
   ],
@@ -118,21 +142,57 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "awaiting_ack",
     "listening",
+    "hidden_hold",
     "error",
     "module_error",
   ],
-  MESSAGE_DECODED: [
+  MESSAGE_DECODED: STATES.map((state) => state),
+  HEARD_UNREADABLE: STATES.map((state) => state),
+  COLLISION_DETECTED: [
+    "idle",
+    "backoff",
+    "backoff",
+    "backoff",
+    "backoff",
+    "backoff",
+    "hidden_hold",
+    "error",
+    "module_error",
+  ],
+  HIDDEN: [
+    "idle",
+    "hidden_hold",
+    "hidden_hold",
+    "hidden_hold",
+    "hidden_hold",
+    "hidden_hold",
+    "hidden_hold",
+    "error",
+    "module_error",
+  ],
+  VISIBLE: [
     "idle",
     "listening",
     "transmitting",
     "awaiting_turn",
     "awaiting_ack",
     "backoff",
+    "listening",
     "error",
     "module_error",
   ],
   MODULE_DIED: STATES.map(() => "module_error"),
-  RECOVERABLE_ERROR: ["idle", "error", "error", "error", "error", "error", "error", "module_error"],
+  RECOVERABLE_ERROR: [
+    "idle",
+    "error",
+    "error",
+    "error",
+    "error",
+    "error",
+    "error",
+    "error",
+    "module_error",
+  ],
   RESTART: [
     "idle",
     "listening",
@@ -140,6 +200,7 @@ const TABLE: Record<TransportEvent["type"], readonly TransportState[]> = {
     "awaiting_turn",
     "awaiting_ack",
     "backoff",
+    "hidden_hold",
     "idle",
     "idle",
   ],
@@ -215,5 +276,57 @@ describe("transport state machine", () => {
         expect(transition(state, event), `${state} + ${event.type}`).toBe(expected);
       });
     }
+  });
+
+  /**
+   * Section 10.2 P11: never transmit while hidden. The machine refuses the only
+   * event that can start audio, so this cannot be got wrong by a driver that
+   * forgets to check a boolean.
+   */
+  it("holds a send while hidden and refuses to start one", () => {
+    for (const state of ["listening", "transmitting", "awaiting_turn", "awaiting_ack", "backoff"]) {
+      expect(transition(state as TransportState, { type: "HIDDEN" })).toBe("hidden_hold");
+    }
+    expect(transition("hidden_hold", { type: "TRANSMIT_BEGIN" })).toBe("hidden_hold");
+    expect(transition("hidden_hold", { type: "ACK_TIMEOUT" })).toBe("hidden_hold");
+    expect(transition("hidden_hold", { type: "START" })).toBe("hidden_hold");
+    // Coming back is the only way to be able to transmit again.
+    expect(transition("hidden_hold", { type: "VISIBLE" })).toBe("listening");
+    expect(transition("listening", { type: "TRANSMIT_BEGIN" })).toBe("transmitting");
+    expect(isActive("hidden_hold")).toBe(true);
+  });
+
+  it("treats a peer transmission while awaiting our ACK as a collision", () => {
+    const collided = transition("awaiting_ack", { type: "PEER_STARTED_TRANSMITTING" });
+    expect(collided).toBe("backoff");
+    // Backoff is jittered waiting, not a dead end: the same message is retried.
+    expect(transition(collided, { type: "BACKOFF_EXPIRED" })).toBe("listening");
+    expect(transition("listening", { type: "TRANSMIT_BEGIN" })).toBe("transmitting");
+  });
+
+  /**
+   * Section 10.2 P6: hearing something unreadable is information, not a state.
+   * The machine must not move — only the driver's own ACK deadline may.
+   */
+  it("lets an unreadable block pass without moving the machine", () => {
+    for (const state of STATES) {
+      expect(transition(state, { type: "HEARD_UNREADABLE" })).toBe(state);
+    }
+    const waiting = transition("awaiting_ack", { type: "HEARD_UNREADABLE" });
+    expect(waiting).toBe("awaiting_ack");
+    expect(transition("listening", { type: "TRANSMIT_DONE_UNACKED" })).toBe("listening");
+  });
+
+  it("completes a fire-and-forget transmission without an ACK", () => {
+    expect(transition("transmitting", { type: "TRANSMIT_DONE_UNACKED" })).toBe("listening");
+    expect(transition("awaiting_ack", { type: "TRANSMIT_DONE_UNACKED" })).toBe("awaiting_ack");
+  });
+
+  it("routes a collision to backoff from any sending state", () => {
+    for (const state of ["listening", "transmitting", "awaiting_turn", "awaiting_ack", "backoff"]) {
+      expect(transition(state as TransportState, { type: "COLLISION_DETECTED" })).toBe("backoff");
+    }
+    expect(transition("hidden_hold", { type: "COLLISION_DETECTED" })).toBe("hidden_hold");
+    expect(transition("module_error", { type: "COLLISION_DETECTED" })).toBe("module_error");
   });
 });
