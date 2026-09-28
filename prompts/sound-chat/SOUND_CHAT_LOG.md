@@ -748,3 +748,201 @@ are gone from disk with it.
    alive; the session is restarted by policy, and misuse guards deliberately
    never latch (this is what the old comment implied incorrectly).
 
+## Phase 2 — Protocol, pairing, encryption
+
+Session of 2026-09-29. Started from `ad2a097` with a clean tree. Read the master
+plan, this log and the deep dive in full first, then re-verified the carried-in
+state instead of trusting it.
+
+### Baseline re-verification (before any edit)
+
+- `git status --short`: clean; HEAD `ad2a097` as recorded.
+- The five carried-in fixes still hold and are still asserted: `codec-guards.test.ts`
+  (partial-frame refusal with `state === "ready"`, whole multiples legal, empty
+  chunk, encode guards, byte-view alignment, closed codec) and `provenance.test.ts`
+  (patched size/SHA-256, no dynamic execution, MIT text) both green.
+- Vendored artifact re-measured this session: **147139 bytes**, SHA-256
+  `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F` — matches
+  `NOTICE.md`.
+- `pnpm test` at baseline: **25 files, 210 tests passed** (19.33 s) when run on
+  its own — the number recorded after the verification pass reproduces. Run with
+  three other heavy commands in parallel it **failed once**: the 46-variant
+  in-process matrix test took 5221 ms against vitest's 5 s default timeout
+  (finding 6 below).
+
+### What Phase 2 delivers
+
+- `crypto.ts` — the pairing code (32 symbols × 8 characters = **40 bits**),
+  PBKDF2-HMAC-SHA256 at **600000** iterations with a fixed domain salt (the peers
+  share only the code — there is no per-pairing salt to use), HKDF per-direction
+  AES-256-GCM keys, 12-byte nonces (`salt[0..8) | kind | msgId | seq`),
+  AES-256-GCM seal/open with the tag failure as an _outcome_, and the HMAC pairing
+  key check. Measured here: one derivation is ~147 ms (Node 24, `crypto.subtle`).
+- `protocol.ts` — the locked Section 4 frames plus the finalised `seq` extension:
+  kind byte `1` MESSAGE / `2` ACK / `3` MESSAGE_MULTI / `4` PAIR; multi-block adds
+  one `seq` byte (`(blockIndex << 4) | blockCount`); AAD = header + zero padding;
+  ACK body = 1-byte received-block mask; bounded inbound assembly with a
+  high-water-mark dedupe; monotonic msgId allocator that refuses to wrap.
+- `pairing.ts` — an explicit pairing machine (5 states × 7 events, exhaustively
+  table-tested) and honest per-failure copy that claims a key match, never identity.
+- `session.ts` — the driver: one owner of the Rx feed, the codec, the timers and
+  the transport machine; pairing, ACK/retry, dedupe, "heard but unreadable",
+  hidden-tab hold, collision backoff, and a module failure that never retries.
+- `transport-machine.ts` — extended with `hidden_hold`, `TRANSMIT_DONE_UNACKED`,
+  `COLLISION_DETECTED`, `HEARD_UNREADABLE`, `HIDDEN`/`VISIBLE` (9 states × 18
+  events, still an exhaustive table).
+- Tests: `crypto.test.ts` (17), `protocol.test.ts`, `pairing.test.ts`,
+  `session.test.ts` (15, real codec + mocked audio), `capacity.test.ts` (measured
+  capacity + a machine-checked document assertion), transport table extended.
+
+### Findings, classified (each with a decision)
+
+1. **Real, fixed — a reply could go out inside the peer's own closed Rx window.**
+   `transmitAndPause` keeps a sender's own Rx feed shut for its block plus the
+   measured 0.5 s tail; a receiver decodes at the _end_ of that block, and a block
+   only decodes once 90 whole frames are fed. An ACK (or the displayer's PAIR
+   answer) that started immediately was therefore 0.5 s too early: the peer heard
+   66 of the 90 frames and decoded nothing. Fixed with `TURN_GAP_MS = 700`
+   (0.5 s tail + 0.2 s decode/scheduling margin) and a single pending reply that
+   runs when the quiet timer declares the channel clear.
+2. **Real, fixed — reply timing raced two independent timers.** The reply's
+   turn-gap timer and the quiet timer both fired 700 ms after the last heard
+   block; depending on which was armed first the reply could fire while the
+   machine was still `awaiting_turn`, so `TRANSMIT_BEGIN` was refused and the ACK
+   was silently dropped. Fixed so that a reply is _kept_, not attempted once:
+   `#onChannelQuiet` (which emits `CHANNEL_QUIET` first, so the machine is
+   `listening`) is the single place that sends the owed ACK or the displayer's
+   PAIR answer, and a refused attempt stays queued for the next quiet moment.
+3. **Real, fixed at build time — the ACK had to be per-block.** A two-block
+   message needs the receiver to say which blocks arrived, so the ACK carries a
+   one-byte mask and the sender retries only the missing block. Without it a lost
+   first block would re-send both, doubling the retry cost (~3.8 s).
+4. **Doc error, fixed — the capacity estimates.** Section 3's "~70 usable bytes /
+   60-70 characters", Section 4's "~86 before `seq` overhead" and "~39" were all
+   estimates. Measured this session through the real codec: **43** bytes in one
+   block, **42** per block in a multi-block message (the `seq` byte), so the
+   two-block cap is **84 bytes = 84 ASCII characters**. Sections 3, 4 and 7 now
+   state that, the Phase 3 counter inherits it, and `capacity.test.ts` asserts
+   both the arithmetic and the plan's wording.
+5. **By-design, recorded — replayed and duplicated blocks.** Measured again here:
+   the codec re-decodes a block 2-4 times while it sits in its window (a test
+   feeding pure silence re-decoded the previous block until ~90 fresh frames had
+   passed). Dedupe by msgId is the defence; a redelivery re-ACKs so a lost ACK
+   cannot loop the sender, and nothing is rendered twice.
+6. **Real (test robustness), not fixed — the matrix test's 5 s default timeout.**
+   Under four concurrent heavy commands it took 5221 ms and failed. Decision:
+   **fix in Phase 4** (its remit is exactly this), _accepted_ for now with the
+   reason stated; the battery is run sequentially, where it passes (210/210 in
+   19.33 s at baseline).
+7. **By-design, recorded — a PAIR frame after pairing is ignored**, and a codec
+   that already holds a peer salt refuses a different one
+   (`ProtocolUsageError`, tested). Re-pairing is a new session; a replayed PAIR
+   frame cannot move a running conversation's nonce space.
+8. **By-design, recorded — a retry reuses a nonce with identical plaintext.**
+   A retry re-transmits the _same sealed frame bytes_ (asserted byte-identical in
+   `session.test.ts`), which is the one AES-GCM reuse that is safe; msgIds are
+   monotonic and never reused, so a nonce is never reused with different content.
+   `MessageIdAllocator` refuses to wrap rather than returning to 0.
+9. **Tooling, reported not touched — `pnpm run lint:anti-slop` now reports 2
+   errors in files this phase does not own.** Baseline: 148 warnings, 0 errors on
+   60 files. Now: 154 warnings, **2 errors on 64 files**, and both errors are in
+   pre-existing, untouched files (`src/start.ts`'s `typeof` narrowing,
+   `src/routes/index.tsx`'s `as CSSProperties`, `src/lib/error-capture.ts`'s
+   `unknown` parameters). Nothing in those files changed in this phase. Classified
+   **not a Sound Chat defect** (either the type-aware pass now scans four more
+   files and reclassifies, or its severity budget is per-project). Decision:
+   **report and leave alone** (Section 2 and Section 6 forbid edits there);
+   **re-verify in Phase 5's final battery**. `pnpm run lint` — the repo's own
+   gate — is exit 0 with 0 errors.
+
+### Claims corrected this phase
+
+1. "Messages are capped at ~70 usable bytes / 60-70 characters" → **84 bytes /
+   84 ASCII characters** (43 in one block, 42 per block in a two-block message).
+2. "Two blocks carry ~86 bytes before `seq` overhead" → 84 after it, measured.
+3. "Usable plaintext is ~39 bytes" → 43 (fixed in the verification pass); the
+   remaining stale mentions of an estimate are gone from the plan.
+4. "An ACK can be sent as soon as the peer's block decodes" → it must wait
+   `TURN_GAP_MS` (700 ms), or the peer never sees a whole block. This was an
+   implicit assumption in Phase 1's pause tail, not a written claim.
+5. "The transport machine has all the states Phase 2 needs" → it needed
+   `hidden_hold` plus three events; the table test now covers 9 × 18 pairs.
+
+### Verification battery (this session's own numbers, on the committed code state)
+
+| Step                                       | Result (this session, sequential run on the committed code state)                                                  |
+| :----------------------------------------- | :----------------------------------------------------------------------------------------------------------------- |
+| `pnpm exec tsc --noEmit` (root / `worker`) | exit 0 / exit 0 — `git status --short -- worker` empty                                                             |
+| `pnpm test`                                | **30 files, 275 tests passed** (16.00 s) — 25/210 at baseline, +5 files / +65 tests                                |
+| `pnpm exec vitest run src/lib/sound-chat`  | **16 files, 154 tests passed** (15.22 s) — 11/89 before this phase                                                 |
+| `pnpm run lint`                            | exit 0 — 0 errors, 2 pre-existing `react-refresh` warnings                                                         |
+| `pnpm run lint:anti-slop`                  | exit **1** — 154 warnings, **2 errors, both outside this phase's ownership** (finding 9)                           |
+| `pnpm run build`                           | exit 0; entry `index-BcP2f-sY.js` 307.00 kB / **gzip 95.75 kB** (unchanged, no codec in it)                        |
+| harness `vite build`                       | exit 0; codec `?url` asset `assets/ggwave-Cm_DI0UB.js` **147.13 kB**, its own file                                 |
+| harness Playwright (real CSP)              | **58 passed (4.2 m)**, exit 0; `[csp] real-csp samples=92160 violations=0` — the whole Phase 0 matrix, still green |
+| `git diff --stat`                          | only Section 6 files; no probe script, WAV or generated artifact staged                                            |
+
+Observations from this run worth recording:
+
+- The two-block message really is 180 frames of audio (2 × 90 × 1024 samples) and
+  round-trips byte-exact through the real codec, both in-process
+  (`capacity.test.ts`) and through the session driver (`session.test.ts`).
+- The codec re-decodes a block 2-4 times while it sits in its window; the
+  high-water-mark dedupe renders it once and re-ACKs every redelivery, which is
+  what stops a lost ACK from looping the sender.
+- `pnpm test` and the Sound Chat subset are only green when the battery is run
+  sequentially; four heavy commands in parallel pushed the inherited 46-variant
+  matrix test past vitest's 5 s default timeout (finding 6).
+
+### Commit record for Phase 2
+
+- Implementation, tests and the master-plan capacity corrections:
+  `6358109` — 12 files, +4056/−18 (nine new files under `src/lib/sound-chat/`,
+  `transport-machine.ts` and its table test, and the plan).
+- Documentation (this entry): the next commit on `main` after `6358109`.
+- Both pushed to `origin/main`; the branch is clean afterwards.
+
+Run sequentially (no other heavy command in parallel) as Section 5 requires;
+logs under the gitignored `test-results/p2-*.log`. The table at the end of this
+entry was filled in from that run, not copied from anywhere.
+
+### Files touched this session
+
+New (all inside `src/lib/sound-chat/`):
+
+- `crypto.ts`, `protocol.ts`, `pairing.ts`, `session.ts` — the phase's modules.
+- `crypto.test.ts` (17 tests), `protocol.test.ts`, `pairing.test.ts`,
+  `session.test.ts` (15 tests), `capacity.test.ts` (5 tests) — the phase's tests,
+  including the Section 10.3 hostile-input set and the Section 10.2 properties.
+
+Edited:
+
+- `transport-machine.ts` (+ its test) — `hidden_hold` and the three new events,
+  with the exhaustive table extended from 8 × 13 to 9 × 18.
+- `prompts/sound-chat/SOUND_CHAT_MASTER_PLAN.md` — Sections 3, 4 and 7 corrected
+  to the measured capacity, and Section 4 now records the finalised `seq`
+  extension, the frame-kind byte and the AAD rule (Phase 2 was required to
+  finalise them).
+
+Untouched, as required: `worker/**` (zero diff, `tsc --noEmit` exit 0),
+`src/lib/husk/**`, `src/components/husk/**`, `src/routes/**`, `routeTree.gen.ts`,
+`package.json`, the root configs, `.gitignore`, `src/server.ts`, `public/**`, the
+vendored artifact and its NOTICE. No WebRTC/STUN/TURN, no DSS, no variable-length
+mode, no ultrasound; the `ggwave` research clone is kept; the CSP decision stays
+closed (option b, patched artifact).
+
+### Handed to Phase 3 (do not redo, re-verify)
+
+1. The five carried-in fixes still hold; this phase's suite re-asserts them.
+2. `session.ts` is the interface Phase 3 builds on: `SoundChatSession.create`,
+   `start`, `send`, `restart`, `stop`, `pairingCode`, `pairing`,
+   `pairingFailureMessage`, `stats`, and one `onEvent` union (`transport`,
+   `pairing`, `message`, `outbound`, `heard-unreadable`). Its contract: it owns
+   the Rx feed, every callback boundary is isolated, and all its state is bounded.
+3. Section 10.2 P1-P12 are guarded and tested, with the arithmetic in this entry.
+4. Section 10.3's protocol/crypto/transport rows are covered by tests; the UI
+   phase must surface each of them in copy without claiming more than the
+   protocol proves.
+5. Phase 3 inherits the measured budget (**84 bytes / 84 ASCII characters**) and
+   the measured timing (1.92 s per block, ~3.9 s for two, `TURN_GAP_MS = 700`)
+   for its "plays a short sound" progress display.

@@ -170,8 +170,10 @@ export class SoundChatSession {
   };
   /** True from the moment we hear a block until the quiet timer says otherwise. */
   #heardRecently = false;
-  /** The single reply we owe the peer once the channel goes quiet. */
-  #replyAfterQuiet: (() => void) | null = null;
+  /** The ACK we owe the peer, kept until a quiet moment lets it go out. */
+  #pendingAck: Uint8Array | null = null;
+  /** The displayer's PAIR answer, held for the same reason. */
+  #pendingPairReply = false;
   readonly #stats: SessionStats = {
     blocksDecoded: 0,
     framesUnreadable: 0,
@@ -272,7 +274,8 @@ export class SoundChatSession {
     for (const key of ["ack", "backoff", "partialAck", "pair", "quiet"] as const) {
       this.#clearTimer(key);
     }
-    this.#replyAfterQuiet = null;
+    this.#pendingAck = null;
+    this.#pendingPairReply = false;
     this.#unsubscribe?.();
     this.#unsubscribe = null;
     this.#listen?.stop();
@@ -351,7 +354,8 @@ export class SoundChatSession {
     // The displayer's answer goes out after the enterer's Rx feed is listening
     // again — the same turn-gap rule the ACK path obeys.
     if (next.kind === "paired" && next.role === "displayer") {
-      this.#afterTurnGap(() => void this.#transmitPairFrame());
+      if (this.#heardRecently) this.#pendingPairReply = true;
+      else void this.#transmitPairFrame();
     }
   }
 
@@ -408,9 +412,11 @@ export class SoundChatSession {
     // The machine goes back to `listening` *before* anything queued fires, so a
     // reply can never be refused for arriving a hair early.
     this.#emit({ type: "CHANNEL_QUIET" });
-    const queuedReply = this.#replyAfterQuiet;
-    this.#replyAfterQuiet = null;
-    if (queuedReply !== null) queuedReply();
+    if (this.#pendingPairReply) {
+      this.#pendingPairReply = false;
+      void this.#transmitPairFrame();
+    }
+    this.#attemptAck();
     if (this.#currentState() !== "listening") return;
     if (this.#outbound !== null) {
       // A held or partially-sent message resumes now that the air is clear.
@@ -424,17 +430,19 @@ export class SoundChatSession {
   }
 
   /**
-   * Runs `action` once the channel is quiet — never inside the gap a peer's own
-   * Rx feed needs after it transmitted (`TURN_GAP_MS`), and never while it might
-   * still be transmitting the rest of a multi-block message. Exactly one reply
-   * can be queued: a peer that owes us a reply owes us one.
+   * Sends the ACK we owe, if the channel is ours. A refused attempt is *kept*,
+   * not dropped: the next quiet moment tries again, which is what makes the
+   * reply independent of the order two timers happened to fire in.
    */
-  #afterTurnGap(action: () => void): void {
-    if (!this.#heardRecently) {
-      action();
-      return;
-    }
-    this.#replyAfterQuiet = action;
+  #attemptAck(): void {
+    const frame = this.#pendingAck;
+    if (frame === null || this.#heardRecently || this.#stopped) return;
+    this.#emit({ type: "TRANSMIT_BEGIN" });
+    if (this.#currentState() !== "transmitting") return;
+    if (!this.#play(frame)) return;
+    this.#pendingAck = null;
+    this.#stats.acksSent += 1;
+    this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
   }
 
   async #pump(): Promise<void> {
@@ -678,17 +686,11 @@ export class SoundChatSession {
 
   async #sendAck(msgId: number, mask: number): Promise<void> {
     if (this.#stopped || mask === 0 || !isPaired(this.#pairing)) return;
-    const frame = await this.#wire.buildAckFrame(msgId, mask);
-    // The ACK goes out only after the peer's own Rx feed is listening again.
-    this.#afterTurnGap(() => {
-      this.#emit({ type: "TRANSMIT_BEGIN" });
-      // The channel is not ours right now (mid-message, hidden, or in backoff):
-      // the peer's own ACK timeout retries, so dropping this one loses nothing.
-      if (this.#currentState() !== "transmitting") return;
-      if (!this.#play(frame)) return;
-      this.#stats.acksSent += 1;
-      this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
-    });
+    // Kept until the channel is quiet: the peer's own Rx feed stays shut for
+    // `TURN_GAP_MS` after it transmitted, and a reply that starts inside that
+    // window never fills the peer's 90-frame analysis window.
+    this.#pendingAck = await this.#wire.buildAckFrame(msgId, mask);
+    this.#attemptAck();
   }
 
   #schedulePartialAck(): void {
@@ -724,7 +726,8 @@ export class SoundChatSession {
     for (const key of ["ack", "backoff", "partialAck", "quiet"] as const) {
       this.#clearTimer(key);
     }
-    this.#replyAfterQuiet = null;
+    this.#pendingAck = null;
+    this.#pendingPairReply = false;
     const outbound = this.#outbound;
     if (outbound !== null) {
       outbound.status = "failed";

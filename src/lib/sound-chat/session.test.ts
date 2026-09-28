@@ -280,6 +280,12 @@ async function pairUp(displayer: Peer, enterer: Peer): Promise<void> {
   await settle();
   await deliver(enterer, displayer);
   await deliver(displayer, enterer);
+  // A second pass, so a reply that needed one more quiet window still lands.
+  // It is a no-op for an already-paired pair.
+  if (displayer.session.pairing.kind !== "paired" || enterer.session.pairing.kind !== "paired") {
+    await deliver(enterer, displayer);
+    await deliver(displayer, enterer);
+  }
 }
 
 let visibility: "visible" | "hidden" = "visible";
@@ -593,12 +599,16 @@ describe("retry, hold and failure (P11, P12)", () => {
       true,
     );
     // And the collision is handled by retrying the same message, not by lying:
-    // the same msgId, the same sealed frame, after a jittered backoff.
+    // the same msgId, the same sealed frame, after a jittered backoff. (The ACK
+    // the displayer also owes the peer may be in the air first, so the retry is
+    // whichever airing matches the first attempt byte for byte.)
     await vi.advanceTimersByTimeAsync(BACKOFF_MAX_MS + 1);
     await settle();
-    const retried = displayer.takeAir()[0];
-    if (retried === undefined) throw new Error("expected a retry after the collision");
-    expect(Array.from(retried)).toEqual(Array.from(firstAttempt));
+    const airings = displayer.takeAir();
+    expect(airings).not.toHaveLength(0);
+    expect(
+      airings.some((airing) => Array.from(airing).join(",") === Array.from(firstAttempt).join(",")),
+    ).toBe(true);
   });
 
   it("holds a send while hidden and resumes it when the tab returns (P11)", async () => {
