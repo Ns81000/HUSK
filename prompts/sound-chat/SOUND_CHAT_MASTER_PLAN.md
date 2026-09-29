@@ -221,7 +221,13 @@ src/lib/sound-chat/harness/playwright.config.ts` (runs `pnpm dev` itself)
      separately, and push only after the branch is clean. Never stage test
      outputs, WAVs, probe scripts, or generated artifacts from this phase; the
      only approved tracked edits remain those listed in Section 6.
-4. **Stop and ask** if a fix or design choice needs a human tradeoff decision.
+4. **Fully autonomous decisions.** If a fix or design choice involves a
+    tradeoff, the agent chooses the best option, documents its reasoning and
+    the alternatives considered in the log, and continues without stopping.
+    Criteria for "best": security > correctness > simplicity > performance.
+    The only exception is a change to off-limits files (Section 6) — that is
+    still a hard stop, but the agent must explain why the change is needed and
+    propose the minimal diff rather than waiting for instructions.
 5. **Every session ends by appending to the log** with: what was done, exact
    files touched, test/lint/build results (numbers, not vibes), bugs found and
    their status, open questions — then a ready-to-paste kickoff prompt for the
@@ -264,8 +270,51 @@ src/lib/sound-chat/harness/playwright.config.ts` (runs `pnpm dev` itself)
     through the classes in 10.1 _before_ logging the phase complete: a
     phase-boundary interface whose consumer does not exist yet (class 12) is
     exactly where Phase 0/1's defects hid.
+13. **Subagent-driven depth.** Every remaining implementation phase must use
+     multiple targeted subagents to achieve exhaustive coverage. The primary
+     agent coordinates; subagents are spawned for specific, bounded tasks:
+     - **Implementation subagents** -- one per major module or file group.
+     - **Testing subagents** -- given full liberty to explore every possible
+       scenario, edge case, race condition, boundary condition, and failure
+       mode. They are not limited to a checklist; they brainstorm, discover,
+       and report. Each testing subagent owns a specific surface (e.g., codec
+       edge cases, crypto hostile inputs, transport state explosions, UI
+       state coverage) and goes as deep as needed.
+     - **Verification subagents** -- cross-check implementation against the
+       plan, the log, Section 10, and the hostile-input seam set. They read
+       the code the implementation subagent wrote and independently verify
+       correctness, completeness, and adherence to constraints.
+     - **Fix-and-retest loop**: any issue found by any subagent is fixed by
+       the primary agent, then the full battery is re-run (not just the
+       failing test). The loop continues until a completely clean pass. A
+       subagent that finds nothing wrong is a valid outcome -- it means the
+       code is solid.
+     - Subagents must not get stuck in infinite loops. If a subagent cannot
+       resolve an issue after 3 attempts, the primary agent takes over,
+       makes the best autonomous decision, documents the reasoning, and
+       moves on.
+14. **Verification phases (xV) are mandatory.** After each implementation
+     phase (3, 4, 5), a dedicated verification phase runs before the next
+     implementation phase begins. Verification phases use at minimum three
+     subagents:
+     - **(1) Full battery runner** -- runs the entire Section 5 verification
+       battery, the Playwright harness, and the Sound Chat unit/seam suite.
+       Reports exact numbers.
+     - **(2) Edge-case / seam / hostile-input deep-diver** -- given full
+       liberty to explore every possible failure mode in the code written by
+       the preceding phase. Not limited to Section 10.3; discovers new edge
+       cases, race conditions, timing issues, state machine gaps, and
+       resource leaks. Reports findings with severity.
+     - **(3) Doc / artifact / integrity checker** -- verifies every recorded
+       fact (hashes, sizes, counts, capacity budgets, document claims)
+       against reality. Checks for dead code, unused exports, stale
+       comments, and doc drift.
+     Any failure found triggers fix -> full retest -> re-verify. The
+     verification phase is not done until all three subagents report clean.
+     A verification phase also produces a "claims corrected" list and a
+     "findings" table identical to the implementation phase format.
 
-### Kickoff prompt template
+### Kickoff prompt template (implementation phase)
 
 ```text
 Read /prompts/sound-chat/SOUND_CHAT_MASTER_PLAN.md in full, start to end (in
@@ -279,10 +328,55 @@ yourself).
 
 Implement Phase [N]: [phase name] as specified in the master plan.
 Do not start Phase [N+1].
+
+This phase MUST use the subagent-driven depth methodology from Rule 13:
+- Use multiple targeted subagents for implementation, testing, and
+  verification. Spawn subagents for bounded tasks; give testing subagents
+  full liberty to explore every possible edge case, race condition, timing
+  issue, boundary condition, and failure mode — they are not limited to the
+  plan's checklists. Each testing subagent should brainstorm and discover
+  issues independently.
+- Any issue found by any subagent gets fixed, then the FULL battery is
+  re-run (not just the failing test). Loop until clean.
+- Make all design/tradeoff decisions autonomously (Rule 4): choose the best
+  option, document reasoning and alternatives in the log, never stop to ask.
+
 Follow the non-negotiable constraints and the file ownership map exactly.
 Run the full verification battery before declaring done, using the commit-first
 workflow in Rule 3: commit phase work, then test/build/verify, then append
 fresh log results, then commit the log and push.
+Append your results to SOUND_CHAT_LOG.md (append only) and end by giving me
+the next kickoff prompt for Phase [N]V (verification) — in the chat, never
+inside the log.
+```
+
+### Kickoff prompt template (verification phase)
+
+```text
+Read /prompts/sound-chat/SOUND_CHAT_MASTER_PLAN.md in full, start to end (in
+chunks if needed). Then read /prompts/sound-chat/SOUND_CHAT_LOG.md in full,
+start to end.
+
+Execute Phase [N]V: Verification of Phase [N] ([phase name]).
+Do not start Phase [N+1].
+
+This is a VERIFICATION-ONLY phase. No new features. Use Rule 14's three
+mandatory subagents:
+1. Full battery runner — run the ENTIRE Section 5 verification battery,
+   Playwright harness, and all Sound Chat unit/seam suites. Report exact
+   numbers.
+2. Edge-case / seam / hostile-input deep-diver — you have FULL LIBERTY to
+   explore every possible failure mode, race condition, edge case, timing
+   issue, and boundary condition in Phase [N]'s code. Go as deep as
+   possible. Brainstorm scenarios the implementation did not consider. Write
+   new tests for anything suspicious. Do not limit yourself to Section 10.3.
+3. Doc / artifact / integrity checker — verify every recorded fact (hashes,
+   sizes, counts, capacity budgets, document claims) against the actual code
+   and artifacts. Check for dead code, unused exports, stale comments.
+
+Any issue found → fix → full retest → re-verify. Loop until all three
+subagents report clean. Make all decisions autonomously (Rule 4).
+
 Append your results to SOUND_CHAT_LOG.md (append only) and end by giving me
 the next kickoff prompt for Phase [N+1] — in the chat, never inside the log.
 ```
@@ -442,58 +536,93 @@ at the end of Section 8.
   illegal transition asserted as a no-op, mirroring
   `room-machine.test.ts`'s style).
 
-### Phase 2 — Protocol, pairing, encryption
+### Phase 2 — Protocol, pairing, encryption (completed and logged)
 
-- `protocol.ts`: implement the locked wire format from Section 4 exactly —
-  single-block message/ACK frames now, plus the multi-block `seq` extension
-  for messages over 43 bytes of plaintext (up to the 2-block cap).
-- `crypto.ts`: key derivation (PBKDF2 or better — pick and justify in the
-  log) from the manually-entered pairing code, AES-256-GCM per block with a
-  fresh nonce (the codec's waveforms are deterministic and trivially
-  replayable — confirmed — so the nonce/counter discipline here is what
-  prevents replay, not anything in ggwave).
-- `pairing.ts` + pairing UI logic: one device generates and displays a short
-  code, the other enters it, both derive the same key locally, an actual
-  short acoustic round-trip confirms pairing before the chat screen unlocks.
-- ACK/retry/dedupe: mirror `src/lib/husk/store.ts`'s pattern (`localId`, ack
-  timeout, retry reuses the same id, `sending → sent → failed`), timeouts
-  scaled to real per-block transmit time (~2s/block), not the network's fixed
-  10s. Dedupe inbound blocks by `msgId` (confirmed necessary — the codec
-  redelivers the same block 2-4 times by design).
-- A failed AEAD tag is treated exactly like "nothing decoded" — never
-  rendered, never surfaced as corruption to the user; it just lets the
-  sender's normal ack-timeout retry handle it.
-- **Carried-in fixes from the verification pass — re-verify, do not
-  reimplement.** The following are already applied and tested (log:
-  "Independent verification pass"): the consumer-error boundary in
-  `audio-io.ts` (a throwing callback no longer stops the feed or reports a dead
-  module), the whole-frame guard in `codec.decode` (whole multiples of 1024 stay
-  legal; a partial frame raises a usage error _outside_ the module latch), the
-  `bytesToFloat32` alignment precondition, rejection-handled `close()`, the
-  removal of the dead `rxDurationFrames()`, and the machine-checked artifact
-  test. Phase 2 must show these still hold after its own changes.
-- **Every interface Phase 2 introduces must be passed through Section 10.1.**
-  A new callback, a new state, a new parser entry point: nothing an application
-  callback throws may stop the feed or latch anything off; every usage guard
-  must leave `codec.state === "ready"`; every new mock must be able to throw,
-  reject and return hostile shapes, with at least one test doing exactly that.
-- **Satisfy and test every property in Section 10.2 (P1–P12)**: per-direction
-  keys, no key+nonce reuse across reloads or sessions, AAD over the whole
-  header, replay defeated by a _bounded_ dedupe window, tag failure = nothing
-  decoded, "heard but unreadable" distinguished from "silence", pairing code
-  never acoustic, derivation arithmetic (entropy bits, iterations, salt) in the
-  log, no secret ever logged or persisted, capacity measured not estimated,
-  ACK/retry timing scaled to the measured transmit duration, all protocol state
-  bounded.
-- **Extend `transport-machine.ts` and its exhaustive transition-table test** if
-  the protocol needs states or events Phase 1 did not define (collision
-  detection, "heard but unreadable", per-frame send progress). Never infer new
-  transport state from a scattered boolean.
-- **Log the measured capacity arithmetic** and correct every document that
-  states a byte or character budget (Section 4 and Section 3's message-length
-  row must agree with the measurement).
+- Phase 2 is complete. Its delivery, findings, and verification battery are
+  recorded in `SOUND_CHAT_LOG.md`. Do not redo it; preserve its modules
+  (`crypto.ts`, `protocol.ts`, `pairing.ts`, `session.ts`) and tests, and
+  verify them fresh rather than treating old numbers as current.
 
-### Phase 3 — UI integration
+### Phase 2V — Deep verification of all completed work (Phase 0/1/2)
+
+This is the **first phase to execute under the new deep-subagent methodology**.
+It re-verifies every completed phase with the thoroughness that Phases 0–2 did
+not have. Nothing new is built; this phase exists to catch anything that
+slipped through before building the UI on top of it.
+
+**Subagent deployment (Rule 14 — mandatory, not optional):**
+
+1. **Full battery runner subagent** — runs the entire Section 5 verification
+   battery from scratch: `tsc --noEmit` (root + worker), `pnpm test`, `pnpm
+   run lint`, `pnpm run lint:anti-slop`, `pnpm run build`, harness `vite
+   build`, Playwright harness (full, real CSP), `vitest run
+   src/lib/sound-chat`. Reports exact numbers, compares against the log's
+   Phase 2 numbers, and flags any regression.
+
+2. **Edge-case / seam / hostile-input deep-diver subagent** — given **full
+   liberty** to explore every possible failure mode in the completed code.
+   Not limited to Section 10.3; this subagent must:
+   - Read every file under `src/lib/sound-chat/` and brainstorm failure
+     scenarios the previous phases did not consider.
+   - Probe race conditions: what happens if two decode events arrive in the
+     same tick? If `onDecoded` is called while a previous `onDecoded` is
+     still running? If the tab goes hidden between `encode()` and playback?
+   - Probe boundary conditions: every field in the wire format at its min
+     and max; `msgId` at 0, 1, 0xFFFF; `seq` with `blockIndex > blockCount`;
+     AAD with every single byte flipped individually.
+   - Probe resource leaks: timers, listeners, AudioNodes, MediaStreamTracks
+     after every teardown path including error paths.
+   - Probe state machine completeness: feed every event to every state in
+     the transport machine (9×18 table already exists — verify it matches
+     reality, then probe states the table might have missed).
+   - Write new tests for anything suspicious. Report findings with severity.
+
+3. **Doc / artifact / integrity checker subagent** — verifies:
+   - Every SHA-256, byte size, and count in `NOTICE.md`, this plan, the log,
+     and the deep dive against the actual files on disk.
+   - Every capacity/budget claim (43 bytes, 84 bytes, 84 characters, 1.92 s,
+     3.9 s, 700 ms) against the code constants and the test measurements.
+   - Dead code sweep: every exported symbol in `src/lib/sound-chat/` has at
+     least one caller or test; unused exports are flagged.
+   - Stale comments: any comment referencing a pre-patch size, a different
+     phase, or a "TODO" is flagged.
+   - The `NOTICE.md` provenance chain is intact: upstream hash → patch
+     description → patched hash → built asset identity.
+
+**Fix-and-retest loop:** any issue found by any subagent is fixed, then the
+FULL battery is re-run (not just the failing test). The loop continues until
+all three subagents report completely clean. If a subagent cannot resolve an
+issue after 3 attempts, the primary agent makes the best autonomous decision,
+documents the reasoning, and moves on.
+
+**Acceptance:** Phase 2V is done when all three subagents report clean and the
+log contains a complete findings table, a "claims corrected" list, and a fresh
+verification battery with this session's own numbers.
+
+### Phase 3 — UI integration (subagent-driven depth)
+
+**Subagent deployment (Rule 13 — mandatory):**
+
+The primary agent coordinates; subagents are spawned for bounded tasks:
+
+- **UI implementation subagent(s)** — build the route, components, and
+  state wiring as specified below. May be split further (e.g., one for
+  pairing flow, one for chat flow, one for error states).
+- **UI testing subagent** — given full liberty to exercise every UI state,
+  transition, and edge case. Not limited to the list below; brainstorms
+  scenarios independently (e.g., what if the user pastes 85 characters?
+  What if the user hits Enter during a pairing timeout? What if
+  `session.ts` emits two events in the same tick?).
+- **Accessibility / copy / honesty verification subagent** — checks every
+  `aria-live`, keyboard path, focus trap, and piece of copy against the
+  constraints. Ensures no emoji, no "silent"/"inaudible" language, and that
+  every claim matches what the protocol can actually prove.
+- **Integration verification subagent** — re-verifies Phase 1/2 interfaces
+  against the real UI consumer (Section 10.1 class 12). In particular:
+  codec-module failure vs. broken-frame-contract produce different, honest
+  copy; consumer errors are visible without killing the session.
+
+**Implementation spec (unchanged goals, deeper execution):**
 
 - `src/routes/sound-chat.tsx` using only `primitives.tsx` components and
   semantic design tokens.
@@ -502,8 +631,8 @@ at the end of Section 8.
   states) using `Modal`/`Panel`.
 - Permission pre-prompt screen explaining _why_ mic access is requested.
 - Composer with a live character counter against the 2-block cap (84 ASCII
-  characters / 84 UTF-8 bytes, measured in Phase 2) and a real estimated transmit
-  time (~2s for 1 block, ~4s for 2).
+  characters / 84 UTF-8 bytes, measured in Phase 2) and a real estimated
+  transmit time (~2s for 1 block, ~4s for 2).
 - Explicit, on-brand UI for every state: transmitting (real progress, not a
   lying spinner), listening, mic denied, browser unsupported, pairing
   mismatch, collision detected, and the "module died — restart Sound Chat"
@@ -514,11 +643,6 @@ at the end of Section 8.
   documented in the log.
 - Copy throughout says "plays a short sound" / "makes an audible tone" — never
   "silent" or "inaudible."
-- **Re-verify the Phase 1/2 interfaces against the real consumer before
-  building on them (Section 10.1, class 12).** In particular the fatal-error
-  callback: a codec-module failure and a broken frame contract must produce
-  different, honest copy ("restart Sound Chat" vs "restart listening"), and a
-  consumer error must be visible without killing the session.
 - **Cover the whole Section 10.3 failure surface in the UI, not just the happy
   path**: mic denied / unsupported / wrong device rate; no peer heard; "a
   transmission was heard but this pairing code cannot read it"; ack timeout →
@@ -529,75 +653,199 @@ at the end of Section 8.
   send, focus management, no emoji anywhere, and no copy that claims more than
   the protocol proves (Section 10.2, P7).
 
-### Phase 4 — The Gauntlet (mandatory adversarial hardening loop)
+**Autonomous decisions:** all design/UX tradeoffs are decided by the agent
+using the criteria: security > correctness > user clarity > simplicity.
+Reasoning is documented in the log.
 
-A loop, not a checklist — keep cycling until a clean pass.
+### Phase 3V — Deep verification of Phase 3 (UI integration)
 
-**Loop:** brainstorm scenarios → write an automated test where feasible, a
-manual `live-tests/`-style script where it isn't → run it → any failure gets
-fixed and the **entire** verification battery re-run, not just the new test →
-log with CRITICAL→HIGH→MEDIUM→LOW severity (same convention as `FINDINGS.md`)
-→ repeat until everything passes or a remaining issue is explicitly accepted
-and documented as a by-design limit.
+**Subagent deployment (Rule 14 — mandatory, 3 subagents minimum):**
 
-**Seed scenarios (expand this list — don't treat it as exhaustive):**
+1. **Full battery runner** — the entire Section 5 battery plus the
+   Playwright harness. Every pre-existing test must still pass. The main
+   bundle gzip size must be unchanged (codec is a separate `?url` asset).
 
-- _Codec fragility (new from the deep dive)_: trigger the empty-payload trap
-  and the invalid-instance-id abort deliberately in a test harness — confirm
-  our guards actually prevent both from ever reaching the real codec calls;
-  confirm the "module died" recovery UI actually appears if one somehow slips
-  through; confirm a long session's wasm memory growth doesn't silently
-  detach a view we're still holding.
-- _Dedupe/collision_: confirm the same block decoded 3-4 times renders as one
-  message; confirm two devices transmitting in the same instant is detected
-  and handled by the collision-backoff state, not silently corrupted audio.
-- _Self-reception_: confirm pausing the Rx feed during our own transmission
-  actually prevents self-decode (test with real hardware, not just logic).
-- _Acoustic environment (via the Phase 0 fake-audio-capture harness + degradation matrix, extended)_: loud ambient noise/music mixed into the WAV at multiple SNR levels; simulated other-session cross-talk by overlaying a second encoded transmission; very different simulated device volume levels (gain variants); simulated muted/near-silent input with no decode and confirmation the UI shows a clear "nothing received" state, not a hang.
-- _Hardware/OS_: iOS Safari's user-gesture requirement for `AudioContext`; a
-  phone call interrupting audio mid-transmission; backgrounding pausing
-  capture; tab throttling when unfocused; sample-rate mismatch between two
-  different devices (confirm 48000/1024 discipline holds).
-- _Security_: wrong/mistyped pairing code fails closed with a clear message,
-  never a crash or silent wrong-key state; replay of a captured transmission
-  is rejected via the nonce/msgId discipline; someone else's device
-  recording the audible tones is accepted as an inherent, documented limit
-  (the point is the content stays encrypted).
-- _UX/human error_: leaving mid-transmission; refreshing mid-session; empty
-  or exactly-at-cap messages; pasting emoji/non-Latin scripts.
-- _Build/ops_: confirm the vendored artifact's patched hash still matches on a
-  fresh checkout (tamper/corruption check); confirm the codec asset is genuinely
-  separate from the main JavaScript bundle (main bundle size unchanged) and the
-  MIT attribution is actually reachable in the shipped UI.
-- _Resource/performance_: long-running session memory growth (`AudioContext`
-  nodes, listeners, timers all torn down correctly); many rapid short
-  messages in sequence.
-- _Seam classes from Section 10.1 — mandatory, not optional_: for every class,
-  force the failure for real: an application callback that throws; a capture
-  chunk that is not a whole frame; a teardown that runs twice against a real
-  Chromium context; a `close()` that rejects; a wasm memory-growth event
-  between encode and use of the returned view; a dead-code sweep of every
-  symbol this feature added or promoted.
-- _Artifact and document integrity_: corrupt one byte of a **copy** of the
-  vendored artifact and confirm the provenance test actually fails (a test that
-  cannot fail proves nothing); confirm every size, hash, capacity and count
-  recorded in the docs matches the measurement the harness produced.
+2. **UI edge-case / state-explosion deep-diver** — full liberty to explore:
+   - Every UI state: trigger each one (transmitting, listening, denied,
+     unsupported, pairing mismatch, collision, module-died, hidden-hold,
+     awaiting-ack, backoff, error) and verify the visual, the copy, and the
+     `aria-live` announcement.
+   - Every transition between states: rapid state changes, back-to-back
+     events, events arriving during animations.
+   - Every input edge case: empty message, exactly 84 characters, 85
+     characters (rejected), pasted emoji, pasted non-Latin UTF-8, very fast
+     typing, Enter during transmission, Enter during pairing, refresh
+     mid-session.
+   - Every error recovery path: module-died → restart; pairing timeout →
+     retry; ACK timeout → retry → final failure; mic revoked mid-session.
+   - Resource cleanup: React dev double-mount, unmount during active
+     session, unmount during transmission.
 
-### Phase 5 — Final polish & sign-off
+3. **Doc / artifact / integrity checker** — same as Phase 2V's checker,
+   plus: verify the `src/routes/index.tsx` edit is exactly one `Button`;
+   verify `src/server.ts` diff is exactly the CSP token; verify the MIT
+   attribution is reachable; verify no emoji in any UI copy.
 
-- QA matrix, prioritized by actual usage: **Chrome/Edge on Android is the
-  primary target and the one that must be flawless.** Desktop Chrome/Firefox
-  (via Playwright, agent-verifiable) as a secondary sanity check. Safari/iOS
-  is explicitly out of scope for this feature's QA bar — not because it's
-  unsupported in principle, but because it isn't the target platform and
-  isn't worth spending phases hardening against.
-- Accessibility pass: `aria-live` on transmit/listen state changes, focus
-  management through the pairing modal, keyboard operability throughout.
-- Full verification battery green; `git diff --stat` confirms only
-  Section-6-approved files were ever touched across all phases; MIT
-  attribution present and correct; vendored artifact hash matches the log.
-- Final log entry summarizing the whole feature's state and any accepted
-  limitations.
+Fix-and-retest loop until all three subagents report clean.
+
+### Phase 4 — The Gauntlet (subagent-driven adversarial hardening)
+
+A loop, not a checklist — keep cycling until a clean pass. **This phase uses
+the most aggressive subagent deployment of any phase.**
+
+**Subagent deployment (Rule 13 — mandatory, one subagent per scenario
+category minimum):**
+
+The primary agent coordinates and owns the fix-and-retest loop. Subagents are
+spawned for each scenario category with **full liberty to brainstorm, discover,
+and test beyond the seed list**. Each subagent writes automated tests where
+feasible and documents manual verification steps where automation is impossible.
+
+1. **Codec fragility subagent** — trigger the empty-payload trap and the
+   invalid-instance-id abort deliberately in a test harness; confirm guards
+   prevent both; confirm the "module died" recovery UI actually appears if
+   one slips through; confirm a long session's wasm memory growth doesn't
+   silently detach a held view; probe every codec API boundary: negative
+   instance ids, double-free, encode after free, decode with a detached
+   view, concurrent encode+decode on the same instance.
+
+2. **Dedupe / collision / timing subagent** — confirm the same block
+   decoded 3–4 times renders as one message; confirm two devices
+   transmitting simultaneously is detected by collision-backoff; probe
+   timing: what if an ACK arrives during our own transmission? What if a
+   decode event arrives during `transmitAndPause`'s quiet window? What if
+   `TURN_GAP_MS` fires before the peer's block is fully decoded? What if
+   the channel-quiet timer and the reply timer fire in the same tick?
+
+3. **Self-reception / acoustic environment subagent** — confirm pausing Rx
+   during Tx prevents self-decode (via the harness); extend the degradation
+   matrix with: loud ambient noise/music at multiple SNR levels; simulated
+   cross-talk (two encoded transmissions overlaid); extreme gain variants;
+   muted/silent input (confirm UI shows "nothing received", not a hang);
+   very long silence followed by a burst.
+
+4. **Security / crypto subagent** — wrong/mistyped pairing code fails
+   closed; replay of a captured transmission is rejected; someone else's
+   device recording tones is an accepted limit; tampered ciphertext/tag/AAD;
+   cross-direction key confusion; nonce reuse after reload; counter
+   exhaustion; a PAIR frame after pairing is ignored; a second pairing
+   attempt with a different code is rejected.
+
+5. **UX / human-error subagent** — leaving mid-transmission; refreshing
+   mid-session; empty or exactly-at-cap messages; pasting emoji/non-Latin;
+   very rapid send-send-send; tab hidden mid-send and mid-receive;
+   backgrounding during pairing; back-button during transmission; multiple
+   Sound Chat tabs open simultaneously.
+
+6. **Build / ops / artifact subagent** — vendored artifact's patched hash
+   matches on a fresh checkout; corrupt one byte of a **copy** and confirm
+   `provenance.test.ts` fails; codec asset is separate from main bundle
+   (gzip size unchanged); MIT attribution is reachable in shipped UI;
+   `/sound-chat` navigation and SW caching behave as predicted;
+   `/assets/*` immutable headers verified.
+
+7. **Resource / performance subagent** — long-running session memory
+   growth (`AudioContext` nodes, listeners, timers, wasm heap all torn down
+   correctly); many rapid short messages in sequence; module re-init after
+   recovery; timer cleanup after every state transition.
+
+8. **Section 10 seam-class enforcer subagent** — for every class in 10.1,
+   force the failure for real: a callback that throws; a non-whole-frame
+   chunk; a double teardown against a real Chromium context; a `close()`
+   that rejects; a wasm memory-growth event between encode and view use;
+   a dead-code sweep of every symbol this feature added or promoted.
+
+**Loop discipline:** every subagent reports findings with
+CRITICAL→HIGH→MEDIUM→LOW severity. Any CRITICAL or HIGH finding is fixed
+immediately. The **entire** verification battery is re-run after every fix
+(not just the new test). The loop continues until all subagents report clean
+or a remaining issue is explicitly accepted and documented as a by-design
+limit with the reason stated. A subagent stuck after 3 attempts → primary
+agent takes over and makes the best autonomous decision.
+
+**Autonomous decisions:** all tradeoff decisions are made by the agent
+(Rule 4). Every decision and its alternatives are documented in the log.
+
+### Phase 4V — Deep verification of Phase 4 (The Gauntlet)
+
+**Subagent deployment (Rule 14 — mandatory, 3 subagents minimum):**
+
+1. **Full battery runner** — the entire Section 5 battery, the Playwright
+   harness, and all Sound Chat unit/seam suites. Compare test counts against
+   the Phase 4 log entry — new tests should only be additions, never
+   regressions.
+
+2. **Cross-cutting deep-diver** — this subagent re-examines the *fixes*
+   from Phase 4 (not the original code). For every CRITICAL/HIGH finding
+   that was fixed: does the fix introduce a new edge case? Does it interact
+   badly with another fix? Does it change a seam that Phase 3's UI depends
+   on? Does it alter timing assumptions? This subagent is specifically
+   looking for *fix-induced regressions* and *interaction effects*.
+
+3. **Final integrity checker** — every recorded fact across all documents
+   (plan, log, deep dive, NOTICE.md) is verified against reality. Every
+   test count, every hash, every byte size, every capacity claim. Dead-code
+   sweep of the entire `src/lib/sound-chat/` namespace. Stale-comment sweep.
+
+Fix-and-retest loop until all three subagents report clean.
+
+### Phase 5 — Final polish & sign-off (subagent-driven depth)
+
+**Subagent deployment (Rule 13 — mandatory):**
+
+- **QA matrix subagent** — runs the full QA matrix, prioritized by actual
+  usage: Chrome/Edge on Android is the primary target. Desktop
+  Chrome/Firefox (via Playwright, agent-verifiable) as a secondary sanity
+  check. Safari/iOS is explicitly out of scope. Exercises every screen,
+  every state, every transition, every error path. Reports results with
+  screenshots/descriptions where applicable.
+- **Accessibility subagent** — `aria-live` on transmit/listen state
+  changes, focus management through the pairing modal, keyboard operability
+  throughout. Verifies against WCAG 2.1 AA where applicable. Reports
+  violations with severity.
+- **Production sign-off subagent** — works through the entire Section 8
+  checklist, checking every box with real evidence. Any unchecked box goes
+  back to the relevant phase (via the primary agent fixing it in this
+  session) — Phase 5 does not accept known gaps quietly.
+- **Final dead-code / cleanup subagent** — sweeps for: unused exports,
+  orphaned test helpers, leftover TODO comments, stale probe scripts,
+  development-only code that shouldn't ship, console.log statements.
+
+**Acceptance:** Phase 5 is done when every Section 8 checkbox has real
+evidence in the log, every subagent reports clean, and the final log entry
+summarizes the whole feature's state and any accepted limitations.
+
+### Phase 5V — Final verification (the absolute last gate)
+
+**Subagent deployment (Rule 14 — mandatory, 3 subagents minimum):**
+
+This is the final gate. Nothing proceeds past this phase. It verifies the
+entire feature from scratch, as if seeing the code for the first time.
+
+1. **Full battery runner** — the entire Section 5 battery, the Playwright
+   harness (full, real CSP), all Sound Chat unit/seam suites. Every number
+   is measured fresh. Compare against every previous phase's log entries:
+   test counts should be monotonically non-decreasing, build sizes stable,
+   no regression in any metric.
+
+2. **Comprehensive edge-case deep-diver** — reads every file under
+   `src/lib/sound-chat/`, `src/components/sound-chat/`, and
+   `src/routes/sound-chat.tsx` from scratch. For each file, brainstorms
+   every possible failure mode, edge case, race condition, timing issue,
+   and boundary condition. This is the most thorough exploration of the
+   entire feature. Writes new tests for anything suspicious. Reports
+   findings with severity.
+
+3. **Complete integrity and sign-off checker** — verifies every single
+   checkbox in Section 8 with fresh evidence. Verifies every recorded fact
+   in the plan, the log, the deep dive, and NOTICE.md. Confirms `git diff
+   --stat` across the entire feature's history touches only Section 6
+   files. Confirms the worker has zero diff. Confirms no WebRTC/STUN/TURN.
+   Confirms no emoji in UI copy. This subagent's report IS the final
+   acceptance document.
+
+Fix-and-retest loop until all three subagents report clean. When clean, the
+feature is production-ready.
 
 ---
 
