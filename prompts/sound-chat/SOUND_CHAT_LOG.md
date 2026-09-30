@@ -1251,3 +1251,218 @@ variable-length mode, no DSS, no ultrasound; the CSP decision stays closed
    findings were deliberately *not* fixed and say why: the responder-side
    pairing residual, the harness's product-path gap, and the off-limits
    `store.test.ts` flake.
+
+## Phase 3 - UI integration
+
+Session of 2026-09-30. Two commits of product work: `e1cf69f` (the feature) and
+`db6ee1c` (everything the audits found). Started from the Phase 2V closeout
+`c035b71`, which had **inherited 20 modified files of uncommitted Phase 2V work
+already in the tree**. That was verified and committed first as `d509266` and
+pushed, so this phase begins from a tree that says what it does.
+
+**The Phase 2V claim was re-measured, not trusted**, and it reproduced exactly:
+44 files / 416 tests, Sound Chat 30 files / 295 tests, 58 Playwright specs,
+artifact 147139 B and `B097B329...577F`. One recorded number did not, and is
+corrected in "Corrections to earlier entries" below.
+
+### What the subagents did
+
+Five passes, per Rule 13/14. Two implementation agents, then three independent
+auditors with no checklist and full liberty to fix what they found in a
+Phase 3-owned file:
+
+1. **State-explosion deep dive** - wrote `deep-p3-controller.test.ts` (23),
+   `deep-p3-states.test.ts` (40) and `deep-p3-render.test.tsx` (188). Found a
+   **microphone leak on a superseded generation** (a grant that arrives after
+   `begin()` was replaced is the last reference to a live capture track in the
+   process; nothing downstream would ever stop it and the browser's recording
+   indicator would stay lit for the life of the page), an AudioContext left open
+   when `resume()` rejects, and a throwing subscriber poisoning the chain.
+2. **Accessibility and copy-honesty audit** - wrote `deep-p3a-a11y.test.tsx` and
+   `deep-p3a-copy.test.tsx`. Found the live region mounted from the first frame
+   rather than on change, a log with no focusable target, **`text-ink-faint` at
+   4.19-4.26:1 against a 4.5:1 requirement** (measured from `src/styles.css`),
+   two `<h1>`s on one page, a pairing alphabet sentence that said "A to Z" while
+   the code excludes `I` and `O`, and three sentences whose arithmetic
+   contradicted the measured budget.
+3. **Doc / artifact / integrity checker** - verified every recorded fact against
+   the bytes on disk. Vendored artifact, `NOTICE.md`, `provenance.test.ts` and
+   the CSP all clean. Found a **tautological assertion that could not fail**, a
+   file header naming a pin mechanism (`it.fails`) that exists nowhere in the
+   namespace, four "Pinned" blocks describing defects already fixed, and two
+   files each naming a different owner for a `copy.test.ts` that does not exist.
+4. **UI state-machine auditor** - derived the full 6-phase transition table and
+   machine-checked it, then attacked resource release, single-source-of-truth
+   and the hostile input set against a **real session and the real codec**.
+   Wrote `deep-p3b-machine.test.ts` (16), `deep-p3b-acoustic.test.ts` (13) and
+   `deep-p3b-render.test.tsx` (21). This is where the four HIGH findings came
+   from, all of them invisible to the unit tests because they need a real
+   AudioContext clock and a real pump.
+
+Sound Chat's own suites went **30 files / 295 tests -> 41 files / 853 tests**;
+the repository went 44 files / 416 -> 55 files / 974.
+
+### Findings, classified, each with its decision
+
+Severity: **C** critical, **H** high, **M** medium, **L** low.
+
+| # | Severity | Finding | Class -> decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **H** | **`fatal` was not latched.** A PAIR frame already inside the session's serialised chain when the codec died reached the controller, and `case "pairing"` treated `paired` as "enter chat" with no guard on the phase it was in - so a dead-codec session swapped its own terminal panel for a live-looking chat screen | **Real bug** -> **fixed**: `#onEvent` returns immediately in a terminal phase. Measured: `phase` stayed `fatal` across a late `pairing: paired` |
+| 2 | **H** | **A module death with a send in flight published that note as "Playing" on a terminal screen, and leaked the 10 Hz ticker behind it.** `session.#moduleFailed` does not set `#stopped`, so a pump parked in `buildMessageFrames` resumes and re-creates `#outbound`; `#onEvent` then started a progress record that only a transport event or teardown could clear - and the machine is in `module_error` for ever | **Real bug** -> **fixed controller-side**, in the layer that owns the promise: `#onModuleError` now flips any `sending` row to `failed` (the attempt ended without the other device acknowledging anything) and calls `#stopProgress()`. The Phase 2 pump gap that produces the late event is left as a residual below |
+| 3 | **H** | **`#onModuleError` was a second owner of `transmitting`/`busy`/`progress`**, hard-coding all three instead of reading the session's getters. Demonstrably contradictory in both directions: after a module error with `session.busy === true` the snapshot said `false`, and one later `message` event flipped it back to `true` on a `fatal` screen | **Real bug** -> **fixed**: read through the same getters `#refresh` uses. Finding 1 closed the second half |
+| 4 | **H** | **A two-block note's retry showed a one-block bar for 3.84 s of sound.** `#startProgress` was idempotent on `#progressStartedAt`; `#stopProgress` had zeroed `#pendingBlocks` when the ACK timed out, and the retry's `outbound` event carrying the real block count arrives *after* `TRANSMIT_BEGIN` has already started the record. Measured against a real session and a real codec: the schedule really held 2 blocks 1.92 s apart, the bar said `blocks: 1, remainingMs: 1920`, and it stood still for the whole retry | **Real bug** -> **fixed**: a retry is a new audible transmission, so the record is keyed on the pump's *claim* and restarted there. The file's own comment called this "a progress bar that lies" |
+| 5 | **M** | **A send held by a hidden tab allocated the 10 Hz ticker.** `hidden_hold` is not on air, so `progress` stayed `null` and `#stopProgress` was unreachable until the tab was shown again - a 10 Hz snapshot loop with nothing on screen | **Real bug** -> **fixed**: `#startProgress` decides from the session's own state, the same source `#refresh` decides from, so a claim that nothing is on the air starts no record and no timer. The later `VISIBLE` transport event starts it |
+| 6 | **M** | **`remainingMs` was the one progress field not NaN-safe.** `clamp` guards `fraction` and `blockIndex`, but `Math.max(0, Math.round(totalMs - elapsedMs))` is `NaN` when `AudioContext.currentTime` is - rendering "about 0 seconds left" for a block that had not started | **Real bug** -> **fixed**: clamped like the other two |
+| 7 | **M** | **A failed `begin()` kept the dead session's `pairing`, `transport` and `stats` published.** `begin()`'s first patch reset only `role`/`block`/`fatal`/`code`, and the reset of the other three was on the success path a blocked start never reaches. Measured: after fatal -> restart -> microphone refused, the blocked screen read `pairing.kind: "paired"`, `transport: "listening"`, `messagesDelivered: 3` - and `InfoPanel` renders in every phase under the heading "This session" | **Real bug** -> **fixed**: every field a later failure could leave stale is reset in the first patch |
+| 8 | **M** | **The restart dialog understated what restart does.** `begin()` publishes `outbound: [], inbound: [], notices: []`, so a restart discards the whole transcript and every notice. The dialog said "Anything in flight is discarded" - a claim about one note | **Copy** -> **fixed**: it now says the session ends, the microphone is released, and the whole transcript is cleared from this page |
+| 9 | **M** | **Six unreachable sentences in the copy table.** Four were copy for a "stop Sound Chat" control that does not exist; `modal.cancel` was copy for a label the shared `Modal` primitive hardcodes, so we cannot supply it; `composer.queueFull` was a byte-identical duplicate of `refusal["queue-full"]` | **Dead code** -> **deleted**, not documented as a gap. A phrase nothing can show is not documentation, it is a fourth thing to keep in sync |
+| 10 | **M** | **A tautological assertion that could not fail.** `deep-p3a-a11y` read the panel's heading id with an `<h1>` regex; when the panel was demoted to `<h2>` the regex stopped matching, `headingId` became `""`, and the assertion degenerated to `not.toContain('aria-labelledby=""')`. It would have passed with the defect it was written for | **Test bug** -> **fixed**: matches `<h1>` or `<h2>`, and asserts the id is non-empty before comparing |
+| 11 | **M** | **A file header claimed its pin was held by `it.fails`.** No `it.fails`, `it.todo`, `.skip` or `.only` exists anywhere in the namespace. The *behaviour* was right - a plain `it` asserting "this token passes" does invert usefully - but the named mechanism was wrong, and `it.fails` would have turned red the moment the defect was closed | **Doc** -> **rewritten** to name the mechanism that is actually there |
+| 12 | **M** | **Four "Pinned" blocks described defects already fixed in the same working tree**, and `copy.ts`'s header named a `copy.test.ts` that does not exist while `deep-p3a-copy.test.tsx` named a different owner for the same checks | **Doc** -> **rewritten** to state what is true, with both sides of each pin identified |
+| 13 | **L** | **The composer's character count was computed and never rendered.** The master plan asks for "a live character counter against the 2-block cap"; `MessageBudget.characters` was asserted only in a test. With no `maxLength` on the textarea, a person had no way to see that 42 accented letters is 42 characters and exactly the whole 84-byte limit | **Spec gap** -> **fixed**: the count is rendered when, and only when, it differs from the byte count. For plain text the two are the same number and printing both is noise. It is a count, not a second budget - 84 characters is reachable only by an all-ASCII note |
+| 14 | **L** | **A doubled subject in the pairing-alphabet sentence**: "The code is a code is 8 characters..." on the two screens a person is sent to for a wrong code | **Copy** -> **fixed** |
+| 15 | **L** | **Three dead exports.** `MAX_MESSAGE_BLOCKS_ALLOWED` (a pure alias), `dismissRefusal` (created, typed, returned, never consumed) and the `IDLE_STATE` re-export | **Dead code** -> **removed** |
+| 16 | **L** | **Two files recorded different bundle figures for the same measurement**, and neither matched the build, because they came from different gzip tools | **Doc** -> **fixed**: both now cite the raw byte count from a named build and say the gzip figures are not directly comparable |
+| 17 | **L** | **`deep-p3b-acoustic` renders `deep-3-render` combinations no screen can reach** - all 72 transport/transmitting/busy/progress triples, including `chat x idle`, `chat x module_error` and the `acking` sentence | **Test scope** -> **kept, labelled**: rendering the whole matrix is how the reachable subset was proved reachable, and the unreachable rows are the reason `arming`/`acking` are dead copy |
+
+### The self-inflicted one, recorded because it nearly went unnoticed
+
+`pnpm exec prettier --write src/lib/sound-chat` **reformatted the vendored
+codec** and grew `vendor/ggwave.js` from 147139 B to 164533 B, which
+`provenance.test.ts` caught immediately. Restored with `git checkout --` and
+re-verified: 147139 B, `B097B329...577F`, `node --check` clean.
+
+**`.prettierignore` does not list `src/lib/sound-chat/vendor/`,** so this is one
+command away from recurring. It is a config file and off-limits to this phase, so
+it is recorded here as a **one-line change a human should approve**:
+
+```
+src/lib/sound-chat/vendor/
+```
+
+**Process rule adopted for the rest of the feature: never hand a formatter a
+directory that contains a vendored artifact.** Pass explicit file paths.
+
+### Test reliability: "all green" was not reproducible
+
+`pnpm test` failed **1 run in 4**, always a different pre-existing file, always
+green in isolation. Two auditors hit it independently before any of my changes
+existed. Root cause, in the `settle()` drain that **eleven** test files share:
+
+`settle()` returned after **four** consecutive turns with an unchanged activity
+signature. A four-turn streak is short enough that a libuv threadpool callback
+from a real AEAD open can land between two samples, reset the streak, and leave
+the loop waiting out the cascade until it hits `MAX_FLUSH_TURNS`. The failure
+mode is asymmetric: returning *early* leaks work into the next `settle()`, which
+is what turns one slow chain into a cascade.
+
+**Fixed**: the quiet streak is **32 turns** in all eleven files and the caps are
+raised (4 000 -> 12 000, 6 000 -> 16 000). Making the drain return *later* is
+the only safe direction. **No production code changed.** Verified with **three
+consecutive full-suite green runs** after the change, and 853/853 on the
+Sound Chat subset.
+
+### Battery, run sequentially, after every fix
+
+| Check | Result |
+| :-- | :-- |
+| `tsc --noEmit` (root) | exit 0 |
+| `tsc --noEmit` (`worker/`) | exit 0 |
+| `pnpm test` | **55 files / 974 tests, 0 failed**, green on 3 consecutive runs |
+| `pnpm exec vitest run src/lib/sound-chat src/components/sound-chat` | **41 files / 853 tests** |
+| `pnpm run lint` | 0 errors, 2 warnings - both pre-existing `react-refresh` in `src/components/husk/` |
+| `pnpm run lint:anti-slop` | 170 warnings, 0 errors (baseline 160/64 files; the growth is the 20 new Phase 3 files) |
+| `pnpm run build` | exit 0; `git diff -- src/routeTree.gen.ts` **empty**, so the committed file is the generator's output and not a hand edit |
+| entry chunk | `index-vs4XZW65.js` **307779 B raw**, 94806 B gzip (node zlib level 9) |
+| landing static closure | 381538 B raw / 120850 B gzip, 7 chunks |
+| **`ggwave` on the landing path** | **no** |
+| **`sound-chat-screen` on the landing path** | **no** - `sound-chat-screen-D_jTlYtY.js` 68332 B raw / 21456 B gzip, fetched on demand |
+| codec asset | `ggwave-Cm_DI0UB.js` 147139 B raw / 58390 B gzip |
+| harness build | exit 0; reproduces the Phase 2V hashes and sizes exactly - `ggwave-Cm_DI0UB.js` 147139 B, `index-C9UrvUW4.js` 9100 B |
+| Playwright harness, real CSP | **58 passed, 0 failed, 0 skipped** (4.1 m) |
+| `node --check vendor/ggwave.js` | exit 0, no CR bytes |
+| vendored artifact | 147139 B, SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F` |
+| MIT licence shipped | `rg -l "Georgi Gerganov" .output/public/assets` -> `sound-chat-screen-D_jTlYtY.js` |
+| CSP | `src/server.ts` - `script-src 'self' 'wasm-unsafe-eval' <hashes>`, no `'unsafe-eval'`; no `media-src` needed because playback is an `AudioBufferSourceNode`, not an element |
+
+**Bundle measurement note.** The gzip figures above use `node:zlib` level 9. The
+earlier 95.75/95.98 kB figures came from a different tool and are **not directly
+comparable**; the raw byte counts are, and the entry is 307779 B against a
+307008 B baseline, so the whole feature costs **771 B raw** on a page that never
+opens it.
+
+**Untouched, as required:** `worker/**` (zero diff), `src/lib/husk/**`,
+`src/components/husk/**`, `src/routes/r.$roomId.tsx`, `package.json`,
+`src/styles.css`, the root configs, `public/**`, and the vendored artifact
+bytes. `src/routeTree.gen.ts` is regenerated by the build, never hand-edited.
+`src/routes/index.tsx` is the one approved existing-file edit: it adds the Sound
+Chat `Button`, plus `space-y-2.5` on its wrapper and the removal of `mt-4` from
+the existing error paragraph, both layout consequences of that button.
+
+### Corrections to earlier entries
+
+This log is append-only, so the Phase 2V line that reads
+
+> The 1-byte difference from the on-disk 147,140 is Vite's emission normalisation.
+
+is **false and stays uncorrected in place**. There is no 1-byte difference: the
+emitted asset is byte-identical to the vendored file -
+`.output/public/assets/ggwave-Cm_DI0UB.js` is 147139 B with SHA-256
+`B097B329...577F`. The 147,140 was a `NOTICE.md` typo, corrected later in that
+same phase. Nothing in Vite normalises anything here.
+
+### Residual defects, pinned and carried to Phase 3V
+
+Four are **not fixed**, each with a test that fails if it is ever fixed, named
+`KNOWN DEFECT` so the pin is greppable. Three of the four are the same shape: the
+session's internal queue is not observable by the UI.
+
+1. **Three of four rapidly-accepted notes exist in no rendered list.** The draft
+   clears on `{ok:true}`; a transcript row appears only when the pump *claims* the
+   message, and the session holds up to `MAX_PENDING_MESSAGES` in between. The
+   screen says "Queued" once, unattributed. Fixing this honestly means the UI
+   publishing accepted-but-unclaimed rows and retiring them against the real one,
+   which is a second owner of transcript state - the thing Rule "single source of
+   truth" exists to prevent. Needs a decision, not a patch.
+2. **`chat` has no in-app exit.** The controller's `cancel()` is correct and
+   tested and the hook exposes it, but `renderPhase` wires it only into
+   `BlockedPanel.onBack` and `PairingPanel.onSwitchRole`. A person who paired
+   with the wrong device needs a full page load. The header anchor exists, so
+   this is a UX gap rather than a dead end.
+3. **The blocked panel's "Try again" does not retry, for an enterer.** `retry()`
+   calls `ui.cancel()` for any enterer, discarding the typed code, while
+   `mic-denied`'s copy says "then try again". The copy and the control disagree.
+4. **The Phase 2 pump gap behind finding 2**: `#moduleFailed` does not set
+   `#stopped`, so a pump parked in `buildMessageFrames` resumes after a module
+   death. Fixed in the controller; the transport-side cause is Phase 2's.
+
+Also carried, and **not** fixed because they are judgement calls rather than
+defects: `transport.error` and `transport.module_error` are unreachable in
+`chat` (both always accompany a terminal phase), and `transmit.arming` and
+`transmit.acking` are unreachable because `send()` publishes nothing and
+`outbound: sending` and `TRANSMIT_BEGIN` land in one microtask. They are
+strings for real transport states that merely never co-occur with the panel,
+which is a different thing from the finding 9 sentences, where no control exists
+at all.
+
+### Handed to Phase 3V (do not redo, re-verify)
+
+1. **The four `KNOWN DEFECT` pins above.** Invert each as it is fixed; a pin that
+   is not inverted is a lie.
+2. **The `.prettierignore` line for `src/lib/sound-chat/vendor/`.** It needs a
+   human decision because it is a config file.
+3. **The master plan's phase ledger is stale in two places.** It still lists the
+   `src/server.ts` CSP edit as Phase 3 work when it landed in Phase 0, and it
+   asks for a character counter that Phase 3V should now find already present.
+   The plan is the spec, so it was not edited from here.
+4. **`chat` still has no in-app exit**, and the enterer's "Try again" still
+   discards the typed code. Both are copy/behaviour agreements, and the copy is
+   the part that must not lie while they are unresolved.
+5. **The harness `vite build` wipes the harness Playwright output.** `vite.config.ts`
+   sets `emptyOutDir: true` on `test-results/sound-chat-harness` and
+   `playwright.config.ts` puts `outputDir` in the *subfolder* `pw`, so the build
+   step deletes the previous run's evidence. Both are configs.
+6. **Do not read "0 errors" as "no warnings".** anti-slop is at 170 warnings
+   across 80 files and the plan treats the count, not the exit code, as the thing
+   to watch.

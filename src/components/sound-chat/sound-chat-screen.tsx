@@ -17,10 +17,13 @@
  * is fetched on demand, and a `Link` would make that chunk statically import
  * `@tanstack/react-router`, which the bundler then hoists into the entry along
  * with the whole `/r/$roomId` route chunk. Measured: the entry was 371.87 kB /
- * 116.51 kB gzip with the router link, and 307.77 kB / 95.98 kB gzip without it,
- * against a 307.00 kB / 95.75 kB baseline. A full navigation is also the more
- * honest teardown: it guarantees the AudioContext and the microphone tracks are
- * released by the browser rather than kept alive behind a cached route.
+ * 116.51 kB gzip with the router link, and 307.78 kB / 94.81 kB gzip without it
+ * (307779 B raw, `index-vs4XZW65.js`, node zlib level 9), against a 307.00 kB /
+ * 95.75 kB baseline. The baseline's gzip figure came from a different tool,
+ * which is why the two are not directly comparable; the raw byte counts are.
+ * A full navigation is also the more honest teardown: it guarantees the
+ * AudioContext and the microphone tracks are released by the browser rather
+ * than kept alive behind a cached route.
  */
 
 import type { ReactElement } from "react";

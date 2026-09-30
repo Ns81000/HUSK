@@ -16,11 +16,16 @@
  *   identical to the real screen, so the trigger is `lazyRouteComponent`
  *   itself and nothing in Sound Chat's code;
  * - this shape, a direct `component:` reference whose body uses a plain
- *   `import()`: entry 307.35 kB / 95.84 kB gzip, same chunk set as the baseline.
+ *   `import()`: same chunk set as the baseline, and the same entry size to
+ *   within a rounding difference. Phase 3V re-measured it at **307779 B raw**
+ *   (`index-vs4XZW65.js`), which is the figure to compare against; the earlier
+ *   307.35 kB came from a different gzip tool and its own build, and the two
+ *   disagreed by 0.15 kB of gzip for that reason alone.
  *
- * The difference between the two is 0.09 kB of gzip against 20.86 kB, and the
- * bundler configuration that would fix it properly (`build.rollupOptions`) lives
- * in `vite.config.ts`, which this feature does not own.
+ * The difference between the two shapes is a rounding error of gzip against
+ * 20.86 kB, and the bundler configuration that would fix it properly
+ * (`build.rollupOptions`) lives in `vite.config.ts`, which this feature does
+ * not own.
  *
  * So the heavy graph — components, copy, the session driver, the protocol, the
  * crypto and the codec loader — is behind this one `import()`, fetched when the
