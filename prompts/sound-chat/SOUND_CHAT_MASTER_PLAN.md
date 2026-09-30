@@ -1,7 +1,7 @@
 # HUSK — Sound Chat Feature: Master Plan (Rev. 2)
 
-Status: Rev. 2 — Phases 0, 1 and 2 are complete and logged; Phase 2V
-(verification of Phases 0/1/2) is in progress. Next implementation phase: 3.
+Status: Rev. 2 — Phases 0, 1, 2, 2V and 3 are complete and logged. Next phase:
+Phase 3V (deep verification of Phase 3).
 **Supersedes Rev. 1.** Rev. 2 incorporates the full ggwave deep-dive
 (`prompts/sound-chat/GGWAVE_DEEP_DIVE.md`) — every architecture decision below
 is backed by measured evidence from that document, not assumption. Read that
@@ -636,7 +636,9 @@ documents the reasoning, and moves on.
 log contains a complete findings table, a "claims corrected" list, and a fresh
 verification battery with this session's own numbers.
 
-### Phase 3 — UI integration (subagent-driven depth)
+### Phase 3 — UI integration (completed and logged)
+
+- Phase 3 is complete and logged in `SOUND_CHAT_LOG.md` (commits `e1cf69f`, `db6ee1c`). Its route (`src/routes/sound-chat.tsx`), screen components (`src/components/sound-chat/**`), controller, and 41 test files (853 tests) are delivered; do not redo them.
 
 **Subagent deployment (Rule 13 — mandatory):**
 
@@ -676,7 +678,7 @@ The primary agent coordinates; subagents are spawned for bounded tasks:
   recovery state from Phase 1.
 - A one-line MIT attribution notice for ggwave, reachable from the pairing or
   info panel.
-- The one approved `src/server.ts` edit from Section 3/6, with the exact diff
+- The one approved `src/server.ts` edit from Section 3/6 (already landed in Phase 0), with the exact diff
   documented in the log.
 - Copy throughout says "plays a short sound" / "makes an audible tone" — never
   "silent" or "inaudible."
