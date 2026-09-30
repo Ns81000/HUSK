@@ -51,6 +51,7 @@ import {
 } from "../session";
 import type { TransportState } from "../transport-machine";
 import { BLOCK_DURATION_MS, measureMessage } from "./budget";
+import { SOUND_CHAT_COPY } from "./copy";
 
 export { MAX_PENDING_MESSAGES };
 export type { SessionStats };
@@ -174,9 +175,50 @@ function describe(error: unknown): string {
 }
 
 function clamp(value: number, low: number, high: number): number {
+  // NaN-safe on purpose: every comparison against NaN is false, so a plain
+  // `min`/`max` pair lets a NaN straight through and it would reach
+  // `aria-valuenow="NaN"`. A progress figure that is not a number has no honest
+  // rendering, so it is treated as "not started yet".
+  if (!Number.isFinite(value)) return low;
   if (value < low) return low;
   if (value > high) return high;
   return value;
+}
+
+/**
+ * Stops every track of a capture stream.
+ *
+ * The only reference to a granted `MediaStream` is whoever was handed it, so every
+ * path that abandons one has to release it itself. `session.stop()` releases the
+ * tracks of a session that started, but a start-up that is superseded, cancelled
+ * or disposed *between the grant and `session.start()`* has no feed to stop them
+ * through — and nothing else in the process holds the stream at all.
+ */
+function releaseStream(stream: MediaStream): void {
+  for (const track of stream.getTracks()) track.stop();
+}
+
+/**
+ * The locked 48 kHz context, already running, or the failure that stopped it
+ * with everything it created released.
+ *
+ * Both steps can fail and the second is a real browser refusal — `resume()`
+ * rejects with `NotAllowedError` when the autoplay policy will not unmute a
+ * context outside a user gesture — and the context that refusal came from is a
+ * live device holding an audio graph, so it is closed here rather than being
+ * left for a caller that never received a reference to it.
+ */
+async function openRunningContext(): Promise<AudioContext> {
+  const context = createAudioContext();
+  try {
+    await ensureRunning(context);
+  } catch (error) {
+    // Rejection-handled: a wrong-rate context is already closed by
+    // `createAudioContext`, and Chromium rejects a second `close()`.
+    teardownAudio(undefined, context);
+    throw error;
+  }
+  return context;
 }
 
 /**
@@ -314,10 +356,36 @@ export class SoundChatUiController {
     this.#teardownSession();
     this.#role = role;
     this.#code = code ?? null;
-    this.#patch({ phase: "preparing", role, block: null, fatal: null, code: code ?? null });
+    // Every field a later failure could leave stale is reset here, not on the
+    // success path. A `begin()` that ends in `blocked` still runs this line, so
+    // resetting only after the session is created would publish the *dead*
+    // session's pairing, transport and stats next to the new failure \u2014 a
+    // blocked screen reading "This session: paired, listening, 3 delivered".
+    this.#patch({
+      phase: "preparing",
+      role,
+      block: null,
+      fatal: null,
+      code: code ?? null,
+      pairing: IDLE_PAIRING,
+      pairingFailure: null,
+      transport: "idle",
+      stats: EMPTY_STATS,
+      transmitting: false,
+      busy: false,
+      progress: null,
+    });
 
     const access = await requestMicrophoneAccess();
-    if (this.#stale(generation)) return;
+    if (this.#stale(generation)) {
+      // A grant that arrives after this attempt was superseded is still a live
+      // capture track, and this `access` local is the last reference to it in the
+      // whole process. Nothing below will ever see it, so nothing below would
+      // ever stop it, and the browser's recording indicator would stay lit for the
+      // life of the page behind a session that is not there.
+      if (access.kind === "granted") releaseStream(access.stream);
+      return;
+    }
     if (access.kind !== "granted") {
       this.#patch({
         phase: "blocked",
@@ -332,10 +400,9 @@ export class SoundChatUiController {
 
     let context: AudioContext;
     try {
-      context = createAudioContext();
-      await ensureRunning(context);
+      context = await openRunningContext();
     } catch (error) {
-      for (const track of access.stream.getTracks()) track.stop();
+      releaseStream(access.stream);
       if (this.#stale(generation)) return;
       this.#patch({
         phase: "blocked",
@@ -356,7 +423,7 @@ export class SoundChatUiController {
       });
     } catch (error) {
       teardownAudio(undefined, context);
-      for (const track of access.stream.getTracks()) track.stop();
+      releaseStream(access.stream);
       if (this.#stale(generation)) return;
       this.#patch({
         phase: "blocked",
@@ -368,7 +435,7 @@ export class SoundChatUiController {
     if (this.#stale(generation)) {
       codec.close();
       teardownAudio(undefined, context);
-      for (const track of access.stream.getTracks()) track.stop();
+      releaseStream(access.stream);
       return;
     }
 
@@ -387,10 +454,16 @@ export class SoundChatUiController {
         context,
         stream: access.stream,
         role,
-        onEvent: (event: SessionEvent) => this.#onEvent(event),
+        onEvent: (event: SessionEvent) => this.#fromSession(generation, event),
         onListenerError: (error: unknown) =>
-          this.#notice("warn", `Sound Chat recovered from an internal error (${describe(error)}).`),
-        onModuleError: (error: unknown) => this.#onModuleError(error),
+          this.#sessionChannel(generation, () =>
+            this.#notice(
+              "warn",
+              `Sound Chat recovered from an internal error (${describe(error)}).`,
+            ),
+          ),
+        onModuleError: (error: unknown) =>
+          this.#sessionChannel(generation, () => this.#onModuleError(error)),
       };
       session =
         code === undefined
@@ -412,6 +485,9 @@ export class SoundChatUiController {
         },
         code: null,
       });
+      // A code the protocol already named invalid is not kept for a retry: it
+      // would fail the same way again and tell the user nothing new.
+      if (error instanceof PairingCodeError) this.#code = null;
       return;
     }
     if (this.#stale(generation)) {
@@ -517,12 +593,6 @@ export class SoundChatUiController {
     return this.#sequence;
   }
 
-  #patch(partial: Partial<SoundChatUiState>): void {
-    if (this.#disposed) return;
-    this.#state = { ...this.#state, ...partial };
-    for (const listener of this.#listeners) listener();
-  }
-
   #notice(tone: SoundChatNotice["tone"], text: string): void {
     this.#noticeId += 1;
     const notice: SoundChatNotice = { id: this.#noticeId, tone, text };
@@ -534,6 +604,9 @@ export class SoundChatUiController {
     this.#stopTicker();
     this.#progressStartedAt = null;
     this.#progressBlocks = 0;
+    // The dead session's note count must not survive into the next attempt's
+    // handshake block, or a fresh 1-block PAIR opens a 2-block bar.
+    this.#pendingBlocks = 0;
     // Order matters: the session releases the capture feed and stops the media
     // tracks, then the codec frees its two instances, then the context closes.
     // Each step is individually safe with partial state.
@@ -557,14 +630,62 @@ export class SoundChatUiController {
     this.#stream = null;
   }
 
+  /**
+   * The single publish point for every piece of state.
+   *
+   * A subscriber is notified inside a `try` because it is called from three very
+   * different places — a React event handler, the 100 ms ticker, and the audio
+   * callback and `setTimeout`s the session runs — and a subscriber's own bug
+   * escaping out of any of them would be a bug in *this* feature: an exception
+   * out of `cancel()` lands in a click handler, and an exception out of
+   * `begin()`'s first patch is a rejection of a promise the hook fired with
+   * `void`. It would also stop every subscriber after it from ever being told.
+   */
+  #patch(partial: Partial<SoundChatUiState>): void {
+    if (this.#disposed) return;
+    this.#state = { ...this.#state, ...partial };
+    for (const listener of this.#listeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error("Sound Chat: a Sound Chat UI subscriber threw", error);
+      }
+    }
+  }
+
   #stopTicker(): void {
     if (this.#ticker === null) return;
     clearInterval(this.#ticker);
     this.#ticker = null;
   }
 
+  /**
+   * A session callback that is fenced by the generation that created the session.
+   *
+   * `session.stop()` already drops every block still inside its async chain, so a
+   * torn-down session should emit nothing. This is the second half of that
+   * guarantee, because the session's own guards live in a module this file does
+   * not own: without the fence, a session superseded by a restart could still
+   * put a note into the *new* transcript or a warning on the new screen.
+   */
+  #fromSession(generation: number, event: SessionEvent): void {
+    if (this.#stale(generation)) return;
+    this.#onEvent(event);
+  }
+
+  #sessionChannel(generation: number, report: () => void): void {
+    if (this.#stale(generation)) return;
+    report();
+  }
+
   #onEvent(event: SessionEvent): void {
     if (this.#disposed) return;
+    // Latched. A PAIR frame already inside the session's chain when the codec
+    // died still arrives, and `case "pairing"` below would swap the terminal
+    // panel for a live-looking chat screen over a codec that is gone. A terminal
+    // phase is answered by its own controls and nothing else, so no event can
+    // move the machine out of one.
+    if (this.#state.phase === "fatal") return;
     switch (event.type) {
       case "transport":
         // The bar lives from the moment a transmission is claimed until the
@@ -600,7 +721,14 @@ export class SoundChatUiController {
           // The earliest honest point to start the bar: the pump has claimed this
           // message and the block count is now known, which is the one figure the
           // UI cannot work out for itself.
-          this.#startProgress();
+          //
+          // Restarted rather than made idempotent, because a *retry* is a second
+          // audible transmission from the top: the blocks really are scheduled
+          // again, `blocks x 1.92 s` again, and a bar left running from the
+          // abandoned attempt stands still for the whole retry. `TRANSMIT_BEGIN`
+          // for the retry lands first and finds the clock already set, which is
+          // why the record is keyed on the claim and not on the transport.
+          this.#startProgress(true);
         }
         const rest = this.#state.outbound.filter((entry) => entry.msgId !== event.msgId);
         // The event is self-describing, so a status change only updates the
@@ -624,7 +752,7 @@ export class SoundChatUiController {
       case "heard-unreadable":
         // P6: the codec produced a block and this pairing cannot read it. That
         // is a different fact from silence, and the copy says so.
-        this.#notice("warn", "A transmission was heard, but this pairing code cannot read it.");
+        this.#notice("warn", SOUND_CHAT_COPY.transmit.unreadable);
         break;
       default:
         break;
@@ -650,11 +778,24 @@ export class SoundChatUiController {
     this.#patch({
       phase: "fatal",
       fatal: { kind, detail: describe(error) },
-      progress: null,
-      transmitting: false,
-      busy: false,
+      // Not hard-coded: these three are the session's, read through `#refresh`'s
+      // getters like every other snapshot, so a second owner cannot disagree
+      // with the first about whether we are still talking.
+      transmitting: this.#session?.transmitting ?? false,
+      busy: this.#session?.busy ?? false,
     });
-    this.#stopTicker();
+    // A note the pump had claimed but that never went on the air cannot keep
+    // reading "Playing" on a terminal screen, and the record that drives that
+    // row has to go with it. `failed` is the honest status: the attempt ended
+    // without the other device acknowledging anything.
+    if (this.#state.outbound.some((entry) => entry.status === "sending")) {
+      this.#patch({
+        outbound: this.#state.outbound.map((entry) =>
+          entry.status === "sending" ? { ...entry, status: "failed" as const } : entry,
+        ),
+      });
+    }
+    this.#stopProgress();
   }
 
   /**
@@ -680,11 +821,19 @@ export class SoundChatUiController {
     });
   }
 
-  #startProgress(): void {
+  #startProgress(restart = false): void {
     if (this.#disposed) return;
-    // Idempotent: the `outbound` event starts the record and the `transmitting`
-    // transport event that follows must not restart its clock.
-    if (this.#progressStartedAt !== null) return;
+    // A claim while our audio is *not* on the air \u2014 the tab is hidden, so the
+    // session is holding the transmission rather than playing it \u2014 starts no
+    // record and no ticker: there is no bar to move, and `#stopProgress` is not
+    // reachable until the tab is shown again. The `VISIBLE` event that follows
+    // is an on-air transport event, so it starts the record then, with the
+    // pending block count still set.
+    if (!isOnAir(this.#session?.state ?? "idle")) return;
+    // Idempotent unless explicitly restarted: the `outbound` event starts the
+    // record and the `transmitting` transport event that follows must not restart
+    // its clock.
+    if (this.#progressStartedAt !== null && !restart) return;
     const blocks = this.#pendingBlocks > 0 ? this.#pendingBlocks : 1;
     this.#progressBlocks = blocks;
     this.#progressStartedAt = this.#context?.currentTime ?? 0;
@@ -726,7 +875,10 @@ export class SoundChatUiController {
       blocks,
       blockIndex,
       fraction,
-      remainingMs: Math.max(0, Math.round(totalMs - elapsedMs)),
+      // Clamped like `fraction` and `blockIndex` rather than `Math.max(0, \u2026)`:
+      // `Math.max(0, NaN)` is `NaN`, which renders as "about 0 seconds left" for a
+      // block that has not started.
+      remainingMs: clamp(totalMs - elapsedMs, 0, totalMs),
     };
   }
 }

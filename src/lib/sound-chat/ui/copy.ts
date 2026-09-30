@@ -20,16 +20,14 @@
  *    sentences, because they have three different causes and three different
  *    fixes. `SOUND_CHAT_COPY` below is the only place a sentence may live.
  *
- * `copy.test.ts` machine-checks the two mechanical rules (no emoji, and none of
- * the words that would claim the channel is inaudible) across every string here
- * and across the rendered markup of every state.
+ * `deep-p3a-copy.test.ts` machine-checks the two mechanical rules (no emoji, and
+ * none of the words that would claim the channel is inaudible) across every string
+ * here; `render.test.tsx` makes the same two checks against the rendered markup of
+ * every state, which is the only place a string can escape the table.
  */
 
-import {
-  MAX_MESSAGE_ASCII_CHARACTERS,
-  MAX_MESSAGE_PLAINTEXT_BYTES,
-  SINGLE_BLOCK_PLAINTEXT_BYTES,
-} from "../protocol";
+import { MAX_MESSAGE_ASCII_CHARACTERS, MAX_MESSAGE_PLAINTEXT_BYTES } from "../protocol";
+import { PAIRING_CODE_ALPHABET, PAIRING_CODE_LENGTH } from "../crypto";
 import { PAIRING_CONFIRMATION_COPY, describePairingFailure } from "../pairing";
 import type { PairingFailureReason, PairingRole } from "../pairing";
 import type { OutboundStatus } from "../protocol";
@@ -37,13 +35,39 @@ import type { SoundChatBlock, SoundChatFatal } from "./controller";
 import type { SendRefusal } from "../session";
 import type { TransportState } from "../transport-machine";
 import { MAX_PENDING_MESSAGES } from "../session";
-import { BLOCK_DURATION_MS, MAX_MESSAGE_BLOCKS_ALLOWED, secondsLabel } from "./budget";
+import { BLOCK_DURATION_MS, secondsLabel } from "./budget";
 
 export { PAIRING_CONFIRMATION_COPY, describePairingFailure };
 
 /** The one-line MIT notice, reachable from the Sound Chat screen itself. */
 export const ATTRIBUTION_LINE =
   "Sound encoding by ggwave (MIT), copyright (c) 2020 Georgi Gerganov.";
+
+/**
+ * The letters a code cannot contain, derived from the alphabet rather than typed.
+ *
+ * WHY this is computed and not written out: `PAIRING_CODE_ALPHABET` is
+ * `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` — `I` and `O` are removed so they cannot be
+ * confused with `1` and `0`. The copy used to say "the letters A to Z", which is
+ * a rule the implementation does not follow: a person who typed an `I` because
+ * the screen told them to was refused by a field that had just told them `I` was
+ * allowed. Deriving the sentence from the constant makes that impossible to
+ * reintroduce, and a test asserts the derivation is still the whole difference.
+ */
+function excludedLetters(): string {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  return [...letters].filter((letter) => !PAIRING_CODE_ALPHABET.includes(letter)).join(" and ");
+}
+
+/**
+ * The code's alphabet, as a sentence, with the exclusions named.
+ *
+ * NOT a whole clause: both call sites already supply their own subject ("The
+ * code is …", "A pairing code is …"), and a leading "a code is" in the constant
+ * made the two sentences on screen read "The code is a code is 8 characters …"
+ * and "A pairing code is a code is 8 characters …".
+ */
+export const PAIRING_CODE_RULE = `${PAIRING_CODE_LENGTH} characters using the digits 2 to 9 and the letters A to Z, except ${excludedLetters()}`;
 
 export const SOUND_CHAT_COPY = {
   /** Pre-prompt, before the browser's own microphone prompt is triggered. */
@@ -56,7 +80,7 @@ export const SOUND_CHAT_COPY = {
     limitsHeading: "What it does, and what it does not",
     limits: [
       "Every note is audible. Anyone nearby can hear it, and anyone with a microphone in the room can record it.",
-      `Notes are short: ${MAX_MESSAGE_ASCII_CHARACTERS} plain characters at most, which is one or two seconds of sound each half. Accents, symbols and emoji each cost more than one byte, so they fill the limit faster.`,
+      `Notes are short: ${MAX_MESSAGE_ASCII_CHARACTERS} plain characters at most, which is up to 3.8 seconds of sound. Anything outside plain letters and digits can cost more than one byte, so it fills the limit faster.`,
       "A recording of a note cannot be read later, because every session makes its own random key material. A recording of the handshake can occupy one pairing, but cannot read anything.",
       "Pairing confirms that both devices hold the same code. It cannot tell you who is holding the other device.",
       "Sound Chat needs this page to be open and in the foreground to send. It holds a note while the tab is in the background.",
@@ -72,8 +96,7 @@ export const SOUND_CHAT_COPY = {
     displayBody:
       "Type it into the second device. This one is listening, and will play a short tone to answer.",
     enterHeading: "Type the code from the other device",
-    enterBody:
-      "The code is eight characters using the digits 2 to 9 and the letters A to Z. It is never played out loud as sound.",
+    enterBody: `The code is ${PAIRING_CODE_RULE}. It is never played out loud as sound.`,
     fieldLabel: "Pairing code",
     codeLabel: "Pairing code to type in",
     codeAction: "Connect",
@@ -106,19 +129,15 @@ export const SOUND_CHAT_COPY = {
 
   /** One-block and multi-block transmission progress. */
   transmit: {
-    label: "Playing out loud",
     /** The honest state between `send()` returning and the first block playing. */
     arming: "Getting ready to play.",
     progressLabel: "Transmission progress",
     block: (blockIndex: number, blocks: number, remainingMs: number) =>
       `Block ${blockIndex} of ${blocks} - about ${secondsLabel(remainingMs)} left`,
-    pairBlock: (remainingMs: number) => `Handshake tone - about ${secondsLabel(remainingMs)} left`,
     acking: "Your note is on the air. Waiting for the other device to confirm it.",
     queued: "Queued. It goes out when the channel is clear.",
-    delivered: "Delivered",
     retrying: (attempts: number) =>
       `Not confirmed yet. Attempt ${attempts} of 3, then it is given up.`,
-    failed: "Not received. The other device did not acknowledge it.",
     /** P6: something was in the air, and this pairing cannot read it. */
     unreadable: "A transmission was heard, but this pairing code cannot read it.",
   },
@@ -136,6 +155,20 @@ export const SOUND_CHAT_COPY = {
     placeholder: "Type a short note",
     send: "Send",
     byteCounter: (bytes: number) => `${bytes} / ${MAX_MESSAGE_PLAINTEXT_BYTES} bytes`,
+    /**
+     * Shown only when the character count and the byte count disagree, i.e. only
+     * when the note holds something outside plain ASCII. For plain text the two
+     * numbers are the same number and printing both is noise; the count is here
+     * because `maxLength` is deliberately absent (it counts UTF-16 code units,
+     * which disagrees with the byte budget in both directions), so without a count
+     * a person has no way to see that 42 accented letters is 42 characters and
+     * exactly the whole 84-byte limit.
+     *
+     * A count, not a second budget: there is no character cap, because 84 is
+     * reachable in characters only by note that is entirely ASCII.
+     */
+    characterCounter: (characters: number) =>
+      `${characters} character${characters === 1 ? "" : "s"}`,
     overCap: (overBy: number) =>
       `Too long by ${overBy} byte${overBy === 1 ? "" : "s"}. This channel carries ${MAX_MESSAGE_PLAINTEXT_BYTES} bytes at a time.`,
     atCap: "That is the limit for one transmission.",
@@ -143,9 +176,8 @@ export const SOUND_CHAT_COPY = {
     twoBlocks: `Two blocks: about ${secondsLabel(2 * BLOCK_DURATION_MS)} of sound.`,
     empty: "Nothing to send yet.",
     bytesHint:
-      "Plain letters and numbers cost one byte each. Accents, symbols and emoji cost more, so they reach the limit sooner.",
+      "Plain letters and digits cost one byte each. Anything else can cost more, so it reaches the limit sooner.",
     blockedByPairing: "Pairing has to finish before notes can be sent.",
-    queueFull: `${MAX_PENDING_MESSAGES} notes are already waiting. The channel cannot hold more than that.`,
   },
 
   /** What each `session.send()` refusal means to the person who pressed send. */
@@ -170,7 +202,7 @@ export const SOUND_CHAT_COPY = {
     },
     "mic-unsupported": {
       heading: "This browser cannot capture sound",
-      body: "Sound Chat needs microphone capture, which this browser or this page's security context does not provide.",
+      body: "Sound Chat needs microphone capture, which this browser or this page's security context does not provide. Try a different browser, a newer version of this one, or a page served over https.",
     },
     "device-rate": {
       heading: "This device's audio runs at the wrong rate",
@@ -178,11 +210,11 @@ export const SOUND_CHAT_COPY = {
     },
     "bad-code": {
       heading: "That pairing code is not valid",
-      body: "A pairing code is eight characters using the digits 2 to 9 and the letters A to Z. Check it and try again.",
+      body: `A pairing code is ${PAIRING_CODE_RULE}. Check it and try again.`,
     },
     "crypto-unavailable": {
       heading: "This browser cannot do the encryption",
-      body: "Sound Chat needs the Web Crypto API to derive a key from your pairing code, and this browser does not provide it.",
+      body: "Sound Chat needs the Web Crypto API to derive a key from your pairing code, and this browser does not provide it. Try a different browser, or a newer version of this one.",
     },
     "codec-unavailable": {
       heading: "The sound codec could not start",
@@ -198,8 +230,8 @@ export const SOUND_CHAT_COPY = {
   actions: {
     retry: "Try again",
     back: "Go back",
-    stop: "Stop Sound Chat",
     exit: "Back to Husk",
+    dismissNotices: "Dismiss these messages",
   },
 
   /** The shell: title bar and the one in-between state that has no session yet. */
@@ -221,17 +253,17 @@ export const SOUND_CHAT_COPY = {
     },
   } satisfies Record<SoundChatFatal["kind"], { heading: string; body: string }>,
 
-  /** The single confirmation dialog, reused for restart and for discarding. */
+  /**
+   * The one confirmation dialog. Only the restart uses it: the cancel label is
+   * not ours to choose (the shared `Modal` primitive hardcodes it), and leaving
+   * the page is a plain anchor whose full navigation is the more honest teardown
+   * \u2014 so no copy for a stop dialog survives to be unused.
+   */
   modal: {
     restartTitle: "Restart Sound Chat?",
     restartDescription:
-      "The current session ends and a new one starts with the same pairing code. Anything in flight is discarded.",
+      "The current session ends, the microphone is released, and the whole transcript is cleared from this page. A new session starts with the same pairing code.",
     restartConfirm: "Restart Sound Chat",
-    discardTitle: "Stop Sound Chat?",
-    discardDescription:
-      "This session ends, the microphone is released, and everything in the transcript is discarded. Nothing is kept anywhere.",
-    discardConfirm: "Stop Sound Chat",
-    cancel: "Keep going",
   },
 
   info: {
@@ -242,6 +274,12 @@ export const SOUND_CHAT_COPY = {
       "Encryption is AES-256-GCM in the browser, derived from the pairing code with PBKDF2. Nothing is stored: reload the page and the session is gone, and a recording of an earlier session cannot be read in a new one.",
     attribution: ATTRIBUTION_LINE,
     attributionLink: "Read the ggwave licence",
+    statsHeading: "This session",
+    statBlocksDecoded: "Blocks heard",
+    statMessagesDelivered: "Notes received",
+    statDuplicatesSuppressed: "Repeated blocks ignored",
+    statUnreadable: "Unreadable blocks",
+    statRetries: "Retries",
   },
 
   /** An outbound message's own status line, one per protocol status. */
@@ -253,13 +291,4 @@ export const SOUND_CHAT_COPY = {
 
   /** Pairing failure copy is the pairing machine's, not ours. */
   pairingFailure: (reason: PairingFailureReason) => describePairingFailure(reason),
-
-  /** Constants the copy above quotes, so a test can assert they agree. */
-  facts: {
-    singleBlockBytes: SINGLE_BLOCK_PLAINTEXT_BYTES,
-    capBytes: MAX_MESSAGE_PLAINTEXT_BYTES,
-    maxBlocks: MAX_MESSAGE_BLOCKS_ALLOWED,
-    blockDurationMs: BLOCK_DURATION_MS,
-    maxPending: MAX_PENDING_MESSAGES,
-  },
 } as const;

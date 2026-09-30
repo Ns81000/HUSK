@@ -155,13 +155,13 @@ export function validatePairingCode(input: string): string {
   const code = normalisePairingCode(input);
   if (code.length !== PAIRING_CODE_LENGTH) {
     throw new PairingCodeError(
-      `a Sound Chat pairing code is exactly ${PAIRING_CODE_LENGTH} characters; that one is ${code.length}`,
+      `A Sound Chat pairing code is exactly ${PAIRING_CODE_LENGTH} characters; that one has ${code.length}.`,
     );
   }
   for (const character of code) {
     if (!PAIRING_CODE_ALPHABET.includes(character)) {
       throw new PairingCodeError(
-        `"${character}" cannot appear in a Sound Chat pairing code; the alphabet is ${PAIRING_CODE_ALPHABET}`,
+        `"${character}" cannot appear in a Sound Chat pairing code. The characters are ${PAIRING_CODE_ALPHABET}.`,
       );
     }
   }

@@ -14,6 +14,12 @@
  * compile error here rather than a blank screen with a heading on it, because
  * the five states are five different facts about a handshake in progress and
  * none of them can honestly borrow another's sentence.
+ *
+ * WHY the code readout is its own named group: it was labelled by the panel's
+ * own heading, so its accessible name was the same string as the region around
+ * it and the eight characters were announced with nothing saying what they are.
+ * `codeLabel` is the sentence that says it, and it is the same one the
+ * clipboard-refused fallback input carries.
  */
 
 import { useEffect, useId, useState, type ReactElement } from "react";
@@ -87,7 +93,7 @@ export function PairingPanel({
                 ? SOUND_CHAT_COPY.pairing.waitingDisplay
                 : SOUND_CHAT_COPY.pairing.waitingEnter}
             </p>
-            <p className="mt-1 text-caption text-ink-faint">{SOUND_CHAT_COPY.pairing.hint}</p>
+            <p className="mt-1 text-caption text-ink-muted">{SOUND_CHAT_COPY.pairing.hint}</p>
           </div>
         );
       case "paired":
@@ -133,14 +139,14 @@ export function PairingPanel({
   return (
     <section aria-labelledby={headingId} className="enter w-full">
       <Panel className="fade-in mx-auto max-w-xl">
-        <p className="text-caption font-medium uppercase tracking-widest text-ink-faint">
+        <p className="text-caption font-medium uppercase tracking-widest text-ink-muted">
           {SOUND_CHAT_COPY.pairing.roleLabel[role]}
         </p>
-        <h1 id={headingId} className="mt-2 text-title text-ink">
+        <h2 id={headingId} className="mt-2 text-title text-ink">
           {role === "displayer"
             ? SOUND_CHAT_COPY.pairing.displayHeading
             : SOUND_CHAT_COPY.pairing.enterHeading}
-        </h1>
+        </h2>
         <p className="mt-2 text-body text-ink-muted">
           {role === "displayer"
             ? SOUND_CHAT_COPY.pairing.displayBody
@@ -150,7 +156,7 @@ export function PairingPanel({
           <>
             <div
               role="group"
-              aria-labelledby={headingId}
+              aria-label={SOUND_CHAT_COPY.pairing.codeLabel}
               className="mt-6 rounded-xl border border-line-strong bg-surface-sunken p-6"
             >
               {manual ? (

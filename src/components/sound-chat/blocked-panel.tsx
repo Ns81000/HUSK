@@ -45,7 +45,7 @@ export function BlockedPanel({
             <h2 className="text-title text-danger">{copy.heading}</h2>
             <p className="mt-2 text-body text-ink-muted">{copy.body}</p>
             {detail === "" ? null : (
-              <p className="mt-3 text-caption text-ink-faint wrap-anywhere">
+              <p className="mt-3 text-caption text-ink-muted wrap-anywhere">
                 {`Details: ${detail}`}
               </p>
             )}

@@ -209,7 +209,7 @@ async function createPeer(options: PeerOptions): Promise<Peer> {
   return peer;
 }
 
-const MAX_FLUSH_TURNS = 4_000;
+const MAX_FLUSH_TURNS = 12_000;
 /**
  * A drain floor, not a completion condition. crypto.subtle hands results back on
  * libuv's threadpool, so the number of event-loop turns a seal/assemble chain needs is
@@ -236,7 +236,14 @@ function activity(): string {
 async function settle(): Promise<void> {
   let quiet = 0;
   let turn = 0;
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 4) {
+  // 32, not 4. A four-turn quiet streak is short enough that a libuv
+  // threadpool callback from real AEAD work can land between two of the
+  // samples, reset the streak, and leave this loop waiting out the cascade
+  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
+  // fails under parallel load. A longer streak makes settle() return later
+  // rather than earlier, which is the only safe direction: returning early
+  // leaks work into the next settle, and returning late costs turns.
+  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
     if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
     const before = activity();
     await new Promise((resolve) => setImmediate(resolve));

@@ -43,7 +43,7 @@ export function SoundChatScreen(): ReactElement {
     <div className="flex min-h-dvh flex-col bg-canvas">
       <Header />
       <main className="flex flex-1 flex-col">{renderPhase(ui)}</main>
-      <InfoPanel open={ui.infoOpen} onToggle={ui.toggleInfo} />
+      <InfoPanel open={ui.infoOpen} onToggle={ui.toggleInfo} stats={ui.state.stats} />
     </div>
   );
 }
@@ -83,7 +83,7 @@ function renderPhase(ui: SoundChatUi): ReactElement {
               busy={state.busy}
               progress={state.progress}
             />
-            <NoticeList notices={state.notices} />
+            <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
           </div>
           <MessageList inbound={state.inbound} outbound={state.outbound} />
           <Composer
@@ -92,7 +92,7 @@ function renderPhase(ui: SoundChatUi): ReactElement {
             onSubmit={ui.submit}
             disabled={ui.composerBlock !== null}
             disabledReason={ui.composerBlock}
-            queued={ui.queued}
+            refusal={ui.refusal}
           />
         </>
       );
@@ -153,36 +153,55 @@ function PreparingNotice(): ReactElement {
   );
 }
 
-/** Diagnostics from the session, oldest first, bounded by the controller. */
+/**
+ * Diagnostics from the session, with a control to clear them.
+ *
+ * Without the control the list would be permanent: a warning that the session
+ * recovered from one of its own errors is worth reading, but not for the rest of
+ * the session, and a list nothing can empty becomes the only thing on screen.
+ * Deliberately not a live region — these are for reading on demand, and the
+ * events that produce them are announced where they happen.
+ */
 function NoticeList({
   notices,
+  onDismiss,
 }: {
   readonly notices: readonly {
     readonly id: number;
     readonly tone: string;
     readonly text: string;
   }[];
+  readonly onDismiss: () => void;
 }): ReactElement | null {
   if (notices.length === 0) {
     return null;
   }
   return (
-    <ul className="mt-3 space-y-1.5" aria-label={SOUND_CHAT_COPY.shell.noticesLabel}>
-      {notices.map((notice) => (
-        <li
-          key={notice.id}
-          className={
-            notice.tone === "danger"
-              ? "text-caption text-danger"
-              : notice.tone === "warn"
-                ? "text-caption text-warn"
-                : "text-caption text-ink-muted"
-          }
-        >
-          {notice.text}
-        </li>
-      ))}
-    </ul>
+    <div className="mt-3">
+      <ul className="space-y-1.5" aria-label={SOUND_CHAT_COPY.shell.noticesLabel}>
+        {notices.map((notice) => (
+          <li
+            key={notice.id}
+            className={
+              notice.tone === "danger"
+                ? "text-caption text-danger"
+                : notice.tone === "warn"
+                  ? "text-caption text-warn"
+                  : "text-caption text-ink-muted"
+            }
+          >
+            {notice.text}
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="press mt-1.5 text-caption text-ink-muted underline underline-offset-2 hover:text-ink"
+      >
+        {SOUND_CHAT_COPY.actions.dismissNotices}
+      </button>
+    </div>
   );
 }
 

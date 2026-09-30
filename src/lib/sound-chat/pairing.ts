@@ -107,7 +107,11 @@ export function describePairingFailure(reason: PairingFailureReason): string {
     case "no-peer":
       return "No paired device was heard. Make sure the other device is listening, then start again.";
     case "no-confirmation":
-      return "The other device did not confirm. It may be using a different code, or out of range.";
+      // No distance claim and one action. Nothing in Sound Chat measures range:
+      // the wait is a wall-clock timer, so the only fact it can report is that
+      // nothing was heard in time — which is what a wrong code, a device that
+      // never started, and a device too far away all look like.
+      return "The other device did not answer. Check the code on both devices, then start again.";
     default:
       return "Pairing did not complete.";
   }

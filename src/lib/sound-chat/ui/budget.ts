@@ -32,9 +32,6 @@ import { BLOCK_DURATION_MS } from "../session";
 
 export { MAX_MESSAGE_PLAINTEXT_BYTES, SINGLE_BLOCK_PLAINTEXT_BYTES, BLOCK_DURATION_MS };
 
-/** Longest message the protocol will split into blocks at all. */
-export const MAX_MESSAGE_BLOCKS_ALLOWED = MAX_MESSAGE_BLOCKS;
-
 const encoder = new TextEncoder();
 
 export type MessageBudget = {

@@ -53,6 +53,33 @@ const MOVING = {
   module_error: false,
 } as const satisfies Record<TransportState, boolean>;
 
+/**
+ * The states in which our own audio is on the air: `transmitting` while the
+ * blocks are being played, `awaiting_ack` for the window after they were
+ * scheduled — which is the window the speaker is still playing them in, because
+ * the session emits `TRANSMIT_DONE` on *scheduling*, not on completion.
+ * `satisfies Record<TransportState, boolean>` rather than a two-value test, so a
+ * state the machine grows cannot be silently left out of the rule that decides
+ * whether the bar is showing.
+ */
+const ON_AIR = {
+  idle: false,
+  listening: false,
+  transmitting: true,
+  awaiting_turn: false,
+  awaiting_ack: true,
+  backoff: false,
+  hidden_hold: false,
+  error: false,
+  module_error: false,
+} as const satisfies Record<TransportState, boolean>;
+
+/** Any number into `[1, high]`, with a non-finite value treated as the start. */
+function clampIndex(value: number | undefined, high: number): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.min(Math.max(1, Math.round(value)), high);
+}
+
 export function TransmitStatus({
   transport,
   transmitting,
@@ -70,12 +97,25 @@ export function TransmitStatus({
   } | null;
 }): ReactElement {
   const tone = TONE[transport];
-  const blockText =
-    progress === null
-      ? null
-      : SOUND_CHAT_COPY.transmit.block(progress.blockIndex, progress.blocks, progress.remainingMs);
+  // Clamped here as well as in the controller. The component is the last thing
+  // between a number and `aria-valuenow`, and a value that is not finite would
+  // render as `aria-valuenow="NaN"` — while "Block 2 of 1" would be a sentence
+  // the medium cannot produce. Cheap belt to the controller's braces.
+  const total =
+    Number.isFinite(progress?.blocks) && (progress?.blocks ?? 0) >= 1 ? (progress?.blocks ?? 1) : 1;
+  const index = clampIndex(progress?.blockIndex, total);
   const percent =
-    progress === null ? 0 : Math.min(100, Math.max(0, Math.round(progress.fraction * 100)));
+    progress === null
+      ? 0
+      : clampIndex(
+          Math.round((Number.isFinite(progress.fraction) ? progress.fraction : 0) * 100),
+          100,
+        );
+  const remaining = Number.isFinite(progress?.remainingMs)
+    ? Math.max(0, progress?.remainingMs ?? 0)
+    : 0;
+  const blockText =
+    progress === null ? null : SOUND_CHAT_COPY.transmit.block(index, total, remaining);
 
   return (
     <div className="space-y-2">
@@ -120,10 +160,12 @@ export function TransmitStatus({
         </>
       )}
 
-      {transmitting && progress === null ? (
+      {transmitting && progress === null && transport !== "awaiting_ack" ? (
         // The honest gap between `send()` returning and the first block being
         // scheduled: the audio is ours and starting, but nothing of it has been
-        // played yet, so no progress figure would be true.
+        // played yet, so no progress figure would be true. Excluded from
+        // `awaiting_ack`, where the blocks *are* scheduled and the sentence that
+        // belongs is the confirmation one below.
         <p className="text-caption text-accent">{SOUND_CHAT_COPY.transmit.arming}</p>
       ) : null}
 
@@ -131,11 +173,14 @@ export function TransmitStatus({
         <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.transmit.acking}</p>
       ) : null}
 
-      {busy && transport === "idle" ? (
-        // A note of ours is already in the system while the transport machine is
-        // still reporting that it has not started. "Not started" on its own
-        // would leave a pending note invisible, so the queue sentence stands in
-        // for the gap.
+      {busy && !ON_AIR[transport] ? (
+        // A note of ours is in the system and the radio is not playing it: it is
+        // sealed, queued, or waiting for the turn. This is the *only* place the
+        // queued state is stated. The composer used to have its own copy of the
+        // same sentence driven by `send()`'s return value, and it never cleared —
+        // so a note delivered ten seconds in was still announced as queued for the
+        // rest of the session. One fact, one place, derived from a fact rather
+        // than remembered.
         <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.transmit.queued}</p>
       ) : null}
     </div>

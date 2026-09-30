@@ -13,7 +13,10 @@
  * returns to the role choice instead of leaving the page. The typed value is
  * normalised on every keystroke (case and separators are never part of the
  * code) and validated on submit, so a refusal is a named reason attached to the
- * field rather than a handshake that mysteriously fails later.
+ * field rather than a handshake that mysteriously fails later. The alphabet is
+ * on screen as prose *and* in the field's description, because the one thing a
+ * person cannot guess — which letters are left out — is the thing that makes a
+ * code they typed correctly fail.
  */
 
 import {
@@ -56,6 +59,7 @@ export function PermissionPrompt({
   const headingId = useId();
   const fieldId = useId();
   const problemId = useId();
+  const bodyId = useId();
 
   function toRoleStep(): void {
     setStep("role");
@@ -95,15 +99,15 @@ export function PermissionPrompt({
       <Panel className="fade-in mx-auto max-w-xl">
         {step === "role" ? (
           <div className="fade-in">
-            <h1 id={headingId} className="text-title text-ink">
+            <h2 id={headingId} className="text-title text-ink">
               {SOUND_CHAT_COPY.permission.title}
-            </h1>
+            </h2>
             <p className="mt-3 text-body text-ink-muted">{SOUND_CHAT_COPY.permission.lead}</p>
-            <p className="mt-3 text-caption text-ink-faint">{SOUND_CHAT_COPY.permission.why}</p>
-            <p className="mt-2 text-caption text-ink-faint">
+            <p className="mt-3 text-caption text-ink-muted">{SOUND_CHAT_COPY.permission.why}</p>
+            <p className="mt-2 text-caption text-ink-muted">
               {SOUND_CHAT_COPY.permission.whyVolume}
             </p>
-            <h2 className="mt-6 text-caption font-semibold uppercase tracking-widest text-ink-faint">
+            <h2 className="mt-6 text-caption font-semibold uppercase tracking-widest text-ink-muted">
               {SOUND_CHAT_COPY.permission.limitsHeading}
             </h2>
             <ul className="mt-3 space-y-2.5">
@@ -135,14 +139,16 @@ export function PermissionPrompt({
           </div>
         ) : (
           <div className="fade-in">
-            <h1 id={headingId} className="text-title text-ink">
+            <h2 id={headingId} className="text-title text-ink">
               {SOUND_CHAT_COPY.pairing.enterHeading}
-            </h1>
-            <p className="mt-2 text-body text-ink-muted">{SOUND_CHAT_COPY.pairing.enterBody}</p>
+            </h2>
+            <p id={bodyId} className="mt-2 text-body text-ink-muted">
+              {SOUND_CHAT_COPY.pairing.enterBody}
+            </p>
             <form noValidate onSubmit={submit} onKeyDown={onKeyDown} className="mt-6 space-y-2">
               <label
                 htmlFor={fieldId}
-                className="block text-caption font-medium uppercase tracking-widest text-ink-faint"
+                className="block text-caption font-medium uppercase tracking-widest text-ink-muted"
               >
                 {SOUND_CHAT_COPY.pairing.fieldLabel}
               </label>
@@ -158,12 +164,19 @@ export function PermissionPrompt({
                 autoCorrect="off"
                 spellCheck={false}
                 inputMode="text"
-                // A code is single-byte ASCII by definition, so a character
-                // limit is exact here — unlike a note, which is counted in
-                // UTF-8 bytes and has no such cap on its input.
-                maxLength={PAIRING_CODE_LENGTH}
+                // A code is single-byte ASCII by definition, so a character limit is
+                // exact here — unlike a note, which is counted in UTF-8 bytes and
+                // has no such cap on its input. It is twice the code length, not
+                // the code length, because `normalisePairingCode` strips spaces
+                // and dashes: a pasted "AB CD-2345" is ten characters and eight
+                // after normalising, and a limit of eight would cut it to a code
+                // the user never typed.
+                maxLength={PAIRING_CODE_LENGTH * 2}
                 aria-invalid={problem !== null}
-                aria-describedby={problem === null ? undefined : problemId}
+                // The rules the field has to satisfy, and the reason the last
+                // attempt was refused. Both are prose a person cannot guess, and
+                // a screen reader reading the field hears only its value.
+                aria-describedby={problem === null ? bodyId : `${bodyId} ${problemId}`}
                 className="composer-input mt-2 w-full rounded-xl border border-line-strong bg-surface px-4 py-3 font-mono text-title text-ink"
               />
               {problem === null ? null : (
@@ -183,7 +196,7 @@ export function PermissionPrompt({
           </div>
         )}
         <div className="info-divider mt-6" />
-        <p className="mt-3 text-caption text-ink-faint">{SOUND_CHAT_COPY.info.attribution}</p>
+        <p className="mt-3 text-caption text-ink-muted">{SOUND_CHAT_COPY.info.attribution}</p>
       </Panel>
     </section>
   );

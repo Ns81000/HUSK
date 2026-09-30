@@ -37,27 +37,34 @@ export function FatalPanel({
   const detail = known ? raw : `${fatal.kind}: ${raw}`;
 
   return (
-    <div role="alert" className="enter w-full">
-      <Panel className="fade-in mx-auto max-w-xl">
-        <div className="flex items-start gap-3">
-          <ErrorMark className="h-10 w-10 shrink-0 text-danger" />
-          <div className="min-w-0">
-            <h2 className="text-title text-danger">{copy.heading}</h2>
-            <p className="mt-2 text-body text-ink-muted">{copy.body}</p>
-            {detail === "" ? null : (
-              <p className="mt-3 text-caption text-ink-faint wrap-anywhere">
-                {`Details: ${detail}`}
-              </p>
-            )}
+    <>
+      <div role="alert" className="enter w-full">
+        <Panel className="fade-in mx-auto max-w-xl">
+          <div className="flex items-start gap-3">
+            <ErrorMark className="h-10 w-10 shrink-0 text-danger" />
+            <div className="min-w-0">
+              <h2 className="text-title text-danger">{copy.heading}</h2>
+              <p className="mt-2 text-body text-ink-muted">{copy.body}</p>
+              {detail === "" ? null : (
+                <p className="mt-3 text-caption text-ink-muted wrap-anywhere">
+                  {`Details: ${detail}`}
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="mt-6 space-y-2">
-          <Button tone="primary" full onClick={() => setConfirming(true)}>
-            <WarnIcon className="h-4 w-4" />
-            {SOUND_CHAT_COPY.modal.restartConfirm}
-          </Button>
-        </div>
-      </Panel>
+          <div className="mt-6 space-y-2">
+            <Button tone="primary" full onClick={() => setConfirming(true)}>
+              <WarnIcon className="h-4 w-4" />
+              {SOUND_CHAT_COPY.modal.restartConfirm}
+            </Button>
+          </div>
+        </Panel>
+      </div>
+      {/* A sibling of the alert, never a child of it. `aria-modal="true"` inside
+          a `role="alert"` is contradictory: the dialog's own mounting would be
+          announced by the assertive region that is already announcing the
+          failure, so the confirmation would be read twice and over the top of
+          the thing it is asking about. */}
       <Modal
         open={confirming}
         title={SOUND_CHAT_COPY.modal.restartTitle}
@@ -66,6 +73,6 @@ export function FatalPanel({
         onConfirm={onRestart}
         onCancel={() => setConfirming(false)}
       />
-    </div>
+    </>
   );
 }

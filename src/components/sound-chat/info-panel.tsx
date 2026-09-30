@@ -22,6 +22,7 @@
 import { useId, useState, type ReactElement } from "react";
 import { InfoIcon } from "@/components/husk/icons";
 import { IconButton, Panel } from "@/components/husk/primitives";
+import type { SessionStats } from "@/lib/sound-chat/session";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
 import ggwaveLicenceText from "@/lib/sound-chat/vendor/LICENSE.ggwave?raw";
 
@@ -30,7 +31,7 @@ import ggwaveLicenceText from "@/lib/sound-chat/vendor/LICENSE.ggwave?raw";
  * states, so the notice can never exist in only one of them.
  */
 function AttributionLine(): ReactElement {
-  return <p className="text-caption text-ink-faint">{SOUND_CHAT_COPY.info.attribution}</p>;
+  return <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.info.attribution}</p>;
 }
 
 /** The full MIT text, behind its own toggle so the card does not open as a wall. */
@@ -51,7 +52,7 @@ function LicenceText(): ReactElement {
       <pre
         id={panelId}
         hidden={!open}
-        className="mt-2 max-h-64 w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-surface-sunken p-3 text-[11px] leading-snug text-ink-faint"
+        className="mt-2 max-h-64 w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-surface-sunken p-3 text-[11px] leading-snug text-ink-muted"
       >
         {ggwaveLicenceText}
       </pre>
@@ -62,9 +63,12 @@ function LicenceText(): ReactElement {
 export function InfoPanel({
   open,
   onToggle,
+  stats,
 }: {
   readonly open: boolean;
   readonly onToggle: () => void;
+  /** This session's own counters, shown because they explain what happened. */
+  readonly stats?: SessionStats;
 }): ReactElement {
   const panelId = useId();
 
@@ -92,6 +96,7 @@ export function InfoPanel({
           <p className="mt-3 text-body text-ink-muted">{SOUND_CHAT_COPY.info.how}</p>
           <p className="mt-3 text-body text-ink-muted">{SOUND_CHAT_COPY.info.rate}</p>
           <p className="mt-3 text-body text-ink-muted">{SOUND_CHAT_COPY.info.privacy}</p>
+          {stats === undefined ? null : <Stats stats={stats} />}
           <div className="info-divider mt-6" />
           <div className="mt-3">
             <AttributionLine />
@@ -99,6 +104,39 @@ export function InfoPanel({
           </div>
         </Panel>
       </div>
+    </div>
+  );
+}
+
+/**
+ * This session's counters.
+ *
+ * They are here because each one answers a question a user who just watched
+ * something odd will ask anyway: how many blocks came off the air, how many were
+ * unreadable, how many were the same block heard again. Nothing here is a
+ * performance claim and nothing here is a success rate.
+ */
+function Stats({ stats }: { readonly stats: SessionStats }): ReactElement {
+  const rows: readonly (readonly [string, number])[] = [
+    [SOUND_CHAT_COPY.info.statBlocksDecoded, stats.blocksDecoded],
+    [SOUND_CHAT_COPY.info.statMessagesDelivered, stats.messagesDelivered],
+    [SOUND_CHAT_COPY.info.statDuplicatesSuppressed, stats.duplicatesSuppressed],
+    [SOUND_CHAT_COPY.info.statUnreadable, stats.framesUnreadable],
+    [SOUND_CHAT_COPY.info.statRetries, stats.retries],
+  ];
+  return (
+    <div className="mt-4">
+      <p className="text-[11px] font-medium uppercase tracking-widest text-ink-muted">
+        {SOUND_CHAT_COPY.info.statsHeading}
+      </p>
+      <dl className="tabular mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-caption text-ink-muted sm:grid-cols-3">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-2">
+            <dt>{label}</dt>
+            <dd className="text-ink">{value}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }

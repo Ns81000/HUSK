@@ -36,6 +36,8 @@ import type { SoundChatBlock, SoundChatFatal } from "./controller";
 import type { TransportState } from "../transport-machine";
 import type { SendRefusal } from "../session";
 import type { OutboundStatus } from "../protocol";
+import { MAX_MESSAGE_PLAINTEXT_BYTES, SINGLE_BLOCK_PLAINTEXT_BYTES } from "../protocol";
+import { BLOCK_DURATION_MS } from "./budget";
 
 /**
  * The code-point ranges emoji live in, checked by comparison rather than by a
@@ -124,7 +126,7 @@ describe("the copy rules, over every string the feature can show", () => {
 
   it("says the note is audible, which is the honest description", () => {
     expect(SOUND_CHAT_COPY.permission.limits.join(" ")).toMatch(/audible|out loud/i);
-    expect(SOUND_CHAT_COPY.transmit.label).toBe("Playing out loud");
+    expect(SOUND_CHAT_COPY.transport.transmitting).toBe("Playing your note out loud");
   });
 
   it("covers every transport state, refusal, status and failure kind with its own sentence", () => {
@@ -187,9 +189,12 @@ describe("the copy rules, over every string the feature can show", () => {
   });
 
   it("quotes the measured numbers the copy depends on", () => {
-    expect(SOUND_CHAT_COPY.facts.capBytes).toBe(84);
-    expect(SOUND_CHAT_COPY.facts.singleBlockBytes).toBe(43);
-    expect(SOUND_CHAT_COPY.facts.blockDurationMs).toBe(1_920);
+    // Pinned against the protocol and the session, not against a third copy of
+    // them: `capacity.test.ts` already proves the measured capacity, and these
+    // assertions prove the *copy* quotes that same number.
+    expect(MAX_MESSAGE_PLAINTEXT_BYTES).toBe(84);
+    expect(SINGLE_BLOCK_PLAINTEXT_BYTES).toBe(43);
+    expect(BLOCK_DURATION_MS).toBe(1_920);
     expect(SOUND_CHAT_COPY.composer.byteCounter(7)).toBe("7 / 84 bytes");
     expect(SOUND_CHAT_COPY.composer.singleBlock).toContain("1.9 seconds");
     expect(SOUND_CHAT_COPY.composer.twoBlocks).toContain("3.8 seconds");
@@ -248,8 +253,12 @@ describe("the permission pre-prompt", () => {
   });
 
   it("labels its heading for assistive technology", () => {
+    // A level-2 heading: the shell owns the page's only <h1>, and a second one
+    // on the same page is a heading-list defect even though WCAG has no
+    // criterion for the count.
     expect(markup).toMatch(/<section[^>]*aria-labelledby="[^"]+"/);
-    expect(markup).toMatch(/<h1 id="[^"]+"/);
+    expect(markup).toMatch(/<h2 id="[^"]+"/);
+    expect(markup).not.toMatch(/<h1\b/);
   });
 });
 
@@ -507,7 +516,6 @@ describe("the composer", () => {
     onSubmit: noop,
     disabled: false,
     disabledReason: null,
-    queued: false,
   };
 
   it("counts bytes, not characters, and says what a note will cost in sound", () => {
@@ -572,7 +580,13 @@ describe("the composer", () => {
   });
 
   it("says a queued note is queued", () => {
-    const markup = render(<Composer {...base} value="" queued />);
+    // The queued state is stated once, by `TransmitStatus`, from the session's
+    // own facts — not from what a past `send()` returned. The composer has no
+    // such prop, which is why this asserts the absence rather than a string.
+    expect(render(<Composer {...base} value="" />)).not.toContain(SOUND_CHAT_COPY.transmit.queued);
+    const markup = render(
+      <TransmitStatus transport="listening" transmitting={false} busy progress={null} />,
+    );
     expect(markup).toContain(SOUND_CHAT_COPY.transmit.queued);
   });
 });
@@ -735,7 +749,6 @@ describe("no emoji and no false claims in the rendered output of any state", () 
         onSubmit={noop}
         disabled={false}
         disabledReason={null}
-        queued
       />,
     ],
     ["info", <InfoPanel open onToggle={noop} />],

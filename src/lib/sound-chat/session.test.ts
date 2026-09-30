@@ -329,7 +329,7 @@ async function passTurnGap(): Promise<void> {
 }
 
 /** A real hang must fail the test with a message, never spin forever. */
-const MAX_FLUSH_TURNS = 4_000;
+const MAX_FLUSH_TURNS = 12_000;
 /**
  * A drain floor, not a completion condition. crypto.subtle hands results back on
  * libuv's threadpool, so the number of event-loop turns a seal/assemble chain needs is
@@ -382,7 +382,14 @@ async function transmitted(peer: Peer): Promise<void> {
 async function settle(): Promise<void> {
   let quiet = 0;
   let turn = 0;
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 4) {
+  // 32, not 4. A four-turn quiet streak is short enough that a libuv
+  // threadpool callback from real AEAD work can land between two of the
+  // samples, reset the streak, and leave this loop waiting out the cascade
+  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
+  // fails under parallel load. A longer streak makes settle() return later
+  // rather than earlier, which is the only safe direction: returning early
+  // leaks work into the next settle, and returning late only costs turns.
+  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
     if (turn >= MAX_FLUSH_TURNS) {
       throw new Error(`the async chain never settled after ${MAX_FLUSH_TURNS} turns`);
     }
@@ -994,7 +1001,7 @@ describe("the timing contract the medium sets (10.2 P11, class 11)", () => {
     await vi.advanceTimersByTimeAsync(PAIR_CONFIRM_TIMEOUT_MS);
     await settle();
     expect(enterer.session.pairing.kind).toBe("failed");
-    expect(enterer.session.pairingFailureMessage).toContain("did not confirm");
+    expect(enterer.session.pairingFailureMessage).toContain("did not answer");
     // The displayer did pair with someone, so only the enterer failed — and the
     // enterer never claims a pairing it did not get.
     expect(displayer.session.pairing.kind).toBe("paired");

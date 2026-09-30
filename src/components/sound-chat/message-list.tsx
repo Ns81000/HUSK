@@ -8,6 +8,12 @@
  * one render-order counter for both directions, which is the only sequence that
  * means the same thing for the whole conversation.
  *
+ * WHY the `role="log"` is mounted even when the transcript is empty: a live
+ * region that is inserted into the document at the same moment as its first
+ * child is not reliably announced, so the first note of a conversation — the one
+ * a person is actually waiting for — would arrive silently. The region is here
+ * from the first frame and the empty state is content inside it.
+ *
  * WHY a status line sits under each of our own bubbles and under none of the
  * other's: an inbound note exists because it was decoded, so the transcript
  * already proves it arrived and a second status would only add words. Our own
@@ -17,7 +23,7 @@
  * until the acknowledgement comes back.
  */
 
-import type { ReactElement } from "react";
+import { memo, type ReactElement } from "react";
 import { CheckIcon, ErrorMark, InfoIcon } from "@/components/husk/icons";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
 import { cn } from "@/lib/utils";
@@ -72,7 +78,7 @@ function OutboundRow({ view }: { readonly view: Outbound }): ReactElement {
       ? "text-ok"
       : view.status === "failed"
         ? "text-danger"
-        : "text-ink-faint";
+        : "text-ink-muted";
   const retrying = view.status === "sending" && view.attempts > 1;
 
   return (
@@ -100,7 +106,7 @@ function InboundRow({ view }: { readonly view: Inbound }): ReactElement {
   );
 }
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
   inbound,
   outbound,
 }: {
@@ -113,40 +119,51 @@ export function MessageList({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* The scroll container is separate from the log so scrolling is reachable
           by the browser's own affordances while the log keeps a single live
-          region that only ever announces what was added. */}
+          region that only ever announces what was added. It is a named,
+          focusable `region` rather than a bare `div`: `aria-label` on an
+          element with no role is not exposed, and a scroll container that cannot
+          be reached from the keyboard cannot be scrolled from the keyboard. */}
       <div
+        role="region"
+        tabIndex={0}
         aria-label={SOUND_CHAT_COPY.transcript.scrollLabel}
         className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-6"
       >
-        {rows.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-            <InfoIcon className="h-5 w-5 text-ink-faint" />
-            <p className="text-body text-ink">{SOUND_CHAT_COPY.transcript.emptyHeading}</p>
-            <p className="max-w-sm text-caption text-ink-muted">
-              {SOUND_CHAT_COPY.transcript.emptyBody}
-            </p>
-          </div>
-        ) : (
-          <div
-            role="log"
-            aria-live="polite"
-            // Additions only: a status line changing under an existing bubble is
-            // a detail the person who sent the note can read, not an event worth
-            // interrupting for.
-            aria-relevant="additions"
-            aria-label={SOUND_CHAT_COPY.transcript.logLabel}
-            className="space-y-4"
-          >
-            {rows.map((row) =>
+        {/* Mounted from the first frame, empty or not. A live region has to be in
+            the document, and settled, before its content changes: a `role="log"`
+            created at the same moment as its first child is an insertion, and an
+            insertion into a region that did not exist is not reliably announced
+            at all. So the region is always here and the empty state lives inside
+            it. */}
+        <div
+          role="log"
+          aria-live="polite"
+          // Additions only: a status line changing under an existing bubble is
+          // a detail the person who sent the note can read, not an event worth
+          // interrupting for.
+          aria-relevant="additions"
+          aria-label={SOUND_CHAT_COPY.transcript.logLabel}
+          className="space-y-4"
+        >
+          {rows.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+              <InfoIcon className="h-5 w-5 text-ink-muted" />
+              <p className="text-body text-ink">{SOUND_CHAT_COPY.transcript.emptyHeading}</p>
+              <p className="max-w-sm text-caption text-ink-muted">
+                {SOUND_CHAT_COPY.transcript.emptyBody}
+              </p>
+            </div>
+          ) : (
+            rows.map((row) =>
               row.kind === "outbound" ? (
                 <OutboundRow key={`outbound-${row.view.msgId}`} view={row.view} />
               ) : (
                 <InboundRow key={`inbound-${row.view.msgId}`} view={row.view} />
               ),
-            )}
-          </div>
-        )}
+            )
+          )}
+        </div>
       </div>
     </div>
   );
-}
+});

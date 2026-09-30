@@ -157,7 +157,7 @@ type Peer = {
 };
 
 const createdPeers: Peer[] = [];
-const MAX_FLUSH_TURNS = 4_000;
+const MAX_FLUSH_TURNS = 12_000;
 
 async function until(what: string, ready: () => boolean): Promise<void> {
   for (let turn = 0; turn < MAX_FLUSH_TURNS; turn += 1) {
@@ -171,7 +171,14 @@ async function until(what: string, ready: () => boolean): Promise<void> {
 async function settle(): Promise<void> {
   let quiet = 0;
   let turn = 0;
-  while (turn < 256 || quiet < 4) {
+  // 32, not 4. A four-turn quiet streak is short enough that a libuv
+  // threadpool callback from real AEAD work can land between two of the
+  // samples, reset the streak, and leave this loop waiting out the cascade
+  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
+  // fails under parallel load. A longer streak makes settle() return later
+  // rather than earlier, which is the only safe direction: returning early
+  // leaks work into the next settle, and returning late only costs turns.
+  while (turn < 256 || quiet < 32) {
     const before = createdPeers.map((peer) => peer.context.played.length).join(",");
     await new Promise((resolve) => setImmediate(resolve));
     quiet =
