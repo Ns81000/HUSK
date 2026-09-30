@@ -27,6 +27,9 @@ import {
   verifyKeyCheck,
 } from "./crypto";
 
+/** A fixed handshake challenge; the session generates a fresh one per pairing. */
+const TEST_CHALLENGE = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+
 const CODE = "ABCD2345";
 
 function fixedRandom(value: number) {
@@ -219,29 +222,37 @@ describe("pairing key check (P7)", () => {
   it("verifies for the same code and role, and refuses everything else", async () => {
     const keys = await derivePairingKeys(CODE);
     const salt = generateSessionSalt();
-    const tag = await keyCheckTag(keys.mac, salt, 0);
+    const tag = await keyCheckTag(keys.mac, salt, TEST_CHALLENGE, 0);
     expect(tag).toHaveLength(KEY_CHECK_BYTES);
-    expect(await verifyKeyCheck(keys.mac, salt, 0, tag)).toBe(true);
+    expect(await verifyKeyCheck(keys.mac, salt, TEST_CHALLENGE, 0, tag)).toBe(true);
     // A different role is a different check, so a reflected frame cannot pass.
-    expect(await verifyKeyCheck(keys.mac, salt, 1, tag)).toBe(false);
+    expect(await verifyKeyCheck(keys.mac, salt, TEST_CHALLENGE, 1, tag)).toBe(false);
     const otherSalt = Uint8Array.from(salt);
     otherSalt[0] = (otherSalt[0] ?? 0) ^ 0x01;
-    expect(await verifyKeyCheck(keys.mac, otherSalt, 0, tag)).toBe(false);
+    expect(await verifyKeyCheck(keys.mac, otherSalt, TEST_CHALLENGE, 0, tag)).toBe(false);
     const otherTag = Uint8Array.from(tag);
     otherTag[15] = (otherTag[15] ?? 0) ^ 0x01;
-    expect(await verifyKeyCheck(keys.mac, salt, 0, otherTag)).toBe(false);
+    expect(await verifyKeyCheck(keys.mac, salt, TEST_CHALLENGE, 0, otherTag)).toBe(false);
     const wrongCode = await derivePairingKeys("ABCD2346");
-    expect(await verifyKeyCheck(wrongCode.mac, salt, 0, tag)).toBe(false);
+    expect(await verifyKeyCheck(wrongCode.mac, salt, TEST_CHALLENGE, 0, tag)).toBe(false);
   });
 
   it("refuses a wrong-length salt as misuse, and a short tag as a failed check", async () => {
     const keys = await derivePairingKeys(CODE);
-    await expect(keyCheckTag(keys.mac, new Uint8Array(4), 0)).rejects.toThrowError(
+    await expect(keyCheckTag(keys.mac, new Uint8Array(4), TEST_CHALLENGE, 0)).rejects.toThrowError(
       CryptoUsageError,
     );
-    expect(await verifyKeyCheck(keys.mac, new Uint8Array(4), 0, new Uint8Array(16))).toBe(false);
     expect(
-      await verifyKeyCheck(keys.mac, new Uint8Array(16), 0, new Uint8Array(KEY_CHECK_BYTES - 1)),
+      await verifyKeyCheck(keys.mac, new Uint8Array(4), TEST_CHALLENGE, 0, new Uint8Array(16)),
+    ).toBe(false);
+    expect(
+      await verifyKeyCheck(
+        keys.mac,
+        new Uint8Array(16),
+        TEST_CHALLENGE,
+        0,
+        new Uint8Array(KEY_CHECK_BYTES - 1),
+      ),
     ).toBe(false);
   });
 });
@@ -268,7 +279,13 @@ describe("secrets stay out of logs and storage (P9)", () => {
       const aad = new Uint8Array([1, 0, 3, 1, 5]);
       const sealed = await sealBlock(await keys.directionKey(0), nonce, aad, new Uint8Array(5));
       await openBlock(await keys.directionKey(0), nonce, aad, sealed);
-      await verifyKeyCheck(keys.mac, salt, 1, await keyCheckTag(keys.mac, salt, 1));
+      await verifyKeyCheck(
+        keys.mac,
+        salt,
+        TEST_CHALLENGE,
+        1,
+        await keyCheckTag(keys.mac, salt, TEST_CHALLENGE, 1),
+      );
       expect(log).not.toHaveBeenCalled();
       expect(error).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();

@@ -14,6 +14,19 @@ upstream ggwave repository, carrying **one deliberate, documented patch**
 
 ## Hashes
 
+The unpatched numbers below were **verified once**, in the research clone, and
+that clone is gitignored and no longer a git repository — so they cannot be
+re-derived from this repository alone. Re-verify before relying on them:
+
+```sh
+git clone https://github.com/ggerganov/ggwave
+git -C ggwave checkout 060aec73dd7123ccac200442f75bdc7369795ffe
+git -C ggwave cat-file -s :bindings/javascript/ggwave.js   # 148131
+```
+
+`provenance.test.ts` asserts that these strings are *recorded*; only the
+patched file's size, SHA-256 and both blob ids are checked against real bytes.
+
 - Unpatched upstream bytes: 148131 bytes,
   SHA-256 `D5FDB0A11B390D357D67163311C064FFD8CD90476911DCCA3C689A98EA11AB6B`,
   git blob `b9ca22672b85ebe916ec7baa344bde983421751c` — identical to upstream's
@@ -22,7 +35,8 @@ upstream ggwave repository, carrying **one deliberate, documented patch**
   `F4BD5E9E3B79DB9C599D197C83D250E1A514C0295F4856A26065B6E427C252F3`) is the
   same content. Only the first hash survives a fresh checkout.
 - **Current (patched) file: 147139 bytes,
-  SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`.**
+  SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`,
+  git blob `50fa40a4367e3d4cb4f3f9186ca67b89d1bd433e`.**
 
 ## The patch: CSP-safe embind invokers
 
@@ -43,6 +57,12 @@ execution remains in the file (`newFunc` itself is now unreferenced).
 
 Re-derive this patch on any artifact upgrade; the Phase 0 fuzz and the harness
 `codec loading vs HUSK's CSP` test are the regression guards for it.
+
+The exact region replaced is one contiguous hunk, 1803 bytes of upstream source
+becoming 811 bytes, inside `craftInvokerFunction`. Note that no export name of
+this artifact appears anywhere as text in `ggwave.js` — embind registers the
+bindings from inside the wasm binary — so the surface declared in `ggwave.d.ts`
+can only be checked by *executing* the module, never by grepping the file.
 
 `package.json` here is not a package — it only marks this directory as
 CommonJS so Node and the bundler treat the UMD artifact as CJS. HUSK's root

@@ -262,7 +262,7 @@ export type NonceParts = {
 };
 
 /**
- * `salt[0..8) | kind | msgId(2) | seq(2)` — 12 bytes. Every part is validated
+ * `salt[0..8) | kind | msgId(2) | seq(1)` — 12 bytes. Every part is validated
  * here, so a nonsense value fails as our own misuse rather than as a WebCrypto
  * error that would read like a decryption failure.
  */
@@ -362,32 +362,61 @@ function assertNonce(nonce: Uint8Array): void {
   }
 }
 
-function keyCheckMessage(salt: Uint8Array, senderId: PeerId): Uint8Array {
-  const message = new Uint8Array(KEY_CHECK_INFO.length + salt.length + 1);
+/**
+ * The pairing handshake's per-session challenge: random bytes the *initiator*
+ * invents and the responder must echo back. It exists because a recorded PAIR
+ * frame from an earlier session with the same pairing code is otherwise a
+ * permanent, replayable credential — the key check only proves "someone who
+ * knows the code, ever", and a fresh receiver has no way to tell a recording
+ * from a live peer (P2V finding 2).
+ */
+export const PAIR_CHALLENGE_BYTES = 8;
+
+/** A fresh challenge. Never derived from the code, so it leaks nothing. */
+export function generatePairChallenge(random: RandomSource = randomBytes): Uint8Array {
+  const challenge = random(new Uint8Array(PAIR_CHALLENGE_BYTES));
+  if (challenge.length !== PAIR_CHALLENGE_BYTES) {
+    throw new CryptoUsageError(
+      `the random source returned ${challenge.length} bytes, expected ${PAIR_CHALLENGE_BYTES}`,
+    );
+  }
+  return Uint8Array.from(challenge);
+}
+
+function keyCheckMessage(salt: Uint8Array, challenge: Uint8Array, senderId: PeerId): Uint8Array {
+  const message = new Uint8Array(KEY_CHECK_INFO.length + salt.length + challenge.length + 1);
   message.set(ascii(KEY_CHECK_INFO), 0);
   message.set(salt, KEY_CHECK_INFO.length);
+  message.set(challenge, KEY_CHECK_INFO.length + salt.length);
   message[message.length - 1] = senderId;
   return message;
 }
 
 /**
  * The pairing handshake's key confirmation: a 16-byte truncated HMAC over the
- * salt and the sender's role. It proves "the same code, alive right now" — never
- * identity, and never over a channel anyone in the room cannot also record (P7).
+ * salt, the session challenge and the sender's role. It proves "the same code,
+ * answering a challenge nobody recorded" — never identity, and never over a
+ * channel anyone in the room cannot also record (P7).
  */
 export async function keyCheckTag(
   mac: CryptoKey,
   salt: Uint8Array,
+  challenge: Uint8Array,
   senderId: PeerId,
 ): Promise<Uint8Array> {
   assertPeerId(senderId);
   if (salt.length !== SESSION_SALT_BYTES) {
     throw new CryptoUsageError(`salt of ${salt.length} bytes, expected ${SESSION_SALT_BYTES}`);
   }
+  if (challenge.length !== PAIR_CHALLENGE_BYTES) {
+    throw new CryptoUsageError(
+      `challenge of ${challenge.length} bytes, expected ${PAIR_CHALLENGE_BYTES}`,
+    );
+  }
   const signature = await cryptoApi().subtle.sign(
     { name: "HMAC" },
     mac,
-    asBufferSource(keyCheckMessage(salt, senderId)),
+    asBufferSource(keyCheckMessage(salt, challenge, senderId)),
   );
   return new Uint8Array(signature).subarray(0, KEY_CHECK_BYTES);
 }
@@ -400,14 +429,20 @@ export async function keyCheckTag(
 export async function verifyKeyCheck(
   mac: CryptoKey,
   salt: Uint8Array,
+  challenge: Uint8Array,
   senderId: PeerId,
   tag: Uint8Array,
 ): Promise<boolean> {
   assertPeerId(senderId);
-  if (salt.length !== SESSION_SALT_BYTES || tag.length !== KEY_CHECK_BYTES) {
+
+  if (
+    salt.length !== SESSION_SALT_BYTES ||
+    challenge.length !== PAIR_CHALLENGE_BYTES ||
+    tag.length !== KEY_CHECK_BYTES
+  ) {
     return false;
   }
-  const expected = await keyCheckTag(mac, salt, senderId);
+  const expected = await keyCheckTag(mac, salt, challenge, senderId);
   let difference = 0;
   for (let index = 0; index < KEY_CHECK_BYTES; index += 1) {
     difference |= (expected[index] ?? 0) ^ (tag[index] ?? 0);

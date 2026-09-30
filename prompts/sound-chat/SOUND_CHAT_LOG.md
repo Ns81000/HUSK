@@ -946,3 +946,308 @@ closed (option b, patched artifact).
 5. Phase 3 inherits the measured budget (**84 bytes / 84 ASCII characters**) and
    the measured timing (1.92 s per block, ~3.9 s for two, `TURN_GAP_MS = 700`)
    for its "plays a short sound" progress display.
+---
+
+## Phase 2V — Deep verification of Phases 0/1/2
+
+Session of 2026-09-30. Started from `c035b71` with a clean tree. Read the master
+plan and this log in full, then re-measured every carried-in claim instead of
+trusting it. **Verification only: no new feature was built**, but four of the
+defects found were real bugs in Phases 0/1/2 and were fixed, because Section 5's
+workflow makes "any issue found → fix → full retest" unconditional.
+
+This is the first phase to run under the deep-subagent methodology (Rule 14),
+and it found things 275 green tests and 58 real-Chromium harness cases had not.
+The most important of them is written up in full below: **the 84-byte two-block
+message did not work over real audio at all**, and no test could see it.
+
+### What the three subagents did
+
+- **Full battery runner** — the whole Section 5 battery, the Playwright harness,
+  and the Sound Chat unit/seam suites, run sequentially, with exact numbers and a
+  regression table against the Phase 2 log entry. Re-run three times over the
+  phase, the last two to confirm the fixes.
+- **Edge-case / seam / hostile-input deep-diver** — read every file under
+  `src/lib/sound-chat/`, brainstormed failure modes with no checklist, and wrote
+  **14 new test files** (the `deep-*` and `deep-verify-*` suites below). Found 20
+  findings. Re-run once to verify the fixes and to attack the fixes themselves;
+  that pass found 8 more.
+- **Doc / artifact / integrity checker** — verified every recorded fact against
+  the bytes on disk. Found 21 findings. Re-run once to verify the fixes; that
+  pass found the CRITICAL audio-scheduling defect and 7 more.
+
+### Findings, classified, each with its decision
+
+Severity: **C** critical, **H** high, **M** medium, **L** low.
+
+| # | Severity | Finding | Class → decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **C** | **A 2-block message was transmitted as two overlapping waveforms.** `#transmitBlocks` called `#play` per block, and `transmitAndPause` called `source.start()` with **no `when` argument** — so every block of one message began at the same `context.currentTime` and the two FSK bursts **summed at the destination**. Two bursts at volume 25 are not decodable, so the feature's headline capacity (anything longer than 43 characters) could never be received by a real peer. Every test stayed green because every mock appended samples in *call* order and so could not see a schedule at all | **Real bug** → **fixed** (see "The multi-block scheduling fix" below) |
+| 2 | **H** | **Two `send()` calls in one tick lost a message and duplicated another.** `#pump` is `async`, so its guard and its read of the queue both ran *before* the first `await`: two pumps passed the guard and both read `#pending[0]`. Measured: `send("first"); send("second")` delivered `["first","first"]`, and the ACK for the overwritten `msgId` was silently dropped | **Real bug** → **fixed**: the queue slot is claimed synchronously, the pump is entered from a microtask so it can never re-enter on one stack, and `send()`'s `queued` flag counts the message it just pushed |
+| 3 | **H** | **A recorded PAIR frame from an earlier session authenticated for ever.** `#openPair` verified the key check over *the salt carried in the frame itself*, so a recording under the same pairing code verified in any later session, the receiver adopted the recorded salt, and every frame ever recorded under it became live again — permanently, and silently | **Real bug** → **fixed**: the PAIR frame now carries an 8-byte session challenge, the key check covers `salt ‖ challenge ‖ role`, the initiator invents it and the responder echoes it, and the initiator refuses an echo that is not its own. Alternatives considered: (a) binding the check to the responder's salt — impossible, the responder has not spoken yet; (b) inverting the handshake so the displayer speaks first — larger change, carried to Phase 4 as the residual below |
+| 4 | **H** | **A throwing `onListenerError` poisoned the async chain.** The reporter was called from `#notify`, from the chain's own `.catch` and from the pump's misuse paths. A consumer whose *error handler* threw left `#chain` rejected: no block was ever handled again, every block added an unhandled rejection, and the session still reported `listening` — deaf but healthy-looking | **Real bug** → **fixed**: the reporter is protected in turn, with a `console.error` fallback. `onModuleError` and `audio-io.ts`'s two `options.on*` callbacks got the same protection (they had the identical hole) |
+| 5 | **H** | **`ACK_TIMEOUT_MS` was sized for one block, so every 2-block message timed out.** The timer is armed when the audio is *scheduled*, and 5540 ms covers one message block plus the ACK block. A 2-block message needs ≈6.5 s, so the ACK landed in `backoff`, where `ACK_RECEIVED` is a no-op: the session was left in `backoff` with the message already marked `sent`, and a genuinely lost ACK then produced a spurious `failed` | **Real bug** → **fixed**: `ACK_TIMEOUT_MS = 2 × BLOCK_DURATION_MS + TURN_GAP_MS + BLOCK_DURATION_MS + 1000` = **7460 ms**, and `#armAckTimer(blockCount)` scales down for a partial retry |
+| 6 | **H** | **`pnpm test` was flaky — 4 failures in 10 sequential runs.** `session.test.ts`'s `settle()` drained the async chain with a **fixed 24-turn** budget. `crypto.subtle` hands results back on libuv's threadpool, so the turns a seal/assemble chain needs are load-dependent; 24 was enough about 60% of the time | **Real (test) bug** → **fixed**: every completion is now a *condition* — `until(...)` on the session's own `transmitting`/`busy` state — and the residual drains are a generous floor (256 turns) plus four consecutive quiet turns. Verified 8/8 and then 6/6 green full-suite runs |
+| 7 | **M** | A hidden-tab hold **spent a transmission attempt**: `attempts += 1` ran before the machine was asked whether it could start audio, so three hide/show cycles exhausted a three-attempt budget and failed a message that had never reached the air | **Real bug** → **fixed**: the increment moved after the state check |
+| 8 | **M** | `stop()` **did not stop the async chain**: a block already inside it was fully processed afterwards, delivering to a torn-down consumer and arming a fresh timer after `stop()` cleared the table | **Real bug** → **fixed**: `#handleBlock` re-checks `#stopped` both at entry *and* after `await parse`, and `stop()` resets the chain |
+| 9 | **M** | The module error was **reported more than once** (a Tx death leaves the Rx feed attached, so the next chunk failed too), and the 90 s `pair` timer **outlived the terminal error**, emitting `pairing: failed` afterwards | **Real bug** → **fixed**: `#moduleFailed` is idempotent, clears `pair`, and releases the feed and the visibility subscription |
+| 10 | **M** | Exhausting the 16-bit msgId space **rejected an unhandled promise** and silently ate the message — the allocation sat outside `#pump`'s `try`, and every call site reaches the pump with `void` | **Real bug** → **fixed**: the allocation is inside the `try`; the refusal is reported on the consumer channel |
+| 11 | **M** | A `start()` that threw left the session **claiming to be `listening`** with no feed, so every retry was a silent no-op — and the driver's `error` state was **unreachable**, leaving no recovery but a new session | **Real bug** → **fixed**: the failure is caught, reported, and moved to `error`; `restart()` leaves it |
+| 12 | **M** | A replayed block made the receiver transmit **for as long as the attacker played it**. The `duplicate` branch re-ACKed with no per-msgId budget; the turn machine capped the *rate*, not the total | **Real bug** → **fixed**: a `ReAckBudget` of 2 re-ACKs per msgId, retired at each new high-water mark so it cannot grow |
+| 13 | **M** | The matrix variant `profile-browser-defaults-noisy` was named "default processing" but **never set its profile**, so it measured `clean` — the opposite of its claim, invisible because `graceful` is satisfied by decoding nothing | **Real, unreachable but a lying test** → **fixed**: the profile is set, and the browser harness now **asserts** page console errors instead of only logging them |
+| 14 | **M** | A session started while the document was **already hidden** never transmitted: `onVisibilityChange` is change-only and nothing read the initial state | **Real bug** → **fixed**; and the fix introduced a regression (an enterer started hidden had no PAIR retry, so pairing always failed) which was caught and fixed in the same round — see the re-verification table |
+| 15 | **M** | `restart()` **reported success for states it cannot leave** — a no-op on a healthy session, and on a stopped one a promise the API cannot keep | **API honesty** → **fixed**: `{ ok: false, reason: "not-restartable" }` for both, `codec-dead` still outranks it |
+| 16 | **L** | `frameAad` accepted a negative or fractional `len` and silently produced a shorter AAD; `InboundAssembler` with `maxPartialMessages: 0` **silently behaved as 1** | **Real bug (unreachable from the product)** → **fixed**: both refuse now |
+| 17 | **L** | The harness's own `fromPeerId` was `0x0a`/`0x0b`, which `FrameCodec.parse` rejects as `bad-peer` — a trap for the Phase 3/4 fixture that reuses it | **Doc/trap** → **fixed**: real peer ids 0/1 |
+| 18 | **L** | Six exported symbols had zero callers anywhere (`findVariant`, `FrameCodec.selfId`/`peerId`/`peerSalt`, `MessageIdAllocator.highest`, `SoundChatCodec.protocol`, `HarnessEntry.play`); `rxDurationFrames` in the `.d.ts` had survived its class method's deletion with no justification | **Dead code (Rule 6 / 10.1 class 9)** → **all removed**, except `rxDurationFrames`, which the `.d.ts` now keeps with the required "kept because" line. `findVariant` was deleted as a duplicate of an inline copy in the spec, then the spec was switched to the export |
+| 19 | **L** | `REQUIRED_SAMPLE_RATE`/`CODEC_SAMPLE_RATE` and `PAUSE_TAIL_MS`/`RX_PAUSE_TAIL_SECONDS` were **two independent literals for one measured value** | **Doc/drift risk** → **fixed**: both derived, zero literals left |
+| 20 | **L** | The pairwise double-count in the new pause window: passing the measured tail to `pause()` *and* letting it add the tail again shut the sender's own feed 0.5 s too long, which ate the first 0.5 s of the peer's ACK and **broke every single-block message** | **Real bug, introduced by finding 1's fix** → **fixed** within the same round, and the schedule test now pins the window |
+
+### Documentation and artifact findings, fixed
+
+Every one of these was a real, machine-checkable drift, and several were *false
+claims that a correction had already been made*:
+
+- `session.ts`'s header said `ACK_TIMEOUT_MS` is `2 × 1920 + 1000 = 4840 ms`
+  and derived two ratios from it; the constant is 5540 and the header is now
+  arithmetically correct (and the constant is 7460, for finding 5).
+- The master plan's Section 3 message-length row and the Phase 2V checker
+  instruction both said "3.9 s"; it is **3.84 s** (2 × 1.92).
+- "The codec module can permanently die for the rest of the page session"
+  survived in the plan, in `codec.ts` twice, in `session.ts`, in
+  `GGWAVE_DEEP_DIVE.md` twice — **while the log claimed the wording was
+  "corrected everywhere"**. The measured truth is the opposite: the module
+  *survives* an empty-payload trap, so the latch is **policy, not measurement**.
+  All sites now say so, and the deep dive carries a dated correction note.
+- `disableLog()` was corrected in the Section 3 table but not in the Phase 0 spec.
+- The plan's Section 3 asserted a `.wasm` file and an `application/wasm` content
+  type; the wasm is base64-inlined in the single `.js`.
+- The plan's bundle-strategy row still described a dynamic `import()` of the
+  artifact, which Phase 0 proved impossible; it is a `?url` asset plus a classic
+  `<script>`, and no dynamic import of it exists.
+- The Section 3 hard-limit bullet claimed "~33 bytes/sec of user payload"; 33 B/s
+  is the *block* rate. A user gets 43 B per 1.92 s = **22.4 B/s**, or 84 B per
+  3.84 s at the cap = **21.9 B/s**. Both are now stated, with the arithmetic.
+- The plan still listed a fuzz boundary of "exactly 39 bytes" and "exactly the
+  2-block cap" — 39 is the superseded pre-measurement estimate, and a 2-block cap
+  cannot exist in a 64-byte block. `capacity.test.ts`'s document guard was
+  **defeated by that wording**: it banned three literal phrases, not the number.
+  Both are fixed and the guard is now a number-matching regex.
+- An **orphaned sentence fragment** sat at the end of the Section 3
+  message-length bullet — the tail of the pre-correction sentence, with no
+  bullet, no heading, contradicting the sentence above it. Removed.
+- `NOTICE.md` never recorded the **patched** artifact's git blob id, and could
+  not state which of its five hashes are re-verifiable (the research clone is
+  gitignored and no longer a git repository). It now records
+  `50fa40a4367e3d4cb4f3f9186ca67b89d1bd433e`, states the exact contiguous patch
+  measurement (**1803 → 811 bytes**, reconciled against the Phase 1 entry's
+  "1809 → 816"), labels the upstream hashes "verified once" with the command to
+  re-verify them, and notes that the binding surface is only checkable by
+  *executing* the artifact, because none of its export names appears as text in
+  it. `provenance.test.ts` grew from 3 tests to 6 and now machine-checks the
+  patched blob id, the LICENSE blob id (anchored, not "first match in the file"),
+  the absence of `SharedArrayBuffer`/pthreads, and that the upstream identity is
+  recorded.
+- `vendor/ggwave.d.ts` claimed "36 exports; the 14 Sound Chat may call".
+  Measured: 36 exports, **17 declared**, **10 called**. Corrected, and
+  `enableLog`/`txToggleProtocol` got the "kept because" lines class 9 requires.
+- `spike/codec-fatal.test.ts`'s title claimed the module "stays usable
+  afterwards" and its body only `console.log`ged that. The claim is now asserted —
+  it is the measurement that justifies calling the latch a policy.
+- The master plan's status line still said "ready for Phase 0".
+- `prompts/audit/**` and `prompts/app-spec/**` were not on the plan's off-limits
+  list, although two human `docs:` commits landed there mid-feature. Added, with
+  the commit ids, so the boundary claim is accurate rather than approximately so.
+
+### The multi-block scheduling fix (finding 1), in detail
+
+Worth writing out because it is the clearest example in this feature's history of
+**a green suite proving nothing**:
+
+- `transmitAndPause` gained an explicit `startAtSeconds` and an optional
+  `pauseSeconds`, and a new `playBlockAt` is the primitive. `start(0)` keeps its
+  real meaning ("now"), so nothing about the single-block path changed.
+- `#transmitBlocks` now schedules block *k* at
+  `context.currentTime + TRANSMIT_LEAD_SECONDS + k × BLOCK_DURATION_SECONDS`
+  (the lead because `start(when)` treats a past `when` as "now" and would
+  collapse the schedule back onto one instant), and pauses the Rx feed **once**
+  for the whole window rather than once per block.
+- **The mock had to change too**, or the fix would have been unverifiable.
+  `session.test.ts`'s `createBufferSource().start()` now records the schedule,
+  and `deliver` reconstructs the room's audio *by offset*, summing anything
+  that overlaps — which is what a speaker does. A correct adjacent schedule lays
+  down exactly the same samples as the old concatenation; an overlapping one
+  produces a waveform neither end can decode. That is master plan Section 10.1
+  class 4 (mock fidelity) applied to a mock that had been structurally unable to
+  fail.
+- `deep-schedule.test.ts` (**new, 5 tests**) pins the block start offsets, the
+  single-block path, the whole-window pause, and end-to-end delivery of an
+  84-byte message.
+
+### Accepted limits, with the reason stated
+
+1. **The responder side of the pairing handshake has no freshness check.** The
+   displayer has spoken nothing yet, so it cannot tell a recorded initiator frame
+   from a live one: an attacker holding the code *and* a prior recording can
+   occupy one pairing slot. This is a **denial of that pairing, not a
+   disclosure** — nothing is decrypted that should not be, nothing is forged, and
+   the genuine peer is refused rather than silently paired. The initiator is
+   fully protected. Closing it requires inverting the handshake (the displayer
+   speaks first and repeats its PAIR until answered), which is a larger protocol
+   change than a verification phase should ship without harness coverage;
+   **carried into Phase 4**. It is now written into the plan's Section 4 and
+   Section 3, and pinned by a test that *fails* if the responder ever starts
+   refusing, so the documentation cannot silently go stale.
+2. **The browser harness drives the spike's capture path, not the product's.**
+   `harness/page.ts` uses `spike/audio-io`'s `attachCapture`, a second
+   implementation of the ScriptProcessor pipeline, so `startListening`'s error
+   split and `transmitAndPause`'s pause arithmetic are exercised by nothing in a
+   real browser. **Carried into Phase 4**, whose subagent 3 is exactly
+   "self-reception / acoustic environment". Pinned by a test so it cannot be
+   closed silently.
+3. `src/lib/husk/store.test.ts`'s `flushDecrypt()` is a bounded fixed-count drain
+   with the same load sensitivity as finding 6, and it **failed 1 of 6 full-suite
+   runs** (6/6 green in isolation). It is outside this feature's ownership
+   (`src/lib/husk/**` is off limits), so it is **reported, not touched** — a
+   real determinism defect in the repo's own suite, for a human to schedule.
+
+### Claims corrected this phase
+
+1. "`ACK_TIMEOUT_MS` is 2 × 1920 + 1000 = 4840 ms" → the header contradicted its
+   own constant; the constant is now **7460 ms** and the header states the whole
+   derivation.
+2. "A 2-block message is ~3.9 s of transmit" → **3.84 s** (2 × 1.92), in every
+   document that stated it.
+3. "~33 bytes/sec effective payload throughput" → 33 B/s is the *block* rate;
+   a user gets **~22 B/s** of plaintext after the header, `seq` byte and tag.
+4. "The codec module can permanently die for the rest of the page session" → it
+   **survives** an empty-payload trap; the latch is a policy decision, and the
+   wording is now consistent in the plan, `codec.ts`, `session.ts` and the deep
+   dive.
+5. "A recorded PAIR frame carries no state either side acts on beyond 'same key'"
+   → a recorded PAIR frame used to become a **permanent** credential. It now
+   carries a session challenge, and the residual is documented.
+6. "The fuzz boundaries include exactly 39 bytes and exactly the 2-block cap" →
+   39 was the superseded estimate and a 2-block cap cannot exist in a 64-byte
+   block; the real corpus is 1, 5, 44, 63, 64.
+7. "`capacity.test.ts` keeps the stale estimates out of the plan" → its three
+   literal phrases were defeated by "exactly 39 bytes"; the guard is now
+   number-matching.
+8. "the wording is corrected everywhere" (about the module-death claim, made by
+   the pre-Phase-2 verification pass) → it was not, in five places. Now it is.
+9. "`NOTICE.md` records the patched artifact's size" → it recorded the *unpatched*
+   blob id and not the patched one; the patched blob id is now recorded and
+   machine-checked.
+10. The Phase 2 log's finding 9 — "the 2 anti-slop errors are in pre-existing
+    files outside this phase's ownership" — is **false**. Measured with
+    `git blame`: both were `session.ts` and `protocol.ts`, added by Phase 2's own
+    commit `6358109`. The totals coincidentally matched, which is presumably why
+    the misattribution went unnoticed. **Both are now fixed** (a named
+    `SeqParts` type and a `TimerSlots` owner class instead of two open
+    dictionary types), and `pnpm run lint:anti-slop` is **exit 0 with 0 errors**
+    for the first time in the feature's history.
+11. The master plan's Section 6 off-limits list was incomplete: `prompts/audit/**`
+    and `prompts/app-spec/**` were never listed, although two human `docs:`
+    commits touched them. Now listed with their commit ids.
+
+### Verification battery — this session's own numbers, sequential
+
+Run strictly sequentially, nothing else heavy in parallel, on the final code
+state. Filled in from the run, not copied from anywhere.
+
+| Step | Result |
+| :-- | :-- |
+| `pnpm exec tsc --noEmit` (root) | **exit 0**, 0 diagnostics |
+| `pnpm exec tsc --noEmit` (`worker/`) | **exit 0**, 0 diagnostics; `git status --short -- worker` and `git diff --stat -- worker` both **empty** |
+| `pnpm test` | **44 files, 416 tests passed** (22.4 s). Repeated **6 times sequentially: 6/6 green**, identical counts |
+| `pnpm exec vitest run src/lib/sound-chat` | **30 files, 295 tests passed** (21.9 s). Repeated **4 times: 4/4 green**; the primary agent measured 8/8 and 8/8 more across the two fix rounds |
+| `pnpm run lint` | **exit 0** — 0 errors, 2 pre-existing `react-refresh` warnings (`src/components/husk/chat.tsx:49`, `primitives.tsx:254`) |
+| `pnpm run lint:anti-slop` | **exit 0** — **160 warnings, 0 errors** on 64 files. Sound Chat's share: 79, all `no-unknown-parameters` on deliberate `error: unknown` boundaries. Was 154 W + **2 E** (exit 1) at Phase 2 |
+| `pnpm run build` | **exit 0**; entry `index-Dv1-14Y3.js` **307008 B (307.00 kB) / gzip 95.75 kB**; `Get-ChildItem -Recurse .output -Filter *ggwave*` → **0 results** |
+| harness `vite build` | **exit 0**; `assets/ggwave-Cm_DI0UB.js` = **147139 B**, `assets/index-C9UrvUW4.js` = **9100 B** — two separate files |
+| harness Playwright (full, real CSP) | **58 passed, 0 failed, 0 skipped** (4.0 m). `[harness] csp-mode=real server-csp-has-unsafe-eval=false`; `[csp] real-csp samples=92160 violations=0 (patched artifact, no dynamic execution)`; `[browser-tx] pass unique=1 firstMs=1934`; **55 `[matrix]` lines, 0 of them not `pass`** |
+| `deep-verify-teardown.test.ts` ×4 | 4/4 green (12 tests each) |
+| `deep-session-exhaustion` + `deep-session-error-sink` ×4 | 4/4 green (5 tests each) |
+| `deep-schedule.test.ts` ×4 | 4/4 green (5 tests each) |
+| vendored artifact | **147139 B**, SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`; `node --check` **exit 0**; the emitted harness asset's hash is **identical** |
+| WebRTC / STUN / TURN grep | **0** real hits |
+| emoji grep (U+1F000-1FAFF, U+2600-27BF, U+2B00-2BFF, U+FE0F) | **0** |
+| `TODO`/`FIXME`/`XXX`/`HACK` | **0** |
+| storage grep | **4 hits, all `vi.stubGlobal` hostile stubs in tests; 0 in production code** |
+| `git diff --stat` / `git status --short` | 23 modified + 14 untracked = **37 paths, every one under `src/lib/sound-chat/**` or `prompts/sound-chat/**`**; nothing staged |
+| `git diff --name-only d91b774 HEAD` | **51 paths**; `worker/`, `src/lib/husk/`, `src/components/husk/`, `src/routes/`, `src/routeTree.gen.ts`, `package.json`, the three root configs, `public/`, `tools/`, `e2e/`, `live-tests/`, `.github/`, `pnpm-lock.yaml` all **0**. `src/server.ts` = exactly **1** `'wasm-unsafe-eval'` token; `eslint.config.js` = exactly the **3** ignore entries; `.gitignore` = 1 line |
+
+**Monotonic growth, and the non-Sound-Chat suite is untouched:** 25 files / 210
+tests (pre-Phase-2) → 30 / 275 (Phase 2) → **44 / 416**. Of the 416,
+**295 are Sound Chat** (154 at Phase 2, +141) and **121 are not** (unchanged
+since the pre-Phase-2 baseline).
+
+### Files touched this phase
+
+**New (14 test files, all inside `src/lib/sound-chat/`):** `deep-wire-hostile`,
+`deep-crypto-replay`, `deep-session-seams`, `deep-session-lifecycle`,
+`deep-session-error-sink`, `deep-session-exhaustion`, `deep-session-bounds`,
+`deep-harness-matrix`, `deep-schedule`, `deep-verify-pump-queue`,
+`deep-verify-pair-challenge`, `deep-verify-teardown`, `deep-verify-bounds-budget`,
+`deep-verify-harness-constants`. **+141 tests**, 111 of them from subagent 2 and
+30 from the re-verification pass.
+
+**Edited product code** (`src/lib/sound-chat/`): `session.ts` (the schedule, the
+ACK window, the pump, the module-failure path, `stop`/`start`/`restart`, the
+re-ACK budget, the hidden-tab hold, both reporters), `audio-io.ts`
+(`playBlockAt`/`transmitAndPause` scheduling, the protected `options.on*`
+callbacks, the captured `document` in the unsubscribe), `protocol.ts` (the PAIR
+challenge, `frameAad` bounds, the assembler's cap of zero, dead getters), `crypto.ts`
+(`generatePairChallenge`, the domain-separated challenge in the key check),
+`harness/matrix.ts` (the variant's real profile, one contradictory note),
+`harness/page.ts` (the derived pause tail, the dead `play` entry),
+`harness/payloads.ts` (the real 43-byte body and real peer ids), `codec.ts`
+(wording, the dead `protocol` getter), `load-ggwave.ts` (a stale size),
+`vendor/ggwave.d.ts`, `vendor/NOTICE.md`.
+
+**Edited tests/docs:** `session.test.ts`, `protocol.test.ts`, `crypto.test.ts`,
+`provenance.test.ts`, `capacity.test.ts`, `codec-guards.test.ts` (via the
+fatal-trap assertion), `spike/codec-fatal.test.ts`, `spike/codec.test.ts`,
+`spike/fuzz.test.ts`, `harness/fake-mic.spec.ts`, `harness/index.html`, and the
+three prompt documents.
+
+**Untouched, as required:** `worker/**` (zero diff), `src/lib/husk/**`,
+`src/components/husk/**`, `src/routes/**`, `src/routeTree.gen.ts`,
+`package.json`, the root configs, `public/**`, `tools/**`, `e2e/**`,
+`live-tests/**`, and the vendored artifact bytes. No WebRTC/STUN/TURN, no
+variable-length mode, no DSS, no ultrasound; the CSP decision stays closed
+(option (b), the patched artifact); the `ggwave` research clone is kept.
+
+### Handed to Phase 3 (do not redo, re-verify)
+
+1. **The two new public getters.** `session.transmitting` (a transmission is
+   starting or under way, including the multi-block window — the honest "my
+   audio is all on the air" signal) and `session.busy` (a message is in the
+   system). Phase 3's progress UI is built on both; `transmitting` is also what
+   the test harness waits on.
+2. **`restart()` now refuses rather than lying**: `{ok:false,
+   reason:"not-restartable"}` for a state it cannot leave, `{ok:false,
+   reason:"codec-dead"}` when the codec is dead. The real "restart Sound Chat"
+   affordance is Phase 3's: tear the session down and build a new one.
+3. **`error` is now reachable** — a `start()` that cannot succeed lands there,
+   and `restart()` leaves it. That is the "microphone denied" state Phase 3
+   needs, and it was unreachable until this phase.
+4. **The PAIR handshake carries a challenge** (`len` = 24, body
+   `salt(16) ‖ challenge(8) ‖ keyCheck(16)`). Phase 3 needs no knowledge of it;
+   it only matters that pairing now fails closed on a mismatched echo, with the
+   copy "a device answered, but it is using a different pairing code".
+5. **The measured budget and timing, restated with their arithmetic:** 43 bytes
+   in one block, 42 per block in a two-block message, **84 bytes = 84 ASCII
+   characters** at the cap; **1.92 s** per block and **3.84 s** for two;
+   `TURN_GAP_MS` 700; `ACK_TIMEOUT_MS` 7460 for a full message. The user-visible
+   rate is **~22 B/s of plaintext**, not 33.
+6. **The two accepted limits above** are Phase 4's work, recorded in the plan.
+7. Section 10.2 P1–P12 are guarded and tested, and the new suites pin the
+   hostile-input surface far past Section 10.3: every byte of every frame kind at
+   all 64 positions, all 256 `seq` values, every `len`/`msgId`/`fromPeerId`
+   boundary, the full 40-message × 3-delivery dedupe and 400-unreadable-block
+   bound, 500 redeliveries, every teardown path, and a direct attack on P1–P9.
+8. **When a Phase 2V finding says "not fixed", read it.** Three of this phase's
+   findings were deliberately *not* fixed and say why: the responder-side
+   pairing residual, the harness's product-path gap, and the off-limits
+   `store.test.ts` flake.

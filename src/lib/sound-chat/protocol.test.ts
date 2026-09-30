@@ -7,7 +7,12 @@
  * so a passing test means the bytes on the wire are what two peers exchange.
  */
 import { describe, expect, it } from "vitest";
-import { AEAD_TAG_BYTES, derivePairingKeys } from "./crypto";
+import {
+  AEAD_TAG_BYTES,
+  derivePairingKeys,
+  PAIR_CHALLENGE_BYTES,
+  SESSION_SALT_BYTES,
+} from "./crypto";
 import {
   applyAck,
   decideRetry,
@@ -26,6 +31,7 @@ import {
   MessageIdExhaustedError,
   MessageTooLongError,
   MULTI_BLOCK_PLAINTEXT_BYTES,
+  PAIR_BODY_BYTES,
   MULTI_HEADER_BYTES,
   pendingBlocks,
   ProtocolUsageError,
@@ -33,6 +39,9 @@ import {
   WIRE_BLOCK_BYTES,
   type OutboundMessage,
 } from "./protocol";
+
+/** A fixed handshake challenge; the session generates a fresh one per pairing. */
+const TEST_CHALLENGE = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
 const CODE = "ABCD2345";
 const SALT_A = new Uint8Array(16).fill(1);
@@ -46,8 +55,8 @@ async function freshPairage(
   const keys = await derivePairingKeys(CODE);
   const a = new FrameCodec({ keys, selfId: 0, sendSalt: saltA });
   const b = new FrameCodec({ keys, selfId: 1, sendSalt: saltB });
-  const aPair = await a.buildPairFrame();
-  const bPair = await b.buildPairFrame();
+  const aPair = await a.buildPairFrame(TEST_CHALLENGE);
+  const bPair = await b.buildPairFrame(TEST_CHALLENGE);
   expect((await b.parse(aPair)).ok).toBe(true);
   expect((await a.parse(bPair)).ok).toBe(true);
   a.adoptPeerSalt(saltB);
@@ -130,10 +139,16 @@ describe("wire format", () => {
     const keys = await derivePairingKeys(CODE);
     const a = new FrameCodec({ keys, selfId: 0, sendSalt: SALT_A });
     const b = new FrameCodec({ keys, selfId: 1, sendSalt: SALT_B });
-    const frame = await a.buildPairFrame();
+    const frame = await a.buildPairFrame(TEST_CHALLENGE);
     expect(frame[0]).toBe(FRAME_KIND.PAIR);
-    expect(frame[4]).toBe(16);
-    expect(Array.from(frame.subarray(5, 21))).toEqual(Array.from(SALT_A));
+    // The body is the 16-byte salt plus the 8-byte session challenge, and the
+    // key check covers both.
+    expect(frame[4]).toBe(PAIR_BODY_BYTES);
+    expect(PAIR_BODY_BYTES).toBe(SESSION_SALT_BYTES + PAIR_CHALLENGE_BYTES);
+    expect(Array.from(frame.subarray(5, 5 + SESSION_SALT_BYTES))).toEqual(Array.from(SALT_A));
+    expect(Array.from(frame.subarray(5 + SESSION_SALT_BYTES, 5 + PAIR_BODY_BYTES))).toEqual(
+      Array.from(TEST_CHALLENGE),
+    );
     expect(new TextDecoder().decode(frame)).not.toContain(CODE);
     const parsed = await b.parse(frame);
     expect(parsed.ok && parsed.frame.kind === "pair").toBe(true);
@@ -173,7 +188,7 @@ describe("hostile frames (Section 10.3, protocol row)", () => {
   it("refuses a reserved header value, a wrong peer, a bad length and dirty padding", async () => {
     const { a, b } = await freshPairage();
     // A PAIR frame whose reserved msgId field is not zero.
-    const pair = await a.buildPairFrame();
+    const pair = await a.buildPairFrame(TEST_CHALLENGE);
     const reserved = Uint8Array.from(pair);
     reserved[2] = 1;
     expect(await b.parse(reserved)).toEqual({ ok: false, reason: "reserved-field" });
@@ -256,7 +271,7 @@ describe("hostile frames (Section 10.3, protocol row)", () => {
     stranger.adoptPeerSalt(SALT_A);
     expect(await stranger.parse(message)).toEqual({ ok: false, reason: "auth-failed" });
     const strangerDisplayer = new FrameCodec({ keys, selfId: 0, sendSalt: SALT_A });
-    expect(await first.b.parse(await strangerDisplayer.buildPairFrame())).toEqual({
+    expect(await first.b.parse(await strangerDisplayer.buildPairFrame(TEST_CHALLENGE))).toEqual({
       ok: false,
       reason: "auth-failed",
     });

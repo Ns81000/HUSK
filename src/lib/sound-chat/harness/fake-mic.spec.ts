@@ -15,7 +15,7 @@
  *
  * Two more tests cover the pieces this cannot reach: the browser's own Tx path
  * (encode in the page, then feed that WAV back in through a second browser) and
- * the build-time chunk split of the vendored codec.
+ * the build-time `?url` asset split of the vendored codec.
  */
 
 import { execFileSync } from "node:child_process";
@@ -25,7 +25,7 @@ import { chromium, expect, test, type Browser, type Page } from "@playwright/tes
 import { openSoundChatCodec, type SoundChatCodec } from "../spike/codec";
 import { resample } from "../spike/degrade";
 import { encodeWav16 } from "../spike/wav";
-import { CHANNEL_MATRIX, type ChannelVariant } from "./matrix";
+import { CHANNEL_MATRIX, findVariant, type ChannelVariant } from "./matrix";
 import { PRIMARY_PAYLOAD } from "./payloads";
 import type { EncodedBlock, HarnessOptions, HarnessResult } from "./page";
 
@@ -74,15 +74,9 @@ declare global {
  */
 const CSP_MODE = "real";
 
-function variantById(id: string): ChannelVariant {
-  const found = CHANNEL_MATRIX.find((variant) => variant.id === id);
-  if (found === undefined) throw new Error(`unknown channel variant: ${id}`);
-  return found;
-}
-
 function assetFile(dir: string, prefix: string): string {
   const file = readdirSync(dir).find((candidate) => candidate.startsWith(prefix));
-  if (file === undefined) throw new Error(`no ${prefix} chunk in ${dir}`);
+  if (file === undefined) throw new Error(`no ${prefix} asset in ${dir}`);
   return file;
 }
 
@@ -158,6 +152,14 @@ async function captureWithBrowser(
     const entry = await resolveHarnessEntry(page);
     await entry.prepare(options);
     const result = await entry.run();
+    // Page-side errors are asserted, not just logged. A `graceful` variant is
+    // satisfied by "nothing decoded", so an uncaught exception in the audio
+    // callback — which runs on the audio thread, outside `runHarness`'s own try
+    // — used to pass unnoticed (P2V finding 17).
+    expect(
+      consoleErrors,
+      `${options.profile}@${options.deviceRate}: the page logged errors`,
+    ).toEqual([]);
     return result;
   } finally {
     if (consoleErrors.length > 0) {
@@ -373,8 +375,8 @@ test.describe("browser Tx path", () => {
     await page.close();
     await sharedBrowser.close();
 
-    const result = await captureWithBrowser(wavPath, harnessOptions(variantById("clean")));
-    const clean = variantById("clean");
+    const result = await captureWithBrowser(wavPath, harnessOptions(findVariant("clean")));
+    const clean = findVariant("clean");
     const observation = assertVariantContract(clean, result);
     console.log(
       `[browser-tx] ${observation.verdict} unique=${observation.unique} firstMs=${observation.firstMs}`,
@@ -384,18 +386,18 @@ test.describe("browser Tx path", () => {
 
 /** Master plan Section 7 step 8, before any UI consumes the codec. */
 test.describe("build output", () => {
-  test("emits the vendored codec as its own lazy chunk", () => {
+  test("emits the vendored codec as its own lazy ?url asset", () => {
     execFileSync("pnpm", ["exec", "vite", "build", "--config", VITE_CONFIG], {
       cwd: process.cwd(),
       stdio: "inherit",
       shell: true,
     });
     const assets = resolve(BUILD_DIR, "assets");
-    const codecChunk = assetFile(assets, "ggwave-");
-    const entryChunk = assetFile(assets, "index-");
+    const codecAsset = assetFile(assets, "ggwave-");
+    const entryAsset = assetFile(assets, "index-");
 
-    const codecSource = readFileSync(resolve(assets, codecChunk), "utf8");
-    const entrySource = readFileSync(resolve(assets, entryChunk), "utf8");
+    const codecSource = readFileSync(resolve(assets, codecAsset), "utf8");
+    const entrySource = readFileSync(resolve(assets, entryAsset), "utf8");
     // The vendored artifact is 147139 bytes (patched). NOTICE.md's recorded size
     // and SHA-256 are machine-checked by
     // `src/lib/sound-chat/provenance.test.ts`, so this comment cannot drift again.
@@ -403,11 +405,12 @@ test.describe("build output", () => {
     // ...and the emitted asset must be the vendored bytes verbatim, not a
     // re-encoded or minified copy of them.
     expect(
-      readFileSync(resolve(assets, codecChunk)).equals(
+      readFileSync(resolve(assets, codecAsset)).equals(
         readFileSync(resolve(process.cwd(), "src/lib/sound-chat/vendor/ggwave.js")),
       ),
     ).toBe(true);
-    // ...and the main chunk must not: the codec is reached only by dynamic import.
+    // ...and the main bundle must not: the codec is reached only by a `?url`
+    // URL plus a classic `<script>` tag, never through the module graph.
     expect(entrySource.length).toBeLessThan(30_000);
     expect(entrySource).toContain("ggwave-");
 

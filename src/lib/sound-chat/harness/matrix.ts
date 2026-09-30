@@ -239,7 +239,7 @@ const LEVEL_VARIANTS: VariantSpec[] = [
     id: "gain-minus-60db",
     label: "-60 dB (effectively silent)",
     expectation: "decode",
-    note: "Quantised to a handful of LSBs: must not decode, must not error.",
+    note: "Quantised to a handful of LSBs; measured to decode once in Chromium. Must never error.",
     build: impairing("gain-minus-60db", (clean) => applyGainDb(clean, -60)),
   },
 ];
@@ -421,6 +421,11 @@ const PROFILE_VARIANTS: VariantSpec[] = [
     expectation: "graceful",
     note: "Default processing plus noise: the realistic worst case for a naive getUserMedia call.",
     inProcess: false,
+    // The `profile` really is set here. It used to be omitted, so `resolve()`
+    // handed this variant the *clean* capture profile — a measurement named
+    // "default processing" that measured the opposite, invisible because its
+    // `graceful` expectation is satisfied by decoding nothing (P2V finding 10).
+    profile: "browser-defaults",
     build: impairing("profile-browser-defaults-noisy", (clean) => addWhiteNoise(clean, 20, 31)),
   },
 ];

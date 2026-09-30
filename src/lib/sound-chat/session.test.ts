@@ -12,19 +12,28 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { flushReceiver, openSoundChatCodec, type SoundChatCodec } from "./codec";
 import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
-import { FrameCodec } from "./protocol";
+import { FrameCodec, MAX_MESSAGE_BLOCKS, MAX_SEND_ATTEMPTS } from "./protocol";
 import {
   ACK_TIMEOUT_MS,
   BACKOFF_MAX_MS,
+  BACKOFF_MIN_MS,
   BLOCK_DURATION_MS,
   MAX_PENDING_MESSAGES,
+  PAIR_CONFIRM_TIMEOUT_MS,
+  PAIR_PEER_TIMEOUT_MS,
   SoundChatSession,
   TURN_GAP_MS,
   type SessionEvent,
 } from "./session";
 
+/** A fixed handshake challenge; the session generates a fresh one per pairing. */
+const TEST_CHALLENGE = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
+
+/** One scheduled playback: the samples and the AudioContext time they start at. */
+type PlayEvent = { at: number; samples: Float32Array };
 
 /**
  * One room clock shared by every fake context, advanced as audio is fed in —
@@ -67,7 +76,7 @@ class FakeAudioContext {
   state = "running";
   readonly destination = { kind: "destination" };
   readonly processors: FakeProcessor[] = [];
-  readonly played: Float32Array[] = [];
+  readonly played: PlayEvent[] = [];
   closeCalls = 0;
 
   /** The one room clock: real audio time, shared by both peers. */
@@ -120,15 +129,26 @@ class FakeAudioContext {
 
   // An arrow field, so `this` is the context without aliasing it (which the
   // lint rules reject, correctly).
+  //
+  // `start(when)` records the *schedule*, not just the fact of playing. A mock
+  // that ignored `when` structurally could not see two blocks scheduled at the
+  // same instant — which is exactly the defect this file now guards: with
+  // `start()` and no argument, a 2-block message's two waveforms overlapped and
+  // summed at the destination, so the 84-byte cap was undecodable over real
+  // audio while every test stayed green (Phase 2V, master plan Section 10.1
+  // class 4).
   createBufferSource = (): unknown => {
     const source = {
       buffer: null as FakeBuffer | null,
       started: false,
+      startAtSeconds: 0,
       connect: () => source,
-      start: () => {
+      start: (when?: number) => {
         source.started = true;
+        // `start(0)` means "now" in the real API, and so does no argument at all.
+        source.startAtSeconds = when === undefined || when === 0 ? roomClock : when;
         const samples = source.buffer?.copied[0];
-        if (samples !== undefined) this.played.push(samples);
+        if (samples !== undefined) this.played.push({ at: source.startAtSeconds, samples });
       },
     };
     return source;
@@ -150,8 +170,12 @@ type Peer = {
   readonly events: SessionEvent[];
   readonly moduleErrors: unknown[];
   readonly listenerErrors: unknown[];
+  /** Audio played but not yet taken by a `deliver`. */
+  pendingAir: () => number;
   /** Everything this peer has played since the last call. */
   takeAir: () => Float32Array[];
+  /** The same, with each block's scheduled AudioContext start time. */
+  takeSchedule: () => PlayEvent[];
 };
 
 type PeerOptions = {
@@ -196,7 +220,13 @@ async function createPeer(options: PeerOptions): Promise<Peer> {
     events,
     moduleErrors,
     listenerErrors,
+    pendingAir: () => context.played.length,
     takeAir: () => {
+      const played = context.played.map((event) => event.samples);
+      context.played.length = 0;
+      return played;
+    },
+    takeSchedule: () => {
       const played = [...context.played];
       context.played.length = 0;
       return played;
@@ -220,13 +250,49 @@ function feed(to: Peer, samples: Float32Array): number {
 }
 
 /**
+ * Lays a *schedule* onto the room, summing anything that overlaps — which is
+ * what a speaker does.
+ *
+ * This is the difference between a mock that can catch a scheduling bug and one
+ * that cannot. A schedule of adjacent blocks (the correct one) lays down exactly
+ * the same samples as a plain concatenation; a schedule where two blocks start at
+ * the same instant — what `AudioBufferSourceNode.start()` with no argument
+ * produces — sums two FSK bursts, and the real receiver decodes nothing. The
+ * old mock appended in call order, so a 2-block message "worked" no matter how
+ * the product scheduled it, and the 84-byte cap was untested against real audio
+ * (Phase 2V, master plan Section 10.1 class 4).
+ */
+function feedSchedule(to: Peer, schedule: PlayEvent[]): number {
+  if (schedule.length === 0) return 0;
+  const rate = 48_000;
+  let first = Number.POSITIVE_INFINITY;
+  let last = Number.NEGATIVE_INFINITY;
+  for (const event of schedule) {
+    first = Math.min(first, event.at);
+    last = Math.max(last, event.at + event.samples.length / rate);
+  }
+  const total = Math.max(0, Math.ceil((last - first) * rate));
+  const mixed = new Float32Array(total);
+  for (const event of schedule) {
+    const offset = Math.round((event.at - first) * rate);
+    for (let index = 0; index < event.samples.length; index += 1) {
+      mixed[offset + index] = (mixed[offset + index] ?? 0) + (event.samples[index] ?? 0);
+    }
+  }
+  return feed(to, mixed);
+}
+
+/**
  * Feeds a whole transmission — every block of it, back to back, exactly as the
  * sender transmits it — and then lets the turn gap pass, so any reply the
  * receiver owes has been played by the time this resolves.
  */
 async function deliver(from: Peer, to: Peer): Promise<number> {
+  // The sender must have finished before its air is taken: a two-block message
+  // is two separate `start()` calls, and taking early feeds only the first.
+  await transmitted(from);
   let frames = 0;
-  for (const samples of from.takeAir()) frames += feed(to, samples);
+  frames += feedSchedule(to, from.takeSchedule());
   await settle();
   await passTurnGap();
   return frames;
@@ -262,30 +328,116 @@ async function passTurnGap(): Promise<void> {
   await settle();
 }
 
-/** Lets the async authentication/assembly chain finish. */
-async function settle(times = 24): Promise<void> {
-  for (let index = 0; index < times; index += 1) {
+/** A real hang must fail the test with a message, never spin forever. */
+const MAX_FLUSH_TURNS = 4_000;
+/**
+ * A drain floor, not a completion condition. crypto.subtle hands results back on
+ * libuv's threadpool, so the number of event-loop turns a seal/assemble chain needs is
+ * load-dependent; 32 was measured to be too few under contention.
+ */
+const SETTLE_FLOOR_TURNS = 256;
+
+/**
+ * Waits until `ready` holds, yielding real `setImmediate` turns in between.
+ * Bounded, so a genuine failure surfaces as this error rather than a timeout.
+ */
+async function until(what: string, ready: () => boolean): Promise<void> {
+  for (let turn = 0; turn < MAX_FLUSH_TURNS; turn += 1) {
+    if (ready()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Waits until `peer` has put everything it was going to transmit on the air.
+ *
+ * This replaces a fixed `setImmediate` turn count, which is *not* sufficient
+ * here: `crypto.subtle` hands results back through libuv's threadpool, so how
+ * many turns a seal/assemble chain needs is load-dependent. The old fixed count
+ * failed about 40% of runs under contention (measured in Phase 2V: 4 of 10 full
+ * suites, 1 of 5 in isolation), reading a half-finished session and reporting
+ * `expected 0 to be >= 90`.
+ *
+ * The transport machine is the honest completion signal: a send stays
+ * `transmitting` until its last block is played, then moves to `awaiting_ack`.
+ * `SoundChatSession.transmitting` also covers the window after `send()` returns
+ * but before the first block is played, so taking the air can never race the
+ * pump.
+ */
+async function transmitted(peer: Peer): Promise<void> {
+  await until(
+    `${peer.label} to finish transmitting (state ${peer.session.state})`,
+    () => !peer.session.transmitting,
+  );
+}
+
+/**
+ * Lets the async authentication/assembly chain finish.
+ *
+ * A drain, not a completion condition — call `transmitted()` or a
+ * `pairing.kind` wait for that. Kept generous because a threadpool callback
+ * can land several turns after the last observable change.
+ */
+async function settle(): Promise<void> {
+  let quiet = 0;
+  let turn = 0;
+  while (turn < SETTLE_FLOOR_TURNS || quiet < 4) {
+    if (turn >= MAX_FLUSH_TURNS) {
+      throw new Error(`the async chain never settled after ${MAX_FLUSH_TURNS} turns`);
+    }
+    const before = activity();
+    await new Promise((resolve) => setImmediate(resolve));
+    quiet = activity() === before ? quiet + 1 : 0;
+    turn += 1;
+  }
+}
+
+/** Everything a still-pending async chain would have to touch. */
+function activity(): string {
+  let signature = "";
+  for (const peer of createdPeers) {
+    const { session, context, events } = peer;
+    signature += [
+      session.state,
+      session.pairing.kind,
+      session.stats.blocksDecoded,
+      session.stats.framesUnreadable,
+      session.stats.messagesDelivered,
+      session.stats.duplicatesSuppressed,
+      session.stats.conflicts,
+      session.stats.acksSent,
+      session.stats.retries,
+      events.length,
+      context.played.length,
+    ].join(",");
+    signature += "|";
+  }
+  return signature;
 }
 
 /**
  * Runs the two-way pairing handshake to completion. Each `deliver` already waits
- * out the turn gap, so the displayer's answer is played by the time the second
- * delivery starts.
+ * for its sender to finish and waits out the turn gap, so the displayer's answer
+ * is played by the time the second delivery starts. The loop makes the handshake
+ * condition-driven rather than pass-counted: it ends only once both sides have
+ * actually paired, so a slow `crypto.subtle` round trip cannot leave a
+ * half-finished handshake behind.
  */
 async function pairUp(displayer: Peer, enterer: Peer): Promise<void> {
   displayer.session.start();
   enterer.session.start();
-  await settle();
-  await deliver(enterer, displayer);
-  await deliver(displayer, enterer);
-  // A second pass, so a reply that needed one more quiet window still lands.
-  // It is a no-op for an already-paired pair.
-  if (displayer.session.pairing.kind !== "paired" || enterer.session.pairing.kind !== "paired") {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     await deliver(enterer, displayer);
     await deliver(displayer, enterer);
+    if (displayer.session.pairing.kind === "paired" && enterer.session.pairing.kind === "paired") {
+      return;
+    }
   }
+  throw new Error(
+    `handshake did not complete: displayer ${displayer.session.pairing.kind}, ` +
+      `enterer ${enterer.session.pairing.kind}`,
+  );
 }
 
 let visibility: "visible" | "hidden" = "visible";
@@ -366,9 +518,15 @@ describe("pairing handshake", () => {
     });
     displayer.session.start();
     enterer.session.start();
-    await settle();
-    deliver(enterer, displayer);
-    await settle();
+    // The displayer can only fail once it has *received* the enterer's PAIR
+    // frame and failed to open it with a key that does not match, so wait for
+    // that outcome rather than a turn count. (This call was previously
+    // un-awaited and relied on a later `settle()` covering it.)
+    await deliver(enterer, displayer);
+    await until(
+      "the displayer to reject the wrong code",
+      () => displayer.session.pairing.kind === "failed",
+    );
     expect(displayer.session.pairing.kind).toBe("failed");
     expect(displayer.session.pairingFailureMessage).toContain("different pairing code");
     expect(displayer.events.some((event) => event.type === "heard-unreadable")).toBe(true);
@@ -405,7 +563,7 @@ describe("messages, acks and dedupe", () => {
   it("delivers a message and resolves the sender on the peer's ACK", async () => {
     const { displayer, enterer } = await pairedPeers();
     expect(displayer.session.send("hello there")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     expect(await deliver(displayer, enterer)).toBeGreaterThanOrEqual(90);
     const messages = enterer.events.filter((event) => event.type === "message");
     expect(messages).toHaveLength(1);
@@ -428,7 +586,7 @@ describe("messages, acks and dedupe", () => {
     const { displayer, enterer } = await pairedPeers();
     const text = "H".repeat(84);
     expect(displayer.session.send(text)).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     // Two blocks, one after the other: 180 frames of audio.
     expect(await deliver(displayer, enterer)).toBeGreaterThanOrEqual(180);
     const messages = enterer.events.filter((event) => event.type === "message");
@@ -441,7 +599,7 @@ describe("messages, acks and dedupe", () => {
   it("renders one message however many times the codec redelivers the block (P4)", async () => {
     const { displayer, enterer } = await pairedPeers();
     expect(displayer.session.send("twice")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     const waveform = displayer.takeAir()[0];
     if (waveform === undefined) {
       throw new Error(`expected a transmission, state is ${displayer.session.state}`);
@@ -522,7 +680,7 @@ describe("messages, acks and dedupe", () => {
       selfId: 1,
       sendSalt: enterer.session.sessionSalt,
     });
-    await feedSamples(displayer, codecB.encode(await realEnterer.buildPairFrame()));
+    await feedSamples(displayer, codecB.encode(await realEnterer.buildPairFrame(TEST_CHALLENGE)));
     expect(displayer.session.pairing.kind).toBe("paired");
     expect(displayer.moduleErrors).toHaveLength(0);
   });
@@ -546,7 +704,7 @@ describe("retry, hold and failure (P11, P12)", () => {
   it("retries the same msgId with byte-identical audio, then gives up (P11)", async () => {
     const { displayer } = await pairedPeers();
     expect(displayer.session.send("no ack coming")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     const first = displayer.takeAir()[0];
     if (first === undefined) throw new Error("expected a first attempt");
     const airings: Float32Array[] = [first];
@@ -583,14 +741,14 @@ describe("retry, hold and failure (P11, P12)", () => {
   it("treats a peer message while awaiting our ACK as a collision (P11)", async () => {
     const { displayer, enterer } = await pairedPeers();
     expect(displayer.session.send("collide")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     const firstAttempt = displayer.takeAir()[0];
     if (firstAttempt === undefined) throw new Error("expected a first attempt");
     // The peer transmits a couple of seconds later — after the displayer's own
     // Rx feed is listening again, which is what makes this a *heard* collision.
     advanceRoom(2.5);
     expect(enterer.session.send("after you")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(enterer);
     await deliver(enterer, displayer);
     expect(displayer.events.some((event) => event.type === "message")).toBe(true);
     expect(displayer.session.stats.blocksDecoded).toBeGreaterThan(0);
@@ -618,7 +776,7 @@ describe("retry, hold and failure (P11, P12)", () => {
     setVisibility("hidden");
     expect(displayer.session.state).toBe("hidden_hold");
     expect(displayer.session.send("while hidden")).toEqual({ ok: true, queued: false });
-    await settle();
+    await transmitted(displayer);
     await vi.advanceTimersByTimeAsync(TURN_GAP_MS * 4);
     await settle();
     expect(displayer.takeAir()).toHaveLength(0);
@@ -662,7 +820,7 @@ describe("retry, hold and failure (P11, P12)", () => {
     expect(displayer.session.pairing.kind).toBe("paired");
 
     expect(displayer.session.send("boom").ok).toBe(true);
-    await settle();
+    await transmitted(displayer);
     expect(displayer.session.state).toBe("module_error");
     expect(displayer.moduleErrors).toHaveLength(1);
     const outbound = displayer.events.filter((event) => event.type === "outbound");
@@ -738,7 +896,7 @@ describe("send refusals, consumer errors and teardown", () => {
     expect(displayer.moduleErrors).toHaveLength(0);
     // And the feed is still alive: a message from the peer still arrives.
     expect(enterer.session.send("still here").ok).toBe(true);
-    await settle();
+    await transmitted(enterer);
     await deliver(enterer, displayer);
     expect(displayer.session.stats.blocksDecoded).toBeGreaterThan(0);
     expect(displayer.moduleErrors).toHaveLength(0);
@@ -771,5 +929,102 @@ describe("send refusals, consumer errors and teardown", () => {
     await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS * 4);
     await settle();
     expect(displayer.context.played.length).toBe(played);
+  });
+});
+
+describe("the timing contract the medium sets (10.2 P11, class 11)", () => {
+  it("derives every deadline from the measured 1.92 s block", () => {
+    // 90 whole 1024-sample frames at 48000 Hz. Everything below is arithmetic on
+    // this one measurement, so a changed protocol constant must move them all.
+    expect(BLOCK_DURATION_MS).toBe(Math.round((90 * 1024 * 1000) / 48_000));
+    // 0.5 s of measured Rx pause tail + 200 ms of decode/scheduling margin.
+    expect(TURN_GAP_MS).toBe(700);
+    // Two blocks + the turn gap + the peer's own ACK block + 1 s of slack. The
+    // timer is armed when the audio is *scheduled*, so the window has to cover
+    // the whole round trip from the first sample leaving us — which for the
+    // longest message the cap allows is
+    // `2 x 1920 + 700 + 1920 + 1000`.
+    expect(ACK_TIMEOUT_MS).toBe(
+      BLOCK_DURATION_MS * MAX_MESSAGE_BLOCKS + TURN_GAP_MS + BLOCK_DURATION_MS + 1_000,
+    );
+    expect(ACK_TIMEOUT_MS).toBe(7_460);
+    // A one-block message gets the tighter window, so a lost ACK on a short
+    // message is still noticed promptly.
+    expect(BLOCK_DURATION_MS * 1 + TURN_GAP_MS + BLOCK_DURATION_MS + 1_000).toBeLessThan(
+      ACK_TIMEOUT_MS,
+    );
+    expect(BACKOFF_MAX_MS).toBeGreaterThan(BACKOFF_MIN_MS);
+    // Long enough to cover a two-block send plus a human reacting to the code.
+    expect(PAIR_CONFIRM_TIMEOUT_MS).toBe(BLOCK_DURATION_MS * 2 + 2_000);
+    expect(PAIR_PEER_TIMEOUT_MS).toBeGreaterThan(PAIR_CONFIRM_TIMEOUT_MS);
+  });
+
+  it("gives up on a displayer that never hears a peer, and says so", async () => {
+    const alone = await createPeer({ label: "alone", role: "displayer", codec: codecA });
+    alone.session.start();
+    expect(alone.session.pairing.kind).toBe("waiting-for-peer");
+    // Nothing else advances time in this test, so the boundary is exact.
+    await vi.advanceTimersByTimeAsync(PAIR_PEER_TIMEOUT_MS - 1);
+    expect(alone.session.pairing.kind).toBe("waiting-for-peer");
+    await vi.advanceTimersByTimeAsync(2);
+    await settle();
+    expect(alone.session.pairing.kind).toBe("failed");
+    expect(alone.session.pairingFailureMessage).toContain("No paired device was heard");
+    // Failing closed: a timeout never looks like a pairing.
+    expect(alone.session.send("anyone there?")).toEqual({ ok: false, reason: "not-paired" });
+  });
+
+  it("gives up on an enterer that hears no confirmation", async () => {
+    const displayer = await createPeer({ label: "displayer", role: "displayer", codec: codecA });
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      codec: codecB,
+      pairingCode: displayer.session.pairingCode,
+    });
+    displayer.session.start();
+    enterer.session.start();
+    // Only the enterer's PAIR frame is delivered; the answer never comes back.
+    // `deliver` already advances the turn gap, so this measures from the point
+    // the frame landed. The exact 1 ms boundary is pinned by the displayer test
+    // above, where nothing else advances the clock.
+    await deliver(enterer, displayer);
+    displayer.takeAir();
+    expect(enterer.session.pairing.kind).toBe("awaiting-confirmation");
+    await vi.advanceTimersByTimeAsync(PAIR_CONFIRM_TIMEOUT_MS);
+    await settle();
+    expect(enterer.session.pairing.kind).toBe("failed");
+    expect(enterer.session.pairingFailureMessage).toContain("did not confirm");
+    // The displayer did pair with someone, so only the enterer failed — and the
+    // enterer never claims a pairing it did not get.
+    expect(displayer.session.pairing.kind).toBe("paired");
+    expect(enterer.session.send("anyone there?")).toEqual({ ok: false, reason: "not-paired" });
+  });
+
+  it("keeps the outbound queue bounded when the peer never acknowledges", async () => {
+    const displayer = await createPeer({ label: "displayer", role: "displayer", codec: codecA });
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      codec: codecB,
+      pairingCode: displayer.session.pairingCode,
+    });
+    await pairUp(displayer, enterer);
+    expect(displayer.session.send("lost ack")).toEqual({ ok: true, queued: false });
+    await transmitted(displayer);
+    // The peer hears nothing at all, so nothing is ever acked: the session must
+    // exhaust its attempts and report a failure per message, never grow (P12).
+    for (let index = 0; index < MAX_PENDING_MESSAGES + 6; index += 1) {
+      displayer.session.send(`queued ${index}`);
+    }
+    await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS * (MAX_SEND_ATTEMPTS + 1));
+    await settle();
+    const failed = displayer.events.filter(
+      (event: SessionEvent) => event.type === "outbound" && event.status === "failed",
+    );
+    expect(failed.length).toBeGreaterThan(0);
+    // Nothing unbounded accumulated, and the session is still usable.
+    expect(displayer.session.state).not.toBe("module_error");
+    expect(displayer.moduleErrors).toHaveLength(0);
   });
 });

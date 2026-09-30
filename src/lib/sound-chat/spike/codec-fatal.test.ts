@@ -60,6 +60,13 @@ describe("codec failure modes (deliberate, on throwaway module instances)", () =
     }
     console.log(`[phase0] module after empty-payload trap: ${after}`);
     expect(trapped).not.toBe("not thrown");
+    // The claim this test exists to guard: an empty payload *traps*, but it does
+    // not make the wasm module unusable. `codec.ts` abandons the instance by
+    // policy, and this is the measurement that justifies calling that a policy
+    // rather than a fact. Asserted, not just logged — the log-only version let a
+    // genuinely dead module pass this file.
+    expect(after).toContain("usable");
+    expect(after).toMatch(/waveform bytes=\d+/);
   });
 
   it("aborts on a negative instance id, and a fresh module still works", async () => {

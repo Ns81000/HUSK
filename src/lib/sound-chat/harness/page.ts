@@ -12,6 +12,7 @@
  * and no copy of the pipeline.
  */
 
+import { RX_PAUSE_TAIL_SECONDS } from "../audio-io";
 import {
   attachCapture,
   requestMicrophone,
@@ -72,7 +73,6 @@ export type EncodedBlock = { sampleCount: number; base64: string };
 export type HarnessEntry = {
   prepare: (options: HarnessOptions) => void;
   encode: (hex: string) => Promise<EncodedBlock>;
-  play: (hex: string) => Promise<{ sampleCount: number; durationMs: number }>;
   run: () => Promise<HarnessResult>;
 };
 
@@ -82,8 +82,8 @@ declare global {
   }
 }
 
-/** The self-transmit pause outlives the audio, mirroring Phase 1's plan. */
-const PAUSE_TAIL_MS = 500;
+/** The self-transmit pause outlives the audio — the same measured tail Phase 1 uses. */
+const PAUSE_TAIL_MS = RX_PAUSE_TAIL_SECONDS * 1000;
 
 let prepared: { options: HarnessOptions } | undefined;
 let codec: SoundChatCodec | undefined;
@@ -209,33 +209,10 @@ async function encodeHex(hex: string): Promise<EncodedBlock> {
   return { sampleCount: samples.length, base64: toBase64(float32ToBytes(samples)) };
 }
 
-/**
- * Encodes one hex payload and plays it through this page's own output — the
- * sound its own speaker would put into the room (and into its own microphone).
- * Not used by the WAV-fed capture runs; it exists so the browser Tx path can be
- * exercised on its own.
- */
-async function playHex(hex: string): Promise<{ sampleCount: number; durationMs: number }> {
-  const { context: audioContext, codec: activeCodec } = await ensureContextAndCodec();
-  // `Float32Array.from` guarantees a plain ArrayBuffer, never a wasm view.
-  const samples = Float32Array.from(activeCodec.encode(fromHex(hex)));
-  const buffer = audioContext.createBuffer(1, samples.length, audioContext.sampleRate);
-  buffer.copyToChannel(samples, 0);
-  const source = audioContext.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioContext.destination);
-  source.start();
-  return {
-    sampleCount: samples.length,
-    durationMs: Math.round((samples.length / audioContext.sampleRate) * 1000),
-  };
-}
-
 window.__soundChatHarness = {
   prepare: (options) => {
     prepared = { options };
   },
   encode: encodeHex,
-  play: playHex,
   run: runHarness,
 };

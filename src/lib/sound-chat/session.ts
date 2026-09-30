@@ -29,7 +29,9 @@
  *   A complete message is acked in ~1.95 s; a *partial* one waits
  *   `PARTIAL_ACK_DELAY_MS` (2220 ms, past the point where a second block would
  *   have been decoded) and is then acked, so ~4.15 s. `ACK_TIMEOUT_MS` is
- *   2 x 1920 + 1000 = 4840 ms: 2.5x the fast path, +0.7 s over the slow one.
+ *   2 x 1920 + `TURN_GAP_MS` + 1000 = 5540 ms: 2.84x the fast path, +1.39 s
+ *   over the slow one. The turn gap is inside the window on purpose — a reply
+ *   is only heard after the peer's Rx feed reopens.
  * - pairing: the enterer's confirmation window is 2 blocks + 2 s, and the
  *   displayer's listen stays open for `PAIR_PEER_TIMEOUT_MS` because a human is
  *   typing a code into the other device.
@@ -41,6 +43,7 @@ import type { SoundChatCodec } from "./codec";
 import {
   derivePairingKeys,
   generatePairingCode,
+  generatePairChallenge,
   generateSessionSalt,
   validatePairingCode,
 } from "./crypto";
@@ -56,6 +59,7 @@ import {
 import {
   FrameCodec,
   InboundAssembler,
+  MAX_MESSAGE_BLOCKS,
   MAX_MESSAGE_PLAINTEXT_BYTES,
   MAX_SEND_ATTEMPTS,
   MessageIdAllocator,
@@ -72,6 +76,14 @@ import { transition, type TransportEvent, type TransportState } from "./transpor
 
 /** Measured: 90 frames x 1024 samples / 48000 Hz. */
 export const BLOCK_DURATION_MS = 1_920;
+/** The same measurement on the AudioContext clock the schedule is built on. */
+export const BLOCK_DURATION_SECONDS = BLOCK_DURATION_MS / 1_000;
+/**
+ * Scheduling head-room. `AudioBufferSourceNode.start(when)` treats a `when` in
+ * the past as "now", which would collapse a multi-block schedule back onto one
+ * instant — so every transmission starts a little into the future.
+ */
+export const TRANSMIT_LEAD_SECONDS = 0.05;
 /**
  * The gap a replying transmission must leave after it *heard* something.
  *
@@ -85,8 +97,21 @@ export const BLOCK_DURATION_MS = 1_920;
  * decode/scheduling margin) puts the whole reply inside the peer's window.
  */
 export const TURN_GAP_MS = 700;
-/** 2 blocks + the 700 ms turn gap + 1000 ms: see the derivation above. */
-export const ACK_TIMEOUT_MS = BLOCK_DURATION_MS * 2 + TURN_GAP_MS + 1_000;
+/**
+ * The ACK wait, sized for the *longest* message the cap allows.
+ *
+ * The timer is armed when the audio is *scheduled*, not when it finishes, so the
+ * window has to cover the whole round trip from the first sample leaving us:
+ * our full transmission (up to 2 blocks), the peer's decode (~0.03 s), the turn
+ * gap, the peer's own ACK block, and its decode. That is
+ * `2 x 1920 + 700 + 1920 + 1000 = 7460 ms`. A constant sized for a single block
+ * (5540 ms) timed out every 2-block message: the ACK then landed while the
+ * machine was in `backoff`, where `ACK_RECEIVED` is a no-op, so the sender
+ * retried and finally reported a failure for a message the peer had rendered
+ * (P2V finding F4, measured in Phase 2V).
+ */
+export const ACK_TIMEOUT_MS =
+  BLOCK_DURATION_MS * MAX_MESSAGE_BLOCKS + TURN_GAP_MS + BLOCK_DURATION_MS + 1_000;
 /** Past one whole block, so a second block of the same message can still land. */
 export const PARTIAL_ACK_DELAY_MS = BLOCK_DURATION_MS + 300;
 export const BACKOFF_MIN_MS = 400;
@@ -144,6 +169,89 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 type TimerKey = "ack" | "backoff" | "partialAck" | "pair" | "quiet";
+type TimerSlot = ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Every session timer, in one named owner. A class rather than a bare record so
+ * the key set is closed and each slot keeps the exact type `setTimeout` returns.
+ */
+class TimerSlots {
+  ack: TimerSlot = undefined;
+  backoff: TimerSlot = undefined;
+  partialAck: TimerSlot = undefined;
+  pair: TimerSlot = undefined;
+  quiet: TimerSlot = undefined;
+
+  read(key: TimerKey): TimerSlot {
+    return this[key];
+  }
+
+  clear(key: TimerKey): void {
+    this[key] = undefined;
+  }
+}
+
+/** How many times one delivered message may be acknowledged again. */
+export const MAX_RE_ACKS_PER_MESSAGE = 2;
+
+/**
+ * A bounded budget for re-acknowledging a message we have already rendered.
+ *
+ * The codec redelivers every block 2-4 times, so one re-ACK per redelivery is
+ * what stops a lost acknowledgement looping the sender. But the *turn* machine
+ * only caps the rate, not the total: an attacker replaying one recording could
+ * otherwise keep us transmitting an ACK indefinitely. Two extra ACKs per message
+ * cover the measured redelivery count with room to spare and bound the loop
+ * (Section 10.2 P12).
+ */
+class ReAckBudget {
+  readonly #used = new Map<number, number>();
+  #highWater = -1;
+
+  /** True while another re-ACK is allowed; consumes one when it is. */
+  take(msgId: number): boolean {
+    if (msgId <= this.#highWater) {
+      const used = this.#used.get(msgId) ?? 0;
+      if (used >= MAX_RE_ACKS_PER_MESSAGE) return false;
+      this.#used.set(msgId, used + 1);
+      return true;
+    }
+    // A new high-water mark retires everything below it, so the map holds at
+    // most the messages above the mark and never grows with session length.
+    this.#used.clear();
+    this.#highWater = msgId;
+    this.#used.set(msgId, 1);
+    return true;
+  }
+
+  clear(): void {
+    this.#used.clear();
+    this.#highWater = -1;
+  }
+
+  get size(): number {
+    return this.#used.size;
+  }
+}
+
+/**
+ * Whether the page is hidden right now. `onVisibilityChange` is a change-only
+ * subscription, so the initial state has to be read once by whoever starts.
+ */
+function documentIsHidden(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.visibilityState === "hidden";
+}
+
+/** Branch-free byte equality — a challenge is compared like a tag, not a string. */
+function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
+}
 
 export class SoundChatSession {
   readonly #options: SoundChatSessionOptions;
@@ -154,20 +262,37 @@ export class SoundChatSession {
   #state: TransportState = "idle";
   #pairing: PairingState = { kind: "idle" };
   #outbound: OutboundMessage | null = null;
+  /** True while `#pump` owns the head of the queue, across its `await`s. */
+  #pumping = false;
+  /**
+   * True from the moment we begin building a transmission until it is all on the
+   * air. Set by the PAIR path as well as the message path, so a caller can never
+   * read a half-built block set as "nothing to send".
+   */
+  #txBusy = false;
   #pending: string[] = [];
   #partialAck: { msgId: number; mask: number } | null = null;
   #ackExtensions = 0;
+  /**
+   * The handshake challenge, once we have one: invented by the enterer, echoed
+   * by the displayer. `null` means "we have not initiated", which is what lets
+   * the displayer accept whatever challenge it is given and then pin it.
+   */
+  #pairChallenge: Uint8Array | null = null;
+  /** Reported once; a module failure is terminal, so it cannot repeat. */
+  #moduleFailureReported = false;
+  /**
+   * How many times each delivered msgId may be re-acknowledged, and the highest
+   * msgId seen. Bounded by construction (P2V finding 9): without it, anyone who
+   * can play one recording can make us transmit an ACK for as long as they keep
+   * playing it.
+   */
+  readonly #reAckBudget = new ReAckBudget();
   #listen: ListenHandle | null = null;
   #unsubscribe: Unsubscribe | null = null;
   #stopped = false;
   #chain: Promise<void> = Promise.resolve();
-  readonly #timers: Record<TimerKey, ReturnType<typeof setTimeout> | undefined> = {
-    ack: undefined,
-    backoff: undefined,
-    partialAck: undefined,
-    pair: undefined,
-    quiet: undefined,
-  };
+  readonly #timers = new TimerSlots();
   /** True from the moment we hear a block until the quiet timer says otherwise. */
   #heardRecently = false;
   /** The ACK we owe the peer, kept until a quiet moment lets it go out. */
@@ -244,26 +369,73 @@ export class SoundChatSession {
     // A method call is opaque to TS's narrowing, which is what we want here:
     // `#emit` is exactly what changed the state.
     if (this.#currentState() !== "listening") return;
-    this.#listen ??= startListening({
-      context: this.#options.context,
-      stream: this.#options.stream,
-      codec: this.#options.codec,
-      onDecoded: (block) => this.#onDecodedBlock(block),
-      onModuleError: (error) => this.#moduleFailed(error),
-      onDecodedError: (error) => this.#reportListenerError(error),
-    });
+    try {
+      this.#listen ??= startListening({
+        context: this.#options.context,
+        stream: this.#options.stream,
+        codec: this.#options.codec,
+        onDecoded: (block) => this.#onDecodedBlock(block),
+        onModuleError: (error) => this.#moduleFailed(error),
+        onDecodedError: (error) => this.#reportListenerError(error),
+      });
+    } catch (error) {
+      // `START` had already moved the machine to `listening`, so a throw here
+      // used to leave the session claiming to listen with no feed at all — and
+      // `start()`'s own guard made every retry a silent no-op (P2V finding 8).
+      // The recoverable `error` state is the honest representation: the user can
+      // fix the cause and START again.
+      this.#emit({ type: "RECOVERABLE_ERROR" });
+      this.#reportModuleError(error);
+      return;
+    }
     this.#unsubscribe ??= onVisibilityChange((hidden) => this.#onVisibility(hidden));
+    // The subscription is change-only, so a session started while the page is
+    // already hidden would never receive a HIDDEN event and would transmit on a
+    // timer or a retry (P2V finding 12).
+    if (documentIsHidden()) this.#onVisibility(true);
     this.#beginPairing();
   }
 
   /**
-   * Leaves `module_error`/`error` and returns to a startable state. Refuses when
-   * the codec itself is dead: that is terminal for the page session (measured —
-   * a trap leaves the C++ state undefined), so the honest recovery is a reload,
-   * offered by the UI as "restart Sound Chat". No loop, no retry storm.
+   * True while a transmission of ours is starting or under way — including the
+   * window after `send()` returns, before the first block is played. A
+   * multi-block message stays `true` until its *last* block is played, so this
+   * is the honest "my audio is all on the air now" signal. Phase 3 shows its
+   * progress from exactly this.
    */
-  restart(): { ok: true } | { ok: false; reason: "codec-dead" } {
+  get transmitting(): boolean {
+    return this.#txBusy || this.#state === "transmitting";
+  }
+
+  /**
+   * True while a message of ours is in the system: the pump has claimed the
+   * queue, or a transmission is waiting for its acknowledgement. False once the
+   * peer has acknowledged it or given up on it.
+   */
+  get busy(): boolean {
+    return this.#pumping || this.#outbound !== null;
+  }
+
+  /**
+   * Leaves `module_error`/`error` and returns to a startable state. Refuses when
+   * the codec itself is dead: that is terminal for the page session **by policy,
+   * not by measurement** — the wasm module does survive an empty-payload trap
+   * (Phase 0, `spike/codec-fatal.test.ts`), but a trap in Emscripten leaves the
+   * C++ state undefined, so reusing a trapped instance is unsound. The honest
+   * recovery is a reload, offered by the UI as "restart Sound Chat". No loop, no
+   * retry storm.
+   *
+   * It also refuses a session it cannot actually leave, rather than reporting
+   * success for a no-op (P2V finding 13): `RESTART` is a no-op in every healthy
+   * state, and this driver performs no teardown, so "restart" is exactly
+   * `module_error`/`error` -> `idle`. Phase 3 owns the real "restart Sound Chat"
+   * affordance, which tears the session down and builds a new one.
+   */
+  restart(): { ok: true } | { ok: false; reason: "codec-dead" | "not-restartable" } {
     if (this.#options.codec.state !== "ready") return { ok: false, reason: "codec-dead" };
+    if (this.#state !== "module_error" && this.#state !== "error") {
+      return { ok: false, reason: "not-restartable" };
+    }
     this.#emit({ type: "RESTART" });
     return { ok: true };
   }
@@ -281,8 +453,13 @@ export class SoundChatSession {
     this.#listen?.stop();
     this.#listen = null;
     this.#outbound = null;
+    this.#pumping = false;
     this.#pending = [];
     this.#partialAck = null;
+    this.#reAckBudget.clear();
+    // Any block already inside the chain is abandoned, so nothing that is still
+    // awaiting `crypto.subtle` can deliver to a torn-down consumer afterwards.
+    this.#chain = Promise.resolve();
     this.#emit({ type: "STOP" });
   }
 
@@ -301,8 +478,23 @@ export class SoundChatSession {
     if (bytes.length > MAX_MESSAGE_PLAINTEXT_BYTES) return { ok: false, reason: "too-long" };
     if (this.#pending.length >= MAX_PENDING_MESSAGES) return { ok: false, reason: "queue-full" };
     this.#pending.push(text);
-    const queued = this.#outbound !== null;
-    void this.#pump();
+    // "Queued" means anything is ahead of this message: a transmission under
+    // way, a pump that has claimed the queue, or a message still waiting. With
+    // the pump deferred (below) a fresh send leaves `#pending` at 1, so the count
+    // is what tells the first message from the rest.
+    const queued = this.#outbound !== null || this.#pumping || this.#pending.length > 1;
+    // The radio is claimed here, synchronously, so `transmitting` is true the
+    // moment `send()` returns rather than only once the pump's first turn runs.
+    this.#txBusy = true;
+    // The pump is never entered on this stack. `#pump` awaits `crypto.subtle`,
+    // and a consumer called from its own `catch` can call `send()` again; run
+    // inline, that recursed on one stack until the stack overflowed, with
+    // `queue-full` never reached because the queue never held more than one item
+    // (P2V finding D2). A microtask break costs nothing: the audio cannot start
+    // before the next frame either way.
+    queueMicrotask(() => {
+      void this.#pump();
+    });
     return { ok: true, queued };
   }
 
@@ -317,25 +509,47 @@ export class SoundChatSession {
     } else {
       this.#pairing = pairingTransition(this.#pairing, { type: "BEGIN_ENTER", code: this.#code });
       this.#armPairTimer(PAIR_CONFIRM_TIMEOUT_MS, { type: "CONFIRM_TIMEOUT" });
+      // The enterer initiates, so it is the side that must supply freshness: a
+      // recorded PAIR frame from an earlier session with the same code would
+      // otherwise authenticate for ever, because the key check only proves "this
+      // code, at some point". The displayer has to echo this challenge back.
+      this.#pairChallenge = generatePairChallenge(this.#options.random);
       void this.#transmitPairFrame();
     }
     this.#notify({ type: "pairing", state: this.#pairing });
   }
 
   async #transmitPairFrame(): Promise<void> {
-    const frame = await this.#wire.buildPairFrame();
+    const challenge = this.#pairChallenge;
+    if (challenge === null) return;
+    this.#txBusy = true;
+    let frame: Uint8Array;
+    try {
+      frame = await this.#wire.buildPairFrame(challenge);
+    } finally {
+      this.#txBusy = false;
+    }
     this.#emit({ type: "TRANSMIT_BEGIN" });
     if (this.#state !== "transmitting") return;
     if (!this.#play(frame)) return;
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
   }
 
-  #onPairFrame(salt: Uint8Array): void {
+  #onPairFrame(salt: Uint8Array, challenge: Uint8Array): void {
     if (isPaired(this.#pairing)) return;
     if (
       this.#pairing.kind !== "waiting-for-peer" &&
       this.#pairing.kind !== "awaiting-confirmation"
     ) {
+      return;
+    }
+    // We initiated, so the peer's answer must echo *our* challenge. A
+    // recording of a previous session's answer carries that session's challenge
+    // and is refused here, which is what makes a cross-session replay useless
+    // even though the key check itself verifies (P2V finding 2).
+    const expected = this.#pairChallenge;
+    if (expected !== null && !constantTimeEqual(challenge, expected)) {
+      this.#onPairRejected();
       return;
     }
     // Our own misuse (a different salt on an already-paired codec) must not look
@@ -352,8 +566,10 @@ export class SoundChatSession {
     this.#clearTimer("pair");
     this.#notify({ type: "pairing", state: next });
     // The displayer's answer goes out after the enterer's Rx feed is listening
-    // again — the same turn-gap rule the ACK path obeys.
+    // again — the same turn-gap rule the ACK path obeys. It echoes the
+    // challenge it was given, which is what proves the answer is live.
     if (next.kind === "paired" && next.role === "displayer") {
+      this.#pairChallenge = challenge;
       if (this.#heardRecently) this.#pendingPairReply = true;
       else void this.#transmitPairFrame();
     }
@@ -388,6 +604,20 @@ export class SoundChatSession {
     // Coming back: resume a held message before starting anything new.
     if (this.#outbound !== null) {
       void this.#transmitBlocks(pendingBlocks(this.#outbound));
+      return;
+    }
+    // An enterer whose page was hidden when it started has never put its PAIR
+    // frame on the air, and nothing else would ever send it — pairing then died
+    // at `PAIR_CONFIRM_TIMEOUT_MS` with a message about the *other* device. The
+    // turn gap has already elapsed inside the quiet timer, so this is the same
+    // "the channel is ours" moment every other reply uses.
+    if (
+      this.#options.role === "enterer" &&
+      this.#pairChallenge !== null &&
+      !isPaired(this.#pairing)
+    ) {
+      if (this.#heardRecently) this.#pendingPairReply = true;
+      else void this.#transmitPairFrame();
       return;
     }
     void this.#pump();
@@ -446,22 +676,64 @@ export class SoundChatSession {
   }
 
   async #pump(): Promise<void> {
-    if (this.#stopped || this.#outbound !== null || this.#pending.length === 0) return;
-    if (!isPaired(this.#pairing)) return;
-    const frames: Uint8Array[] = [];
-    const msgId = this.#ids.next();
-    const plaintext = encoder.encode(this.#pending[0] ?? "");
+    if (this.#stopped || this.#outbound !== null || this.#pumping) {
+      this.#txBusy = false;
+      return;
+    }
+    if (this.#pending.length === 0) {
+      this.#txBusy = false;
+      return;
+    }
+    if (!isPaired(this.#pairing)) {
+      this.#txBusy = false;
+      return;
+    }
+    // The queue slot is claimed *synchronously*, before the first `await`.
+    // `#pump` is async, so two `send()` calls in one tick used to both pass the
+    // guard above and both read `#pending[0]`: one message was sealed twice
+    // under two msgIds and one was silently lost (P2V finding 1). Claiming the
+    // text here, before anything can suspend, is what makes the pump single.
+    const text = this.#pending.shift();
+    if (text === undefined) {
+      this.#txBusy = false;
+      return;
+    }
+    this.#pumping = true;
+    let msgId: number;
+    let plaintext: Uint8Array;
     try {
-      frames.push(...(await this.#wire.buildMessageFrames(plaintext, msgId)));
+      // The allocator refusing to wrap is designed behaviour; nothing catching
+      // that refusal was not (P2V finding 7). Both failures are our own misuse.
+      msgId = this.#ids.next();
+      plaintext = encoder.encode(text);
+    } catch (error) {
+      this.#pumping = false;
+      this.#txBusy = false;
+      this.#reportLater(error);
+      return;
+    }
+    let frames: Uint8Array[];
+    try {
+      frames = await this.#wire.buildMessageFrames(plaintext, msgId);
     } catch (error) {
       // A body the protocol refuses: our own misuse, reported on the consumer
       // channel, and the queue keeps moving instead of stalling forever.
-      this.#pending.shift();
-      this.#reportListenerError(error);
-      void this.#pump();
+      this.#pumping = false;
+      this.#txBusy = false;
+      this.#reportLater(error);
       return;
     }
-    this.#pending.shift();
+    // `stop()` may have run while the frames were being sealed. Re-checking here
+    // is what keeps the public `busy` getter honest: without it a session torn
+    // down mid-seal re-created `#outbound` and emitted an `outbound` event
+    // *after* teardown, and `busy` stayed true for good (P2V finding D1).
+    if (this.#stopped) {
+      this.#pumping = false;
+      this.#txBusy = false;
+      return;
+    }
+    this.#pumping = false;
+    this.#txBusy = false;
     this.#outbound = {
       msgId,
       plaintext,
@@ -482,6 +754,18 @@ export class SoundChatSession {
       this.#failOutbound(outbound);
       return;
     }
+    this.#emit({ type: "TRANSMIT_BEGIN" });
+    if (this.#state !== "transmitting") {
+      // Refused — held because the tab is hidden, or the peer owns the air. An
+      // attempt is only *spent* once the machine actually started audio; a
+      // hide/show cycle used to cost one of three, so three cycles failed a
+      // message that had never reached the air (P2V finding 4).
+      return;
+    }
+    // A small lead so the first scheduled block is never in the past, which
+    // `AudioBufferSourceNode.start` would treat as "now" and so collapse the
+    // whole schedule back onto one instant.
+    const startAtSeconds = this.#options.context.currentTime + TRANSMIT_LEAD_SECONDS;
     outbound.attempts += 1;
     if (outbound.attempts > 1) {
       this.#stats.retries += 1;
@@ -492,25 +776,42 @@ export class SoundChatSession {
         attempts: outbound.attempts,
       });
     }
-    this.#emit({ type: "TRANSMIT_BEGIN" });
-    if (this.#state !== "transmitting") return;
-    for (const index of indices) {
+    for (const [offset, index] of indices.entries()) {
       // A tab that goes hidden mid-message stops the remaining blocks here: the
       // machine is in hidden_hold by then and refuses to start audio anyway.
       if (this.#state !== "transmitting") return;
       const frame = outbound.frames[index];
       if (frame === undefined) continue;
-      if (!this.#play(frame)) return;
+      // Blocks are scheduled back to back on the AudioContext clock. `start()`
+      // with no argument starts at `currentTime`, so two of them in the same tick
+      // would *sum* at the destination and a 2-block message would be
+      // undecodable (measured, Phase 2V). The first block carries the pause for
+      // the whole window; the rest pass 0 so the feed is not re-armed per block.
+      //
+      // The raw audio only — `ListenHandle.pause` adds the measured tail itself.
+      // Passing the tail in as well shut the sender's own feed for 0.5 s longer
+      // than the window, which ate the first 0.5 s of the peer's ACK and broke
+      // every single-block message (measured, Phase 2V).
+      const first = offset === 0;
+      const hold = first ? indices.length * BLOCK_DURATION_SECONDS : 0;
+      if (!this.#play(frame, startAtSeconds + offset * BLOCK_DURATION_SECONDS, hold)) return;
     }
     this.#emit({ type: "TRANSMIT_DONE" });
-    this.#armAckTimer();
+    this.#armAckTimer(indices.length);
   }
 
-  #play(frame: Uint8Array): boolean {
+  #play(frame: Uint8Array, startAtSeconds = 0, pauseSeconds?: number): boolean {
     const listen = this.#listen;
     if (listen === null) return false;
     try {
-      transmitAndPause(listen, this.#options.context, this.#options.codec, frame);
+      transmitAndPause(
+        listen,
+        this.#options.context,
+        this.#options.codec,
+        frame,
+        startAtSeconds,
+        pauseSeconds,
+      );
       return true;
     } catch (error) {
       // A throw on the Tx path is the module dying (or our frame contract
@@ -534,12 +835,18 @@ export class SoundChatSession {
     void this.#pump();
   }
 
-  #armAckTimer(): void {
+  #armAckTimer(blockCount: number): void {
     this.#clearTimer("ack");
+    // A partial retry only sends the missing blocks, so its window shrinks with
+    // them; the shared ceiling still applies.
+    const scaled = Math.min(
+      ACK_TIMEOUT_MS,
+      blockCount * BLOCK_DURATION_MS + TURN_GAP_MS + BLOCK_DURATION_MS + 1_000,
+    );
     this.#timers.ack = setTimeout(() => {
       this.#timers.ack = undefined;
       this.#onAckDeadline();
-    }, ACK_TIMEOUT_MS);
+    }, scaled);
   }
 
   #onAckDeadline(): void {
@@ -581,9 +888,19 @@ export class SoundChatSession {
    * "something was heard" signal (P6), never an exception into the mic feed.
    */
   async #handleBlock(block: Uint8Array): Promise<void> {
+    // A block already inside the chain when `stop()` ran is not processed: it
+    // would deliver a message to a consumer that has torn down, and `#noteHeard`
+    // would arm a fresh timer after `stop()` cleared the table (P2V finding 5).
+    if (this.#stopped) return;
     this.#stats.blocksDecoded += 1;
     this.#noteHeard();
     const outcome = await this.#wire.parse(block);
+    // Re-checked *after* the await: the guard at the top cannot cover a block
+    // that was already suspended inside `parse` when `stop()` ran, and such a
+    // block used to be delivered to a consumer that had torn down (P2V finding
+    // D5). No timer is armed either — this returns before `#noteHeard`'s
+    // successor could re-arm one.
+    if (this.#stopped) return;
     if (!outcome.ok) {
       this.#stats.framesUnreadable += 1;
       this.#emit({ type: "HEARD_UNREADABLE" });
@@ -598,7 +915,7 @@ export class SoundChatSession {
     }
     const frame = outcome.frame;
     if (frame.kind === "pair") {
-      this.#onPairFrame(frame.salt);
+      this.#onPairFrame(frame.salt, frame.challenge);
       return;
     }
     if (frame.kind === "ack") {
@@ -658,8 +975,12 @@ export class SoundChatSession {
       case "duplicate":
         // Already rendered; re-ACK so a lost acknowledgement cannot make the
         // sender retry for ever (the codec redelivers every block 2-4 times).
+        // The budget bounds that: a replayed recording must not be able to make
+        // this device transmit for as long as the attacker keeps playing it.
         this.#stats.duplicatesSuppressed += 1;
-        void this.#sendAck(outcome.msgId, outcome.mask);
+        if (this.#reAckBudget.take(outcome.msgId)) {
+          void this.#sendAck(outcome.msgId, outcome.mask);
+        }
         break;
       case "conflict":
         // Authenticated but inconsistent with what we already hold: never
@@ -717,17 +1038,31 @@ export class SoundChatSession {
       return;
     }
     this.#ackExtensions += 1;
-    this.#armAckTimer();
+    this.#armAckTimer(pendingBlocks(this.#outbound).length);
   }
 
   /** Terminal for the session: report once, cancel every retry, never loop. */
   #moduleFailed(error: unknown): void {
+    // Idempotent. A Tx death leaves the Rx feed attached, so the next capture
+    // chunk fails too and used to report a second time (P2V finding 6).
+    if (this.#moduleFailureReported) return;
+    this.#moduleFailureReported = true;
     this.#emit({ type: "MODULE_DIED" });
-    for (const key of ["ack", "backoff", "partialAck", "quiet"] as const) {
+    // `pair` is cleared here as well as in `stop()`: a 90 s listen timer that
+    // outlived a terminal module error later emitted `pairing: failed`.
+    for (const key of ["ack", "backoff", "partialAck", "pair", "quiet"] as const) {
       this.#clearTimer(key);
     }
     this.#pendingAck = null;
     this.#pendingPairReply = false;
+    this.#partialAck = null;
+    // The feed is released too, so no further chunk can re-report or keep the
+    // mic indicator lit on a session that can no longer transmit.
+    this.#listen?.stop();
+    this.#listen = null;
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    this.#reAckBudget.clear();
     const outbound = this.#outbound;
     if (outbound !== null) {
       outbound.status = "failed";
@@ -740,16 +1075,59 @@ export class SoundChatSession {
     }
     this.#outbound = null;
     this.#pending = [];
-    this.#options.onModuleError?.(error);
+    this.#reportModuleError(error);
   }
 
-  /** A consumer of ours threw: its own channel, never a codec verdict. */
+  /**
+   * Reports a consumer-channel failure and then continues the queue — from a
+   * *fresh* frame, never on this one.
+   *
+   * `#pump` is called with `void` at five sites, so re-entering it from inside
+   * its own `catch` recursed on one stack: a consumer that re-sent from
+   * `onListenerError` overflowed the stack at depth ~1500, and `queue-full`
+   * never fired because the queue never held more than one item. Hopping to a
+   * microtask breaks the cycle (P2V finding D2).
+   */
+  #reportLater(error: unknown): void {
+    this.#reportListenerError(error);
+    queueMicrotask(() => {
+      void this.#pump();
+    });
+  }
+
+  /**
+   * A consumer of ours threw: its own channel, never a codec verdict.
+   *
+   * The reporter is protected in turn (P2V finding 3). It is called from
+   * `#notify`, from the chain's own `.catch` and from the pump's misuse paths,
+   * so a consumer whose *error handler* throws used to escape into all of them:
+   * `#chain` stayed rejected, every later block was skipped, and the session
+   * still reported `listening` — deaf but healthy-looking.
+   */
   #reportListenerError(error: unknown): void {
-    if (this.#options.onListenerError !== undefined) {
-      this.#options.onListenerError(error);
+    this.#reportTo(this.#options.onListenerError, error, "a session error handler threw");
+  }
+
+  /**
+   * The module-failure channel, protected exactly like the listener one. A
+   * throwing `onModuleError` used to escape into `#play`'s catch and reject the
+   * pump, because every call site reaches it with `void` (P2V finding D4).
+   */
+  #reportModuleError(error: unknown): void {
+    this.#reportTo(this.#options.onModuleError, error, "a module error handler threw");
+  }
+
+  #reportTo(report: ((error: unknown) => void) | undefined, error: unknown, label: string): void {
+    if (report === undefined) {
+      console.error("Sound Chat: a session consumer threw", error);
       return;
     }
-    console.error("Sound Chat: a session consumer threw", error);
+    try {
+      report(error);
+    } catch (secondary) {
+      console.error(`Sound Chat: ${label}`, secondary);
+      console.error("Sound Chat: a session consumer threw", error);
+    }
   }
 
   #emit(event: TransportEvent): void {
@@ -775,10 +1153,10 @@ export class SoundChatSession {
   }
 
   #clearTimer(key: TimerKey): void {
-    const timer = this.#timers[key];
+    const timer = this.#timers.read(key);
     if (timer !== undefined) {
       clearTimeout(timer);
-      this.#timers[key] = undefined;
+      this.#timers.clear(key);
     }
   }
 }

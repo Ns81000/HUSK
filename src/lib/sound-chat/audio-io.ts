@@ -33,14 +33,34 @@
  *   rejection-handled. Nothing here may ever leak an unhandled rejection.
  */
 
-import { CODEC_SAMPLES_PER_FRAME, type SoundChatCodec } from "./codec";
+import { CODEC_SAMPLE_RATE, CODEC_SAMPLES_PER_FRAME, type SoundChatCodec } from "./codec";
 
 /** The one device rate Sound Chat runs at (a protocol constant, not a device fact). */
-export const REQUIRED_SAMPLE_RATE = 48000;
+export const REQUIRED_SAMPLE_RATE = CODEC_SAMPLE_RATE;
 
 /** The Rx feed stays paused this long past the transmit audio itself. */
 export const RX_PAUSE_TAIL_SECONDS = 0.5;
 
+/**
+ * Invokes a caller-supplied reporter without ever letting it throw.
+ *
+ * Every callback this module accepts runs on the audio thread or inside a codec
+ * guard, where an exception is not a nuisance but a torn-down feed. A consumer's
+ * bug must never become ours (master plan Section 10.1 class 1, extended in
+ * Phase 2V to the *reporting* callbacks as well — P2V finding D4).
+ */
+function reportSafely(
+  report: ((error: unknown) => void) | undefined,
+  error: unknown,
+  label: string,
+): void {
+  if (report === undefined) return;
+  try {
+    report(error);
+  } catch (secondary) {
+    console.error(`Sound Chat: ${label}`, secondary);
+  }
+}
 const MICROPHONE_CONSTRAINTS: MediaTrackConstraints = {
   // WebRTC's default pipeline runs noise suppression, AGC and AEC, all of
   // which are hostile to an FSK tone burst.
@@ -193,19 +213,30 @@ export function startListening(options: ListenOptions): ListenHandle {
       decoded = codec.decode(event.inputBuffer.getChannelData(0));
     } catch (error) {
       state.stopped = true;
-      options.onModuleError?.(error);
+      reportSafely(options.onModuleError, error, "a module error handler threw");
       return;
     }
     if (decoded === null) return;
 
     // Layer 2 — the application. A consumer that throws is a consumer bug: it
     // must not stop the mic feed and must never be reported as a dead codec
-    // (independent verification pass, master plan Section 10.1 class 1).
+    // (independent verification pass, master plan Section 10.1 class 1). Its
+    // *error* handler is protected in turn: a consumer whose reporter also throws
+    // must not escape into the audio callback, which runs on a thread where a
+    // throw tears the whole feed down (P2V finding D4).
     try {
       onDecoded(decoded);
     } catch (error) {
-      if (options.onDecodedError !== undefined) options.onDecodedError(error);
-      else console.error("Sound Chat: the decoded-payload consumer threw", error);
+      if (options.onDecodedError !== undefined) {
+        try {
+          options.onDecodedError(error);
+        } catch (secondary) {
+          console.error("Sound Chat: a decoded-payload error handler threw", secondary);
+          console.error("Sound Chat: the decoded-payload consumer threw", error);
+        }
+      } else {
+        console.error("Sound Chat: the decoded-payload consumer threw", error);
+      }
     }
   };
 
@@ -252,11 +283,20 @@ export type TransmitResult = {
  * Plays one encoded block through the speakers: codec encode -> copy ->
  * AudioBuffer -> AudioBufferSourceNode. The context is guaranteed 48000 Hz by
  * `createAudioContext`, so the encoded samples map 1:1 onto the buffer.
+ *
+ * `startAtSeconds` is an explicit AudioContext timestamp, not a delay. It
+ * matters: a multi-block message plays its blocks *back to back*, and two
+ * `start()` calls with no argument both start at `currentTime` — so the two
+ * waveforms would sum at the destination and a 2-block message would be
+ * undecodable (measured, Phase 2V: the 84-byte cap did not work over real
+ * audio). A caller transmitting several blocks schedules them at
+ * `startAt + index * blockSeconds`.
  */
-export function transmit(
+export function playBlockAt(
   context: AudioContext,
   codec: SoundChatCodec,
   payload: Uint8Array,
+  startAtSeconds: number,
 ): TransmitResult {
   // `Float32Array.from` guarantees a plain ArrayBuffer-backed copy of the
   // codec's wasm-memory view, as `copyToChannel` requires.
@@ -266,34 +306,54 @@ export function transmit(
   const source = context.createBufferSource();
   source.buffer = buffer;
   source.connect(context.destination);
-  source.start();
+  source.start(startAtSeconds);
   return {
     sampleCount: samples.length,
     durationMs: Math.round((samples.length / context.sampleRate) * 1000),
   };
 }
 
+/** One block, started as soon as the context allows. */
+export function transmit(
+  context: AudioContext,
+  codec: SoundChatCodec,
+  payload: Uint8Array,
+): TransmitResult {
+  return playBlockAt(context, codec, payload, 0);
+}
+
 /**
- * The composed send the transport uses every time: pause the Rx feed for the
- * exact transmit window (plus the measured tail) *before* the first sample
- * leaves the speaker, so our own transmission is never decoded by ourselves.
+ * The composed send the transport uses for a single block: pause the Rx feed
+ * for the exact transmit window (plus the measured tail) *before* the first
+ * sample leaves the speaker, so our own transmission is never decoded by
+ * ourselves.
+ *
+ * `pauseSeconds` lets a caller that is transmitting several blocks hold the feed
+ * shut for the *whole* window in one call rather than once per block — otherwise
+ * the last block's tail would be counted from the last block's start and the
+ * sender would decode its own second block.
  */
 export function transmitAndPause(
   listen: ListenHandle,
   context: AudioContext,
   codec: SoundChatCodec,
   payload: Uint8Array,
+  startAtSeconds = 0,
+  pauseSeconds?: number,
 ): TransmitResult {
+  // Encoded first, because the pause has to cover a window whose length is only
+  // known once the block's real sample count is.
   const samples = Float32Array.from(codec.encode(payload));
-  const durationMs = Math.round((samples.length / context.sampleRate) * 1000);
-  listen.pause(durationMs / 1000);
+  const durationSeconds = samples.length / context.sampleRate;
+  const hold = pauseSeconds ?? durationSeconds;
+  if (hold > 0) listen.pause(hold);
   const buffer = context.createBuffer(1, samples.length, context.sampleRate);
   buffer.copyToChannel(samples, 0);
   const source = context.createBufferSource();
   source.buffer = buffer;
   source.connect(context.destination);
-  source.start();
-  return { sampleCount: samples.length, durationMs };
+  source.start(startAtSeconds);
+  return { sampleCount: samples.length, durationMs: Math.round(durationSeconds * 1000) };
 }
 
 /**
@@ -320,7 +380,11 @@ export type Unsubscribe = () => void;
  */
 export function onVisibilityChange(listener: (hidden: boolean) => void): Unsubscribe {
   if (typeof document === "undefined") return () => {};
-  const handler = () => listener(document.visibilityState === "hidden");
-  document.addEventListener("visibilitychange", handler);
-  return () => document.removeEventListener("visibilitychange", handler);
+  // The document is captured, not re-read at unsubscribe time: if the global is
+  // ever replaced between `add` and `remove`, the latter threw a `TypeError` out
+  // of a call documented as never throwing (P2V finding D8).
+  const target = document;
+  const handler = () => listener(target.visibilityState === "hidden");
+  target.addEventListener("visibilitychange", handler);
+  return () => target.removeEventListener("visibilitychange", handler);
 }

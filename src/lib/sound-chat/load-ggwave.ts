@@ -21,9 +21,9 @@
  * the way upstream's own browser example does: as a classic `<script>`, which
  * puts the top-level `var` on `window`.
  *
- * `?url` (rather than a plain import) keeps the 148 KB artifact out of the JS
- * module graph: Vite emits it as its own hashed file under `/assets/*` and only
- * the URL string lands in this chunk.
+ * `?url` (rather than a plain import) keeps the 147139-byte artifact out of the
+ * JS module graph: Vite emits it as its own hashed file under `/assets/*` and
+ * only the URL string lands in this chunk.
  *
  * This file deliberately lives *outside* `vendor/`: anything inside that folder
  * inherits its `"type": "commonjs"`, which would make `import.meta` a syntax

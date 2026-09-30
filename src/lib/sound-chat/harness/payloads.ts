@@ -1,14 +1,20 @@
 /**
  * Deterministic test payloads for the Phase 0 harness.
  *
- * Payloads are modelled on the locked wire format (master plan Section 4):
+ * Payloads follow the locked wire format (master plan Section 4):
  * `ver | msgId | fromPeerId | len | ciphertext+tag | zero padding` in one fixed
  * 64-byte block. The "ciphertext" here is a deterministic pseudo-random byte
- * pattern, not real crypto — Phase 2 owns that — but it exercises the same
- * binary-safety surface (every byte value, including 0x00 and >= 0x80).
+ * pattern and the trailing 16 bytes stand in for the AEAD tag, not real crypto
+ * — Phase 2 owns that — but it exercises the same binary-safety surface (every
+ * byte value, including 0x00 and >= 0x80) at the real measured capacity.
  */
 
 import { CODEC_PAYLOAD_LENGTH } from "../spike/codec";
+
+/** Section 4 byte offsets, counted from the measured single-block budget. */
+const HEADER_BYTES = 5;
+/** 64 - 5 header bytes - 16 AEAD tag bytes, measured in Phase 2. */
+const SINGLE_BLOCK_PLAINTEXT_BYTES = CODEC_PAYLOAD_LENGTH - HEADER_BYTES - 16;
 
 export type TestPayload = {
   id: string;
@@ -24,17 +30,25 @@ export function toHex(bytes: Uint8Array): string {
   return hex;
 }
 
+/** Peer ids are 0 and 1 (`PeerId`); the locked layout has no other values. */
+const DISPLAYER_PEER_ID = 0x0;
+const ENTERER_PEER_ID = 0x1;
+
 /**
- * 64-byte block for `tag`: msgId = tag, 39 bytes of body, zero padding.
- * Body bytes come from a small LCG so any payload is reproducible anywhere.
+ * 64-byte block for `tag`: msgId = tag, 43 bytes of body, then 16 bytes that
+ * stand in for the AEAD tag. Body bytes come from a small LCG so any payload is
+ * reproducible anywhere.
  */
-export function wireBlock(tag: number, bodyBytes = 39): Uint8Array {
+export function wireBlock(tag: number, bodyBytes = SINGLE_BLOCK_PLAINTEXT_BYTES): Uint8Array {
   const block = new Uint8Array(CODEC_PAYLOAD_LENGTH);
   block[0] = 1; // version
   block[1] = (tag >> 8) & 0xff; // msgId hi
   block[2] = tag & 0xff; // msgId lo
-  block[3] = tag % 2 === 0 ? 0x0a : 0x0b; // fromPeerId
-  block[4] = bodyBytes; // ciphertext length
+  // Real peer ids, not 0x0a/0x0b: these blocks are the obvious fixture for a
+  // Phase 3/4 protocol test, and `FrameCodec.parse` rejects any other value as
+  // `bad-peer` (P2V finding 18).
+  block[3] = tag % 2 === 0 ? DISPLAYER_PEER_ID : ENTERER_PEER_ID; // fromPeerId
+  block[4] = bodyBytes; // plaintext length, as protocol.ts writes it
   let state = (tag * 2654435761) >>> 0;
   for (let i = 0; i < bodyBytes && 5 + i < block.length; i += 1) {
     state = (Math.imul(state, 1103515245) + 12345) >>> 0;
@@ -44,7 +58,7 @@ export function wireBlock(tag: number, bodyBytes = 39): Uint8Array {
   return block;
 }
 
-export function payload(tag: number, bodyBytes = 39): TestPayload {
+export function payload(tag: number, bodyBytes = SINGLE_BLOCK_PLAINTEXT_BYTES): TestPayload {
   const bytes = wireBlock(tag, bodyBytes);
   return { id: `block-${tag}-${bodyBytes}b`, bytes, hex: toHex(bytes) };
 }

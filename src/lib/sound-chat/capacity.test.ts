@@ -131,9 +131,14 @@ describe("the documents agree with the measurement (10.1 class 7)", () => {
     expect(plan).toContain("84 usable bytes of plaintext");
     expect(plan).toContain("= 84 ASCII characters");
     expect(plan).toContain("2 x 42");
-    // The stale pre-measurement estimates must be gone.
-    expect(plan).not.toContain("~70 usable bytes");
-    expect(plan).not.toContain("~86 bytes");
-    expect(plan).not.toContain("~39 bytes");
+    // The stale pre-measurement estimates must be gone. Matched as a *number*,
+    // not as three literal phrases: a phrase ban was defeated by the plan saying
+    // "exactly 39 bytes" and quoting `"~39"`, both of which slipped past it.
+    expect(plan).not.toMatch(/\b39[- ]bytes?\b/);
+    expect(plan).not.toMatch(/~86 bytes/);
+    expect(plan).not.toMatch(/~70 usable bytes/);
+    // ...and the plan must not describe a boundary that cannot exist: a block is
+    // 64 bytes, so a 2-block payload was never a fuzz boundary.
+    expect(plan).not.toMatch(/exactly the 2-block cap/);
   });
 });

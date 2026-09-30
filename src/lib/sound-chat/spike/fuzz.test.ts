@@ -30,10 +30,15 @@ import { addWhiteNoise, hardClip, mulberry32, resample } from "./degrade";
 const RANDOM_PAYLOADS = 256;
 
 /**
- * Boundary lengths: version byte only, the 5-byte header alone, the locked
- * single-block maximum (5-byte header + 39 bytes of plaintext = 44), one byte
- * short of a full block, and exactly a full block. Everything shorter than 64
- * is zero-padded by the encoder, so the decoded block is 64 bytes.
+ * Boundary lengths: version byte only, the 5-byte header alone, the
+ * pre-measurement single-block body (5-byte header + 39 synthetic bytes = 44),
+ * one byte short of a full block, and exactly a full block. Everything shorter
+ * than 64 is zero-padded by the encoder, so the decoded block is 64 bytes.
+ *
+ * 39 is a frozen synthetic corpus size, not the locked capacity: Phase 2
+ * measured 43 bytes of real plaintext per single block (`capacity.test.ts`).
+ * This suite fuzzes the codec's byte handling, so the exact number only has to
+ * be self-consistent — it is not a wire-format claim.
  */
 const BOUNDARY_LENGTHS = [1, 5, 44, 63, 64];
 
@@ -48,9 +53,10 @@ function randomBytes(length: number, seed: number): Uint8Array {
 }
 
 /**
- * One block in the locked wire format: version 1, random msgId, random sender,
- * 39 bytes of "ciphertext", and — for half the corpus, like a real short
- * message — a zero-padded tail. Every byte value can appear inside a block.
+ * One block in the locked wire format's shape: version 1, random msgId, random
+ * sender, 39 synthetic "ciphertext" bytes, and — for half the corpus, like a
+ * real short message — a zero-padded tail. Every byte value can appear inside
+ * a block.
  */
 function fuzzBlock(seed: number): Uint8Array {
   const block = randomBytes(CODEC_PAYLOAD_LENGTH, seed);

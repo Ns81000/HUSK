@@ -9,7 +9,9 @@
  * Every rule enforced here is a measured finding from
  * `prompts/sound-chat/GGWAVE_DEEP_DIVE.md`, not defensive speculation:
  * - `init()` can return a negative id (module full) — never call the codec then.
- * - `encode()` with an empty payload traps the whole wasm module.
+ * - `encode()` with an empty payload traps the wasm module. Measured: the module
+ *   survives it and keeps encoding, so the session's response to that trap is a
+ *   *policy* (abandon the instance), not a measurement.
  * - every returned view aliases a static C++ buffer inside wasm memory: it is
  *   silently detached by the next memory growth and overwritten by the next
  *   call, so it is copied immediately and never held.
@@ -41,7 +43,11 @@ export class CodecUsageError extends Error {
   override readonly name = "CodecUsageError";
 }
 
-/** The wasm module is unusable for the rest of the page session. */
+/**
+ * A codec call threw. This is terminal *by policy*, not by measurement: the wasm
+ * module can still encode after an empty-payload trap, but a trap in Emscripten
+ * leaves C++ state undefined, so the instance is abandoned rather than reused.
+ */
 export class CodecModuleError extends Error {
   override readonly name = "CodecModuleError";
 }
@@ -134,11 +140,6 @@ export class SoundChatCodec {
     return this.#state;
   }
 
-  /** The single Rx protocol this codec will ever decode. */
-  get protocol(): GgwaveEnumValue {
-    return this.#protocol;
-  }
-
   /** Samples per second the codec operates at — a protocol constant. */
   get sampleRate(): number {
     return CODEC_SAMPLE_RATE;
@@ -151,7 +152,9 @@ export class SoundChatCodec {
    */
   encode(payload: Uint8Array): Float32Array {
     if (payload.length === 0) {
-      throw new CodecUsageError("refusing to encode an empty payload: it traps the codec module");
+      throw new CodecUsageError(
+        "refusing to encode an empty payload: it traps the codec, and abandoning the instance is our policy, not a measured fact",
+      );
     }
     if (payload.length > CODEC_PAYLOAD_LENGTH) {
       throw new CodecUsageError(
@@ -211,8 +214,9 @@ export class SoundChatCodec {
     try {
       return work();
     } catch (cause) {
-      // A thrown wasm trap kills the module for the rest of the page session,
-      // so this is terminal by design rather than retryable.
+      // Terminal by policy rather than by measurement: the wasm module may well
+      // still encode after a trap, but a trap in Emscripten leaves C++ state
+      // undefined, so this instance is abandoned and never retried.
       this.#state = "dead";
       throw new CodecModuleError(
         "the sound codec module died during this call; restart Sound Chat",

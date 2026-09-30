@@ -21,7 +21,7 @@
  * |    1 | MESSAGE       | 5      | `ct(len) ‖ tag(16) ‖ zeros` → 43 plaintext bytes       |
  * |    2 | ACK           | 5      | `ct(1) ‖ tag(16) ‖ zeros` → one received-blocks bitmask|
  * |    3 | MESSAGE_MULTI | 6      | `byte 5 = seq`, then `ct(len) ‖ tag(16) ‖ zeros` → 42  |
- * |    4 | PAIR          | 5      | `salt(16) ‖ keyCheck(16) ‖ zeros` — HMAC, never AEAD   |
+ * |    4 | PAIR          | 5      | `salt(16) ? challenge(8) ? keyCheck(16) ? zeros` - HMAC over a domain-separated `salt/challenge/role`, never AEAD; `len` = 24 |
  *
  * `seq = (blockIndex << 4) | blockCount`, so a 2-block message is seq `0x02`
  * then `0x12`; `blockCount` is capped at `MAX_MESSAGE_BLOCKS` (2), which is the
@@ -44,13 +44,13 @@ import { CODEC_PAYLOAD_LENGTH } from "./codec";
 import {
   AEAD_TAG_BYTES,
   assertPeerId,
+  PAIR_CHALLENGE_BYTES,
   SESSION_SALT_BYTES,
   buildNonce,
   keyCheckTag,
   openBlock,
   sealBlock,
   verifyKeyCheck,
-  type OpenOutcome,
   type PairingKeys,
   type PeerId,
 } from "./crypto";
@@ -59,7 +59,9 @@ import {
 export const WIRE_BLOCK_BYTES = CODEC_PAYLOAD_LENGTH;
 export const HEADER_BYTES = 5;
 export const MULTI_HEADER_BYTES = 6;
-export const PAIR_KEY_CHECK_OFFSET = HEADER_BYTES + SESSION_SALT_BYTES;
+/** A PAIR frame's body: our session salt plus the challenge we are answering. */
+export const PAIR_BODY_BYTES = SESSION_SALT_BYTES + PAIR_CHALLENGE_BYTES;
+export const PAIR_KEY_CHECK_OFFSET = HEADER_BYTES + PAIR_BODY_BYTES;
 export const TAG_BYTES = AEAD_TAG_BYTES;
 
 /** Reserved version-byte values. Anything else is an unknown frame. */
@@ -121,7 +123,7 @@ export type ParsedFrame =
       plaintext: Uint8Array;
     }
   | { kind: "ack"; msgId: number; mask: number }
-  | { kind: "pair"; peerId: PeerId; salt: Uint8Array };
+  | { kind: "pair"; peerId: PeerId; salt: Uint8Array; challenge: Uint8Array };
 
 /**
  * Every way a *received* block can fail to become a frame. All of them are
@@ -159,7 +161,13 @@ export function encodeSeq(blockIndex: number, blockCount: number): number {
   return ((blockIndex << 4) | blockCount) & 0xff;
 }
 
-export function decodeSeq(seq: number): { blockIndex: number; blockCount: number } {
+/** The two nibbles a multi-block `seq` byte carries. */
+export type SeqParts = {
+  blockIndex: number;
+  blockCount: number;
+};
+
+export function decodeSeq(seq: number): SeqParts {
   return { blockIndex: (seq >> 4) & 0x0f, blockCount: seq & 0x0f };
 }
 
@@ -180,7 +188,17 @@ function writeMsgId(block: Uint8Array, msgId: number): void {
  */
 export function frameAad(frame: Uint8Array, headerBytes: number, len: number): Uint8Array {
   const bodyStart = headerBytes + len + TAG_BYTES;
-  if (headerBytes + len + TAG_BYTES > frame.length) {
+  // Every part is checked, not just the total: a negative `len` used to make
+  // `bodyStart` land *inside* the header and silently produce a shorter AAD
+  // (P2V finding 16). Unreachable from `#open`, which validates `len` first, but
+  // this is a boundary the function itself must refuse.
+  if (!Number.isInteger(headerBytes) || headerBytes < 0 || headerBytes > frame.length) {
+    throw new ProtocolUsageError(`header of ${headerBytes} bytes does not fit the frame`);
+  }
+  if (!Number.isInteger(len) || len < 0) {
+    throw new ProtocolUsageError(`body length ${len} is not a non-negative integer`);
+  }
+  if (bodyStart > frame.length) {
     throw new ProtocolUsageError(
       `frame body of ${len} bytes does not fit a ${frame.length}-byte block`,
     );
@@ -265,21 +283,9 @@ export class FrameCodec {
     this.#sendSalt = Uint8Array.from(options.sendSalt);
   }
 
-  get selfId(): PeerId {
-    return this.#selfId;
-  }
-
-  get peerId(): PeerId {
-    return this.#peerId;
-  }
-
   /** Our own salt, safe to show: it is public and worthless without the key. */
   get sendSalt(): Uint8Array {
     return this.#sendSalt;
-  }
-
-  get peerSalt(): Uint8Array | null {
-    return this.#peerSalt;
   }
 
   get paired(): boolean {
@@ -365,17 +371,24 @@ export class FrameCodec {
 
   /**
    * The pairing key confirmation. Never AEAD: it is sent before either side
-   * knows the other's salt, so it cannot use the per-direction nonce space, and
-   * a replayed copy carries no state either side acts on beyond "same key".
+   * knows the other's salt, so it cannot use the per-direction nonce space.
+   *
+   * It covers the session challenge, not just the salt, and that is what makes a
+   * recorded PAIR frame worthless to a later session: the challenge is fresh per
+   * handshake, so a recording either fails the tag or — when a recording of
+   * *this* session is replayed — is rejected because it does not echo the
+   * challenge the initiator invented (P2V finding 2). The initiator passes its
+   * own challenge; the responder passes back the one it received.
    */
-  async buildPairFrame(): Promise<Uint8Array> {
-    const tag = await keyCheckTag(this.#keys.mac, this.#sendSalt, this.#selfId);
+  async buildPairFrame(challenge: Uint8Array): Promise<Uint8Array> {
+    const tag = await keyCheckTag(this.#keys.mac, this.#sendSalt, challenge, this.#selfId);
     const block = new Uint8Array(WIRE_BLOCK_BYTES);
     block[0] = FRAME_KIND.PAIR;
     writeMsgId(block, 0);
     block[3] = this.#selfId;
-    block[4] = SESSION_SALT_BYTES;
+    block[4] = PAIR_BODY_BYTES;
     block.set(this.#sendSalt, HEADER_BYTES);
+    block.set(challenge, HEADER_BYTES + SESSION_SALT_BYTES);
     block.set(tag, PAIR_KEY_CHECK_OFFSET);
     return block;
   }
@@ -461,16 +474,21 @@ export class FrameCodec {
   async #openPair(block: Uint8Array, msgId: number): Promise<ParseOutcome> {
     if (msgId !== 0) return { ok: false, reason: "reserved-field" };
     const len = block[4] ?? 0;
-    if (len !== SESSION_SALT_BYTES) return { ok: false, reason: "bad-length" };
+    if (len !== PAIR_BODY_BYTES) return { ok: false, reason: "bad-length" };
     if (!isAllZero(block.subarray(PAIR_KEY_CHECK_OFFSET + PAIR_KEY_CHECK_BYTES))) {
       return { ok: false, reason: "nonzero-padding" };
     }
-    const salt = Uint8Array.from(block.subarray(HEADER_BYTES, PAIR_KEY_CHECK_OFFSET));
+    const salt = Uint8Array.from(
+      block.subarray(HEADER_BYTES, PAIR_KEY_CHECK_OFFSET - PAIR_CHALLENGE_BYTES),
+    );
+    const challenge = Uint8Array.from(
+      block.subarray(PAIR_KEY_CHECK_OFFSET - PAIR_CHALLENGE_BYTES, PAIR_KEY_CHECK_OFFSET),
+    );
     const tag = block.subarray(PAIR_KEY_CHECK_OFFSET, PAIR_KEY_CHECK_OFFSET + PAIR_KEY_CHECK_BYTES);
-    if (!(await verifyKeyCheck(this.#keys.mac, salt, this.#peerId, tag))) {
+    if (!(await verifyKeyCheck(this.#keys.mac, salt, challenge, this.#peerId, tag))) {
       return { ok: false, reason: "auth-failed" };
     }
-    return { ok: true, frame: { kind: "pair", peerId: this.#peerId, salt } };
+    return { ok: true, frame: { kind: "pair", peerId: this.#peerId, salt, challenge } };
   }
 
   async #open(
@@ -647,9 +665,13 @@ export class InboundAssembler {
     msgId: number,
     entry: { mask: number; blockCount: number; blocks: Map<number, Uint8Array>; at: number },
   ): void {
+    // A cap of zero means "admit nothing". The eviction loop used to break out
+    // with the map still full and then admit anyway, so a configured cap of 0
+    // silently behaved as 1 (P2V finding 15). Unreachable from the product, which
+    // never passes options — but the exported class must honour its own bound.
     while (this.#partials.size >= this.#maxPartial) {
       const oldest = this.#partials.keys().next().value;
-      if (oldest === undefined) break;
+      if (oldest === undefined) return;
       this.#partials.delete(oldest);
     }
     this.#partials.set(msgId, entry);
@@ -705,10 +727,6 @@ export class MessageIdAllocator {
     const value = this.#next;
     this.#next += 1;
     return value;
-  }
-
-  get highest(): number {
-    return this.#next - 1;
   }
 
   get remaining(): number {

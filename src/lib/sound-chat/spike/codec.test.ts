@@ -42,14 +42,17 @@ function feed(samples: Float32Array, chunkSize: number): DecodeEvent[] {
   return events;
 }
 
+/** Synthetic body length; the codec fuzz only needs it to be self-consistent. */
+const SYNTHETIC_BODY_BYTES = 39;
+
 function wireFormatPayload(): Uint8Array {
   const payload = new Uint8Array(CODEC_PAYLOAD_LENGTH);
   payload[0] = 1; // version
   payload[1] = 0x12; // msgId hi
   payload[2] = 0x34; // msgId lo
   payload[3] = 0x0a; // fromPeerId
-  payload[4] = 39; // ciphertext length
-  for (let i = 0; i < 39; i += 1) {
+  payload[4] = SYNTHETIC_BODY_BYTES; // plaintext length
+  for (let i = 0; i < SYNTHETIC_BODY_BYTES; i += 1) {
     payload[5 + i] = 0x41 + (i % 26);
   }
   return payload;
