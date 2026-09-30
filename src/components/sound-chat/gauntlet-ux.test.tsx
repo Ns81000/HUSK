@@ -640,10 +640,25 @@ function newController(): SoundChatUiController {
 
 const MAX_TURNS = 4_000;
 
+/**
+ * A wall-clock ceiling, not only a turn count.
+ *
+ * `setImmediate` turns are not time: under CPU contention (this repo's suites
+ * are load-sensitive and the full run executes them concurrently) 4000 turns
+ * can elapse well before the async chain - which hands work to `crypto.subtle`
+ * and libuv's threadpool - has finished. Measured: the sibling sound-chat
+ * suites passed 6/6 in isolation and failed inside 1 of 4 full-suite runs, on
+ * exactly that symptom. `MAX_TURNS` stays as a backstop so a spinning loop
+ * still terminates; the deadline is what makes the wait mean what it says.
+ */
+const MAX_WAIT_MS = 20_000;
+
 /** A completion condition, never a fixed turn count. */
 async function until(what: string, ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + MAX_WAIT_MS;
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     if (ready()) return;
+    if (Date.now() > deadline) break;
     await new Promise((resolve) => setImmediate(resolve));
   }
   throw new Error(`timed out waiting for ${what}`);
@@ -661,8 +676,10 @@ async function settle(turns = 256): Promise<void> {
  * amount lands inside or past the window by luck.
  */
 async function advanceUntil(what: string, ready: () => boolean, stepMs = 50): Promise<void> {
+  const deadline = Date.now() + MAX_WAIT_MS;
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     if (ready()) return;
+    if (Date.now() > deadline) break;
     await vi.advanceTimersByTimeAsync(stepMs);
   }
   throw new Error(`timed out waiting for ${what}`);
