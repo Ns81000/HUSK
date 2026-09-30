@@ -314,7 +314,7 @@ describe("a multi-block message is scheduled, not stacked", () => {
   it("puts each block on the air exactly one block after the previous one", async () => {
     const { displayer } = await pairedPair();
     displayer.takeSchedule();
-    expect(displayer.session.send("H".repeat(84))).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("H".repeat(84))).toMatchObject({ ok: true, queued: false });
     await until("the transmission to be scheduled", () => !displayer.session.transmitting);
 
     const schedule = displayer.takeSchedule();
@@ -337,7 +337,7 @@ describe("a multi-block message is scheduled, not stacked", () => {
   it("holds its own Rx feed for the whole window plus the tail, not per block", async () => {
     const { displayer } = await pairedPair();
     displayer.takeSchedule();
-    expect(displayer.session.send("H".repeat(84))).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("H".repeat(84))).toMatchObject({ ok: true, queued: false });
     await until("the transmission to be scheduled", () => !displayer.session.transmitting);
     const schedule = displayer.takeSchedule();
     expect(schedule).toHaveLength(2);
@@ -355,7 +355,7 @@ describe("a multi-block message is scheduled, not stacked", () => {
   it("plays a single-block message immediately, with no stacking window", async () => {
     const { displayer } = await pairedPair();
     displayer.takeSchedule();
-    expect(displayer.session.send("short")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("short")).toMatchObject({ ok: true, queued: false });
     await until("the transmission to be scheduled", () => !displayer.session.transmitting);
     const schedule = displayer.takeSchedule();
     // One block, plus the receiver's ACK later in the exchange.
@@ -369,7 +369,7 @@ describe("a multi-block message is scheduled, not stacked", () => {
     const { displayer, enterer } = await pairedPair();
     const text = "the cap".repeat(12).slice(0, 84);
     expect(text).toHaveLength(84);
-    expect(displayer.session.send(text)).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send(text)).toMatchObject({ ok: true, queued: false });
     await until("the transmission to be scheduled", () => !displayer.session.transmitting);
     const schedule = displayer.takeSchedule();
     expect(schedule).toHaveLength(2);

@@ -98,7 +98,14 @@ export type SoundChatFatal = { readonly kind: SoundChatFatalKind; readonly detai
  */
 export type OutboundView = {
   readonly seq: number;
-  readonly msgId: number;
+  /**
+   * The submission's identity for its whole life. This — never `msgId` — is what
+   * the transcript keys a row on, because `msgId` is null until the pump has
+   * sealed the note and the row has to exist from the instant it was accepted.
+   */
+  readonly sendId: number;
+  /** Null only while the note is queued and unsealed. */
+  readonly msgId: number | null;
   readonly text: string;
   readonly status: OutboundStatus;
   readonly attempts: number;
@@ -387,13 +394,17 @@ export class SoundChatUiController {
       return;
     }
     if (access.kind !== "granted") {
+      // `code` is deliberately NOT cleared here. The microphone was refused, not
+      // the code, and the blocked screen's "Try again" re-runs this same attempt
+      // with the code the person typed, so the code has to survive a failure that
+      // is not about it. Only a `PairingCodeError` really invalidates a code, and
+      // that is the one path below that clears it.
       this.#patch({
         phase: "blocked",
         block: {
           kind: MIC_BLOCK_KIND[access.kind],
           detail: access.cause,
         },
-        code: null,
       });
       return;
     }
@@ -410,7 +421,6 @@ export class SoundChatUiController {
           kind: error instanceof AudioContextRateError ? "device-rate" : "audio-unavailable",
           detail: describe(error),
         },
-        code: null,
       });
       return;
     }
@@ -428,7 +438,6 @@ export class SoundChatUiController {
       this.#patch({
         phase: "blocked",
         block: { kind: "codec-unavailable", detail: describe(error) },
-        code: null,
       });
       return;
     }
@@ -472,22 +481,27 @@ export class SoundChatUiController {
     } catch (error) {
       this.#teardownSession();
       if (this.#stale(generation)) return;
-      this.#patch({
-        phase: "blocked",
-        block: {
-          kind:
-            error instanceof PairingCodeError
-              ? "bad-code"
-              : error instanceof CryptoUnavailableError
-                ? "crypto-unavailable"
-                : "codec-unavailable",
-          detail: describe(error),
-        },
-        code: null,
-      });
+      const badCode = error instanceof PairingCodeError;
+      const block: SoundChatBlock = {
+        kind: badCode
+          ? "bad-code"
+          : error instanceof CryptoUnavailableError
+            ? "crypto-unavailable"
+            : "codec-unavailable",
+        detail: describe(error),
+      };
+      // A code the protocol itself already named invalid is cleared from the
+      // published state too, so the retry button cannot offer it back. The other
+      // two failures are not about the code, so it survives them and "Try again"
+      // re-runs the same attempt with it.
+      //
+      // Two whole literals rather than a conditional spread: `...(flag ? {} : {})`
+      // is the shape the lint rules ban, and building the literal twice is both
+      // clearer and the same length.
+      this.#patch(badCode ? { phase: "blocked", block, code: null } : { phase: "blocked", block });
       // A code the protocol already named invalid is not kept for a retry: it
       // would fail the same way again and tell the user nothing new.
-      if (error instanceof PairingCodeError) this.#code = null;
+      if (badCode) this.#code = null;
       return;
     }
     if (this.#stale(generation)) {
@@ -730,12 +744,18 @@ export class SoundChatUiController {
           // why the record is keyed on the claim and not on the transport.
           this.#startProgress(true);
         }
-        const rest = this.#state.outbound.filter((entry) => entry.msgId !== event.msgId);
+        // Keyed on `sendId`, which the session allocated when it accepted the
+        // note and never changes. `msgId` cannot be the key: it is null for the
+        // `queued` event that creates the row, so keying on it would either crash
+        // or force a second identity that has to be reconciled later — which is
+        // the second owner of transcript state this file exists to prevent.
+        const rest = this.#state.outbound.filter((entry) => entry.sendId !== event.sendId);
         // The event is self-describing, so a status change only updates the
         // fields that changed and keeps the transcript position it already had.
-        const existing = this.#state.outbound.find((entry) => entry.msgId === event.msgId);
+        const existing = this.#state.outbound.find((entry) => entry.sendId === event.sendId);
         const next: OutboundView = {
           seq: existing?.seq ?? this.#nextSeq(),
+          sendId: event.sendId,
           msgId: event.msgId,
           text: event.text,
           status: event.status,
@@ -784,14 +804,22 @@ export class SoundChatUiController {
       transmitting: this.#session?.transmitting ?? false,
       busy: this.#session?.busy ?? false,
     });
-    // A note the pump had claimed but that never went on the air cannot keep
-    // reading "Playing" on a terminal screen, and the record that drives that
-    // row has to go with it. `failed` is the honest status: the attempt ended
-    // without the other device acknowledging anything.
-    if (this.#state.outbound.some((entry) => entry.status === "sending")) {
+    // Any note of ours that has not been proven delivered, including one that is
+    // only queued, cannot keep reading "Playing" or "Queued" on a terminal
+    // screen. `queued` matters as much as `sending`: a note the pump had already
+    // claimed when the codec died is out of the queue by then, so `#moduleFailed`
+    // cannot retire it and the pump's own late `failed` record is dropped by the
+    // terminal latch above. Without this the note the person just typed would read
+    // "Queued, not played yet" for the life of the page. `failed` is the honest
+    // status: the attempt ended without the other device acknowledging anything.
+    if (
+      this.#state.outbound.some((entry) => entry.status === "sending" || entry.status === "queued")
+    ) {
       this.#patch({
         outbound: this.#state.outbound.map((entry) =>
-          entry.status === "sending" ? { ...entry, status: "failed" as const } : entry,
+          entry.status === "sending" || entry.status === "queued"
+            ? { ...entry, status: "failed" as const }
+            : entry,
         ),
       });
     }

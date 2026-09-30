@@ -86,15 +86,29 @@ export function PairingPanel({
       case "waiting-for-peer":
       case "awaiting-confirmation":
         return (
-          <div role="status" className="fade-in mt-6 flex flex-col items-center text-center">
-            <WaitingMark className="waiting-glow h-24 w-24 text-accent" />
-            <p className="mt-2 text-body text-ink">
-              {state.kind === "waiting-for-peer"
-                ? SOUND_CHAT_COPY.pairing.waitingDisplay
-                : SOUND_CHAT_COPY.pairing.waitingEnter}
-            </p>
-            <p className="mt-1 text-caption text-ink-muted">{SOUND_CHAT_COPY.pairing.hint}</p>
-          </div>
+          <>
+            <div role="status" className="fade-in mt-6 flex flex-col items-center text-center">
+              <WaitingMark className="waiting-glow h-24 w-24 text-accent" />
+              <p className="mt-2 text-body text-ink">
+                {state.kind === "waiting-for-peer"
+                  ? SOUND_CHAT_COPY.pairing.waitingDisplay
+                  : SOUND_CHAT_COPY.pairing.waitingEnter}
+              </p>
+              <p className="mt-1 text-caption text-ink-muted">{SOUND_CHAT_COPY.pairing.hint}</p>
+            </div>
+            {/* WHY THE SWITCH CONTROL IS HERE AND NOT ONLY UNDER `failed`.
+                A handshake in progress waits up to 90 seconds
+                (`PAIR_PEER_TIMEOUT_MS`), and this is exactly when a person
+                discovers they picked the wrong role or mistyped the code on the
+                other device. With both controls confined to the `failed` branch,
+                the only way out was the header's whole-page anchor — a 90-second
+                dead end for the most common mistake the screen invites. */}
+            <div className="mt-4 space-y-2">
+              <Button tone="quiet" full disabled={busy} onClick={onSwitchRole}>
+                {SOUND_CHAT_COPY.pairing.changeRole}
+              </Button>
+            </div>
+          </>
         );
       case "paired":
         return (
@@ -145,14 +159,26 @@ export function PairingPanel({
         <h2 id={headingId} className="mt-2 text-title text-ink">
           {role === "displayer"
             ? SOUND_CHAT_COPY.pairing.displayHeading
-            : SOUND_CHAT_COPY.pairing.enterHeading}
+            : // An enterer that already holds a code is not being asked to type
+              // one — there is no field here. Saying "type the code" on a screen
+              // with no field is an instruction to do something impossible, and
+              // it is reachable by retrying after a microphone failure.
+              code !== null
+              ? SOUND_CHAT_COPY.pairing.enterRetryHeading
+              : SOUND_CHAT_COPY.pairing.enterHeading}
         </h2>
         <p className="mt-2 text-body text-ink-muted">
           {role === "displayer"
             ? SOUND_CHAT_COPY.pairing.displayBody
-            : SOUND_CHAT_COPY.pairing.enterBody}
+            : code !== null
+              ? SOUND_CHAT_COPY.pairing.enterRetryBody
+              : SOUND_CHAT_COPY.pairing.enterBody}
         </p>
-        {role === "displayer" && code !== null ? (
+        {/* The code readout for BOTH roles, not only the displayer's. A displayer
+            has to read eight characters aloud; an enterer who arrived by retrying
+            has to be able to check that the code carried through is the one they
+            meant, which is the only thing they can act on at this point. */}
+        {code !== null ? (
           <>
             <div
               role="group"

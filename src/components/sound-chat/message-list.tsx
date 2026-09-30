@@ -17,10 +17,11 @@
  * WHY a status line sits under each of our own bubbles and under none of the
  * other's: an inbound note exists because it was decoded, so the transcript
  * already proves it arrived and a second status would only add words. Our own
- * notes have three genuinely different proven states, and the copy says exactly
- * that: while a note is still being played it reads "Playing" and never the word
- * delivered, because the session cannot know anything about the other device
- * until the acknowledgement comes back.
+ * notes have four genuinely different proven states — queued, on the air,
+ * confirmed, and never confirmed — and the copy says exactly that: a queued
+ * note reads "Queued, not played yet", a note being played reads "Playing" and
+ * never the word delivered, because the session cannot know anything about the
+ * other device until the acknowledgement comes back.
  */
 
 import { memo, type ReactElement } from "react";
@@ -33,7 +34,14 @@ type Inbound = { readonly seq: number; readonly msgId: number; readonly text: st
 
 type Outbound = {
   readonly seq: number;
-  readonly msgId: number;
+  /**
+   * The submission's identity, assigned when the session accepted the note.
+   * This is the React key, not `msgId`: `msgId` is null while a note is queued
+   * and unsealed, and two notes must never be able to collide on a key that only
+   * exists for part of a submission's life.
+   */
+  readonly sendId: number;
+  readonly msgId: number | null;
   readonly text: string;
   readonly status: OutboundStatus;
   readonly attempts: number;
@@ -156,7 +164,7 @@ export const MessageList = memo(function MessageList({
           ) : (
             rows.map((row) =>
               row.kind === "outbound" ? (
-                <OutboundRow key={`outbound-${row.view.msgId}`} view={row.view} />
+                <OutboundRow key={`outbound-${row.view.sendId}`} view={row.view} />
               ) : (
                 <InboundRow key={`inbound-${row.view.msgId}`} view={row.view} />
               ),

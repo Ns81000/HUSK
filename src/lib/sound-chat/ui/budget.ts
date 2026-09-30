@@ -24,9 +24,9 @@
  */
 
 import {
-  MAX_MESSAGE_BLOCKS,
   MAX_MESSAGE_PLAINTEXT_BYTES,
   SINGLE_BLOCK_PLAINTEXT_BYTES,
+  blocksForPlaintextBytes,
 } from "../protocol";
 import { BLOCK_DURATION_MS } from "../session";
 
@@ -59,7 +59,7 @@ export function measureMessage(text: string): MessageBudget {
   // form is flagged for splitting a string into code units, which is the exact
   // mistake this function exists to avoid.
   const characters = Array.from(text).length;
-  const blocks = blocksForBytes(bytes);
+  const blocks = blocksForPlaintextBytes(bytes);
   const fits = bytes > 0 && blocks !== null;
   return {
     characters,
@@ -76,16 +76,15 @@ export function measureMessage(text: string): MessageBudget {
 
 /**
  * How many 64-byte blocks `bytes` of plaintext needs, or `null` when it cannot
- * fit inside the two-block cap. The two-block path carries one byte less per
- * block than the single-block path, which is why 43 and 84 are the two
- * interesting boundaries rather than 43 and 86.
+ * fit inside the two-block cap.
+ *
+ * Delegated, not reimplemented: `protocol.ts` is where the constants live and
+ * where the session makes the same estimate for a queued note, and two copies of
+ * this arithmetic are exactly how the composer's "one block" line and the
+ * progress bar's total drift apart. Re-exported under its original name so the
+ * composer's callers are unchanged.
  */
-export function blocksForBytes(bytes: number): number | null {
-  if (bytes <= 0) return 0;
-  if (bytes <= SINGLE_BLOCK_PLAINTEXT_BYTES) return 1;
-  if (bytes <= MAX_MESSAGE_PLAINTEXT_BYTES) return MAX_MESSAGE_BLOCKS;
-  return null;
-}
+export { blocksForPlaintextBytes as blocksForBytes } from "../protocol";
 
 /**
  * "about 2 seconds", from a measured millisecond figure. Deliberately coarse:

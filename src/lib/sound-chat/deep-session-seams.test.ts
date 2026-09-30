@@ -422,23 +422,25 @@ describe("two sends in the same tick (the reentrancy seam)", () => {
     // Two `send` calls with nothing in between — the pattern `session.test.ts`
     // itself uses to fill the queue, and what a UI does when a key handler and a
     // click handler both fire.
-    expect(displayer.session.send("first")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("first")).toMatchObject({ ok: true, queued: false });
     // The second send is told `queued: true`, because the first pump has claimed
     // the session even though it has not yet assigned `#outbound` (P2V finding 1).
-    expect.soft(displayer.session.send("second")).toEqual({ ok: true, queued: true });
+    expect.soft(displayer.session.send("second")).toMatchObject({ ok: true, queued: true });
     await pumpRounds(displayer, enterer);
 
     expect(enterer.texts()).toEqual(["first", "second"]);
     // The diagnostics, so one failure tells the whole story.
     expect.soft(new Set(enterer.texts()).size, "both messages must reach the peer").toBe(2);
-    // Exactly two messages went out — one `msgId` each, however many retry
-    // records the un-acked rounds produced.
+    // Exactly two messages went out — one *submission* each, however many retry
+    // records the un-acked rounds produced. `sendId`, not `msgId`: the queued
+    // event that precedes sealing carries a null `msgId`, so it would add a
+    // spurious identity and make a correct run look like a duplicated message.
     const sentIds = new Set(
       displayer.events
         .filter((event) => event.type === "outbound")
-        .map((event) => (event.type === "outbound" ? event.msgId : -1)),
+        .map((event) => (event.type === "outbound" ? event.sendId : -1)),
     );
-    expect.soft(sentIds.size, "one msgId per queued message").toBe(2);
+    expect.soft(sentIds.size, "one submission per queued message").toBe(2);
     expect(enterer.listenerErrors).toHaveLength(0);
     expect(enterer.moduleErrors).toHaveLength(0);
   });
@@ -462,7 +464,7 @@ describe("a send held by a hidden tab (P11)", () => {
     const { displayer, enterer } = await pairedPair();
     setVisibility("visible");
     setVisibility("hidden");
-    expect(displayer.session.send("held")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("held")).toMatchObject({ ok: true, queued: false });
     await settle();
     // Hidden, and staying hidden. Every one of these re-enters the transmit path
     // through the visibility handler, and every one of them is refused by the

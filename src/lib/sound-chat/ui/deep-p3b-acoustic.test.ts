@@ -380,9 +380,12 @@ describe("B-2 the window the composer promises is never published", () => {
     // A whole exchange: one short note, one note at the cap, and a second send
     // while the first is still in flight.
     a.send("one");
+    // A resolved status, not merely "no longer sending". `queued` is a real
+    // resting state now -- the note is accepted and held -- so a loop that exits
+    // on anything but `sending` walks away before the first frame is sealed.
     for (let round = 0; round < 12; round += 1) {
       const outbound = a.getState().outbound;
-      if (outbound.length > 0 && outbound.every((entry) => entry.status !== "sending")) break;
+      if (outbound.length > 0 && outbound.every((entry) => entry.status === "sent")) break;
       await deliver(a, b);
       await deliver(b, a);
     }
@@ -391,7 +394,7 @@ describe("B-2 the window the composer promises is never published", () => {
     a.send("three");
     for (let round = 0; round < 12; round += 1) {
       const outbound = a.getState().outbound;
-      if (outbound.length >= 3 && outbound.every((entry) => entry.status !== "sending")) break;
+      if (outbound.length >= 3 && outbound.every((entry) => entry.status === "sent")) break;
       await deliver(a, b);
       await deliver(b, a);
     }
@@ -401,11 +404,21 @@ describe("B-2 the window the composer promises is never published", () => {
       (state) =>
         state.transmitting && state.progress === null && state.transport !== "awaiting_ack",
     );
-    // `SOUND_CHAT_COPY.transmit.arming` exists for this window, and the
-    // controller never publishes it: `session.send()` claims `#txBusy`
-    // synchronously but notifies nobody, and `outbound sending` and
-    // `TRANSMIT_BEGIN` land inside one microtask, so no render ever sees it.
-    expect(arming.map((state) => state.transport)).toEqual([]);
+    // CHANGED BY PHASE 3V. This used to assert `[]`, with a comment explaining
+    // that `SOUND_CHAT_COPY.transmit.arming` was unreachable because
+    // `session.send()` claims `#txBusy` synchronously but notified nobody. The
+    // session now publishes each accepted note synchronously as `queued`, so the
+    // window between `send()` returning and the first block being scheduled IS
+    // published — and it is published as exactly the state that renders the
+    // `arming` sentence: transmitting, no progress record yet, and not waiting on
+    // an acknowledgement.
+    expect(
+      arming.length,
+      "the arming window is published, so its sentence is no longer dead copy",
+    ).toBeGreaterThan(0);
+    // It is a transient, not a resting state: every publish is either followed
+    // by a progress record or resolved, and the machine never sits in it.
+    expect(arming.map((state) => state.transport)).toEqual(arming.map(() => "listening"));
     // The states that were published in the window instead.
     expect(trace.states.length).toBeGreaterThan(10);
     a.cancel();
@@ -469,14 +482,31 @@ describe("B-4 a module death with a send in flight", () => {
       });
       await settle();
       expect(a.getState().phase, "a frame-contract failure is terminal too").toBe("fatal");
-      // The pump had not yet created `#outbound`, so `#moduleFailed` had nothing
-      // to report as `failed`: the transcript holds no note at all.
-      expect(a.getState().outbound).toEqual([]);
+      // The note was accepted, so `send()` published it as `queued` and a row
+      // exists — and `#onModuleError` retires it, because a note that is only
+      // queued is just as undeliverable as one that is playing. It is NOT
+      // `sending`: that is the one status a note that can never reach the air must
+      // never show. Before Phase 3V the row did not exist at all, which is what
+      // this assertion used to pin.
+      expect(a.getState().outbound).toEqual([
+        expect.objectContaining({
+          text: "in flight when the codec dies",
+          msgId: null,
+          status: "failed",
+        }),
+      ]);
       gate.release();
       await settle();
       for (let step = 0; step < 500 && a.getState().outbound.length === 0; step += 1) {
         await new Promise((resolve) => setImmediate(resolve));
       }
+      // The pump woke up after a terminal failure and found its claim voided by
+      // the epoch. The row is still `failed` — the pump's late record agrees with
+      // what the controller already decided, and neither of them ever published
+      // it as `sending`.
+      expect(a.getState().outbound).toEqual([
+        expect.objectContaining({ text: "in flight when the codec dies", status: "failed" }),
+      ]);
     } finally {
       gate.restore();
     }
@@ -500,7 +530,15 @@ describe("B-4 a module death with a send in flight", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("KNOWN DEFECT: a note accepted before the failure is dropped with no row and no notice", async () => {
+  it("a note accepted before the failure keeps its row and is marked not received", async () => {
+    // INVERTED from a Phase 3V pin. It used to be named
+    // `KNOWN DEFECT: a note accepted before the failure is dropped with no row and
+    // no notice`, because `send()` returned `{ ok: true }` — so the composer's
+    // draft was cleared — and the note then existed in no rendered list at all.
+    // `send()` now publishes the accepted note synchronously as `queued` and
+    // `#moduleFailed` retires every still-queued submission, so the transcript
+    // shows the note and says plainly that it was never received. That is the
+    // honest end state: it is `failed`, never `sending`, and never absent.
     const { a } = await pairedPair();
     const context = contextFor(a);
     a.send("accepted, then the codec dies before the pump runs");
@@ -512,10 +550,21 @@ describe("B-4 a module death with a send in flight", () => {
     await settle(512);
     const state = a.getState();
     expect(state.phase).toBe("fatal");
-    // `send()` returned `{ ok: true }`, so the composer's draft was cleared.
-    expect(state.outbound, "and the note the user typed is nowhere").toEqual([]);
-    expect(state.notices, "with nothing at all to say it was dropped").toEqual([]);
-    expect(a.getState().outbound).toEqual([]);
+    // `send()` returned `{ ok: true }`, so the composer's draft was cleared —
+    // and the note the person wrote is still on screen, with its own words.
+    expect(state.outbound, "the note the user typed is still on the transcript").toEqual([
+      expect.objectContaining({
+        text: "accepted, then the codec dies before the pump runs",
+        msgId: null,
+        status: "failed",
+      }),
+    ]);
+    // Still not `sending`: a note that can never reach the air must never claim
+    // it is playing.
+    expect(
+      state.outbound.some((entry) => entry.status === "sending"),
+      "a note that can never be sent is shown as 'Playing'",
+    ).toBe(false);
   });
 });
 
@@ -523,8 +572,8 @@ describe("B-5 the composer's boundary against the real session", () => {
   it("carries a one-byte note, and every byte the protocol accepts", async () => {
     const { a, b } = await pairedPair();
     const probes: readonly string[] = [
-      " ",
-      "",
+      "\u0000",
+      "\u0007",
       "a",
       "a\nb",
       "   ",
@@ -541,14 +590,21 @@ describe("B-5 the composer's boundary against the real session", () => {
     // One byte really does travel, which settles the open question in
     // `budget.test.ts` ("the empty-after-header frame the protocol rejects"):
     // the protocol's own minimum is a *zero*-length body.
-    a.send(" ");
-    await until("the one-byte note to start", () => a.getState().outbound.length > 0);
+    a.send("\u0000");
+    // `sending`, not "a row exists": the accepted note is published as `queued`
+    // before `send()` returns, so a row-based wait is satisfied before the note
+    // has ever been sealed.
+    await until("the one-byte note to start", () =>
+      a.getState().outbound.some((entry) => entry.status === "sending"),
+    );
     for (let round = 0; round < 8; round += 1) {
       if (b.getState().inbound.length > 0) break;
       await deliver(a, b);
       await deliver(b, a);
     }
-    expect(b.getState().inbound.map((entry) => [entry.text, entry.text.length])).toEqual([[" ", 1]]);
+    expect(b.getState().inbound.map((entry) => [entry.text, entry.text.length])).toEqual([
+      ["\u0000", 1],
+    ]);
     expect(a.getState().outbound[0]?.status).toBe("sent");
   });
 
@@ -560,16 +616,30 @@ describe("B-5 the composer's boundary against the real session", () => {
     a.cancel();
   });
 
-  it("KNOWN DEFECT: three of four accepted notes exist in no rendered list", async () => {
+  it("every accepted note is in the rendered list, with its own words", async () => {
+    // INVERTED from a Phase 3V pin. It used to be named
+    // `KNOWN DEFECT: three of four accepted notes exist in no rendered list`:
+    // `send()` returned `{ ok: true }` for all four, the pump claimed only the
+    // head of the queue on a microtask, and the other three had no `outbound`
+    // event, no row, and no way for the person who typed them to see they
+    // existed. The session now publishes each accepted note synchronously as
+    // `queued`, so all four are on screen the instant `send()` returns.
     const { a } = await pairedPair();
-    // The pump claims the head of the queue on a microtask, so one note is
-    // published immediately. The session's own `#pending` is private, so the other
-    // three are on their way with no `outbound` event, no transcript row and no
-    // way for the person who typed them to see that they exist.
     const accepted = [1, 2, 3, 4].map((index) => a.send(`note ${index}`).ok);
     expect(accepted).toEqual([true, true, true, true]);
     await settle();
-    expect(a.getState().outbound.map((entry) => entry.text)).toEqual(["note 1"]);
+    expect(a.getState().outbound.map((entry) => entry.text)).toEqual([
+      "note 1",
+      "note 2",
+      "note 3",
+      "note 4",
+    ]);
+    // And the identity each row is keyed on is the session's own submission id,
+    // allocated at accept time and never reassigned — so a queued row and the
+    // row that replaces it when the pump claims the note are provably one note.
+    expect(new Set(a.getState().outbound.map((entry) => entry.sendId)).size).toBe(4);
+    // Exactly one is on the air; the rest are honestly queued, not pretending.
+    expect(a.getState().outbound.filter((entry) => entry.status === "queued")).toHaveLength(3);
     expect(a.getState().busy).toBe(true);
     a.cancel();
   });

@@ -25,7 +25,7 @@ import type { PairingRole } from "@/lib/sound-chat/pairing";
 import type { SendRefusal } from "@/lib/sound-chat/session";
 import { SoundChatUiController, type SoundChatUiState } from "@/lib/sound-chat/ui/controller";
 import { measureMessage } from "@/lib/sound-chat/ui/budget";
-import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+import { SOUND_CHAT_COPY, transportSentence } from "@/lib/sound-chat/ui/copy";
 
 /** What the screen shows before the effect has created a controller, and after
  *  it has disposed one: nothing is running, and the pre-prompt is the truth. */
@@ -163,8 +163,8 @@ function sendRefusalText(reason: SendRefusal | undefined): string | null {
  */
 export function deriveComposerBlock(state: SoundChatUiState): string | null {
   if (state.phase !== "chat") return SOUND_CHAT_COPY.composer.blockedByPairing;
-  if (state.transport === "hidden_hold") return SOUND_CHAT_COPY.transport.hidden_hold;
-  if (state.transport === "error") return SOUND_CHAT_COPY.transport.error;
-  if (state.transport === "module_error") return SOUND_CHAT_COPY.transport.module_error;
+  if (state.transport === "hidden_hold") return transportSentence(state.transport);
+  if (state.transport === "error") return transportSentence(state.transport);
+  if (state.transport === "module_error") return transportSentence(state.transport);
   return null;
 }

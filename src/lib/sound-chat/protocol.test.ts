@@ -402,6 +402,7 @@ describe("message ids and retry policy", () => {
 
   it("tracks a partial ACK, ignores bits past the block count, and counts attempts", () => {
     const message: OutboundMessage = {
+      sendId: 1,
       msgId: 1,
       plaintext: bytes("hi"),
       frames: [new Uint8Array(WIRE_BLOCK_BYTES), new Uint8Array(WIRE_BLOCK_BYTES)],
@@ -421,6 +422,7 @@ describe("message ids and retry policy", () => {
 
   it("gives up after the attempt cap instead of retrying for ever", () => {
     const message: OutboundMessage = {
+      sendId: 2,
       msgId: 2,
       plaintext: bytes("hi"),
       frames: [new Uint8Array(WIRE_BLOCK_BYTES)],

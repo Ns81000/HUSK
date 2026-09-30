@@ -22,7 +22,7 @@ import { MessageList } from "@/components/sound-chat/message-list";
 import { PairingPanel } from "@/components/sound-chat/pairing-panel";
 import { TransmitStatus } from "@/components/sound-chat/transmit-status";
 import { deriveComposerBlock } from "@/components/sound-chat/use-sound-chat";
-import { SOUND_CHAT_COPY, PAIRING_CODE_RULE } from "@/lib/sound-chat/ui/copy";
+import { SOUND_CHAT_COPY, transportSentence, PAIRING_CODE_RULE } from "@/lib/sound-chat/ui/copy";
 import { PAIRING_CODE_LENGTH } from "@/lib/sound-chat/crypto";
 import { describePairingFailure } from "@/lib/sound-chat/pairing";
 import type { PairingFailureReason } from "@/lib/sound-chat/pairing";
@@ -136,7 +136,6 @@ function chatScreen(state: SoundChatUiState, draft = "hi"): ReactElement {
       <TransmitStatus
         transport={state.transport}
         transmitting={state.transmitting}
-        busy={state.busy}
         progress={state.progress}
       />
       <MessageList inbound={state.inbound} outbound={state.outbound} />
@@ -160,21 +159,25 @@ describe("Q-1 every reachable `chat` combination renders one honest set of lines
         const markup = render(chatScreen(state));
         // Exactly one transport sentence, and it is this state's own.
         const rendered = ALL_STATES.filter((candidate) =>
-          markup.includes(SOUND_CHAT_COPY.transport[candidate]),
+          markup.includes(transportSentence(candidate)),
         );
         expect(rendered, "two transport sentences at once").toEqual([transport]);
         // A bar exists exactly for the two on-air states, and it never claims
         // delivery.
         expect(markup.includes('role="progressbar"')).toBe(ON_AIR[transport]);
         expect(markup).not.toMatch(/delivered/i);
-        // The queued line is stated once, and only when nothing of ours is on the
-        // air and something of ours is in the system.
-        const queued = markup.includes(SOUND_CHAT_COPY.transmit.queued);
-        expect(queued).toBe(state.busy && !ON_AIR[transport]);
+        // The queued state is NOT stated here at all any more. It used to be
+        // asserted: `transmit.queued` rendered for every busy-but-not-on-air state,
+        // which is the same fact the per-note rows state, attributed. The sentence
+        // is deleted, so the honest assertion is that the transport block says
+        // nothing about queuing — the transcript rows own that.
+        expect(markup, "the transport block claims a queued state of its own").not.toMatch(
+          /Queued/,
+        );
         // The composer's own reason is the transport sentence for a hold and
         // nothing at all otherwise.
         expect(deriveComposerBlock(state)).toBe(
-          transport === "hidden_hold" ? SOUND_CHAT_COPY.transport.hidden_hold : null,
+          transport === "hidden_hold" ? transportSentence("hidden_hold") : null,
         );
       });
     }
@@ -193,13 +196,13 @@ describe("Q-2 the three transport sentences a chat screen can never reach", () =
     for (const transport of ["idle", "error", "module_error"] as const) {
       expect(REACHABLE_IN_CHAT).not.toContain(transport);
       // So `deriveComposerBlock`'s branches for two of them, and the two
-      // sentences they quote, are dead: `SOUND_CHAT_COPY.transport.error`
+      // sentences they quote, are dead: `transportSentence("error")`
       // ("Sound Chat could not start.") and `.module_error` ("The sound codec
       // stopped working.") are read in exactly one place, and that place is the
       // chat screen. `idle` has no branch at all, so it is the composer that
       // would be wrongly usable.
       expect(deriveComposerBlock({ ...BASE_STATE, transport })).toBe(
-        transport === "idle" ? null : SOUND_CHAT_COPY.transport[transport],
+        transport === "idle" ? null : transportSentence(transport),
       );
       expect(snapshotFor(transport, false, false).phase).toBe("chat");
     }
@@ -222,7 +225,7 @@ describe("Q-3 honesty of every screen that renders", () => {
       const markup = render(
         <MessageList
           inbound={[]}
-          outbound={[{ seq: 1, msgId: 1, text: "n", status, attempts: 1, blocks: 1 }]}
+          outbound={[{ seq: 1, msgId: 1, text: "n", sendId: 1, status, attempts: 1, blocks: 1 }]}
         />,
       );
       expect(markup).toContain(expected);
@@ -344,14 +347,18 @@ describe("Q-4 what a send the user cannot see says about itself", () => {
     const one = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 1, sendId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     expect(one).toContain(SOUND_CHAT_COPY.outbound.sending);
     const two = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 1, sendId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     // The markup for the same state is byte-identical, so nothing anywhere in

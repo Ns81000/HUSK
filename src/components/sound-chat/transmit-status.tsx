@@ -20,7 +20,7 @@
  */
 
 import type { ReactElement } from "react";
-import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+import { SOUND_CHAT_COPY, transportSentence } from "@/lib/sound-chat/ui/copy";
 import { cn } from "@/lib/utils";
 import type { TransportState } from "@/lib/sound-chat/transport-machine";
 
@@ -53,48 +53,41 @@ const MOVING = {
   module_error: false,
 } as const satisfies Record<TransportState, boolean>;
 
-/**
- * The states in which our own audio is on the air: `transmitting` while the
- * blocks are being played, `awaiting_ack` for the window after they were
- * scheduled — which is the window the speaker is still playing them in, because
- * the session emits `TRANSMIT_DONE` on *scheduling*, not on completion.
- * `satisfies Record<TransportState, boolean>` rather than a two-value test, so a
- * state the machine grows cannot be silently left out of the rule that decides
- * whether the bar is showing.
- */
-const ON_AIR = {
-  idle: false,
-  listening: false,
-  transmitting: true,
-  awaiting_turn: false,
-  awaiting_ack: true,
-  backoff: false,
-  hidden_hold: false,
-  error: false,
-  module_error: false,
-} as const satisfies Record<TransportState, boolean>;
-
 /** Any number into `[1, high]`, with a non-finite value treated as the start. */
 function clampIndex(value: number | undefined, high: number): number {
   if (value === undefined || !Number.isFinite(value)) return 1;
   return Math.min(Math.max(1, Math.round(value)), high);
 }
 
+/**
+ * The sentence for the live state. Defined once, in the copy file, so the
+ * component and every test read the same function rather than each
+ * re-deriving the string with a conditional of its own.
+ */
 export function TransmitStatus({
   transport,
   transmitting,
-  busy,
   progress,
+  attempts,
 }: {
   readonly transport: TransportState;
   readonly transmitting: boolean;
-  readonly busy: boolean;
   readonly progress: {
     readonly blocks: number;
     readonly blockIndex: number;
     readonly fraction: number;
     readonly remainingMs: number;
   } | null;
+  /**
+   * How many times the note on the air has been transmitted, used only by
+   * `transport.backoff`'s sentence.
+   *
+   * Optional, defaulting to 0, because it is one number about one of nine states:
+   * a caller that does not care — a state preview, a test sweeping the other
+   * eight — must not be made to invent it. The sentence degrades to a first
+   * attempt rather than to nothing.
+   */
+  readonly attempts?: number;
 }): ReactElement {
   const tone = TONE[transport];
   // Clamped here as well as in the controller. The component is the last thing
@@ -133,7 +126,7 @@ export function TransmitStatus({
             MOVING[transport] && "dot-pulse",
           )}
         />
-        {SOUND_CHAT_COPY.transport[transport]}
+        {transportSentence(transport, attempts ?? 0)}
       </p>
 
       {progress === null ? null : (
@@ -173,16 +166,23 @@ export function TransmitStatus({
         <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.transmit.acking}</p>
       ) : null}
 
-      {busy && !ON_AIR[transport] ? (
-        // A note of ours is in the system and the radio is not playing it: it is
-        // sealed, queued, or waiting for the turn. This is the *only* place the
-        // queued state is stated. The composer used to have its own copy of the
-        // same sentence driven by `send()`'s return value, and it never cleared —
-        // so a note delivered ten seconds in was still announced as queued for the
-        // rest of the session. One fact, one place, derived from a fact rather
-        // than remembered.
-        <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.transmit.queued}</p>
-      ) : null}
+      {/* Neither of the two facts this component used to own survives here, and
+          both moved somewhere that can be the single owner of them.
+
+          There is no "is our own audio on the air" table. The controller owns
+          that rule (`ON_AIR` in `ui/controller.ts`) and it is the controller
+          that decides whether a `progress` record exists at all; this component
+          renders what it is handed, so a second table could only ever disagree
+          with the first. `transmitting` arrives already carrying it.
+
+          There is no global "queued" line. Before Phase 3V this component
+          rendered one for every busy-but-not-on-air state, which said the same
+          thing the per-note `outbound.queued` row says and did not say which
+          note — two sentences for one fact, one of them unattributed. That is
+          why the component no longer takes a `busy` prop at all: after the
+          change the transport block genuinely has no opinion about queued
+          work, so taking the number and discarding it would be a lie about what
+          it knows. The rows own it, attributed, once each. */}
     </div>
   );
 }

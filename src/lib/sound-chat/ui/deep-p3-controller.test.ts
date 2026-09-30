@@ -321,7 +321,15 @@ async function sendAndConfirm(
   text: string,
 ): Promise<void> {
   from.send(text);
-  await until("the note to start", () => from.getState().outbound.length > 0);
+  // "A row exists" is no longer the same thing as "the note started". The session
+  // publishes the accepted note as `queued` synchronously inside `send()`, so the
+  // row is there before `send()` returns and this wait used to be satisfied
+  // before a single frame had been sealed -- which is the whole shape of the
+  // defect this helper was written around. Wait for the status that means audio
+  // is on the air.
+  await until("the note to start", () =>
+    from.getState().outbound.some((entry) => entry.status === "sending"),
+  );
   for (let round = 0; round < 12; round += 1) {
     if (from.getState().outbound.every((entry) => entry.status !== "sending")) break;
     await deliver(from, to);

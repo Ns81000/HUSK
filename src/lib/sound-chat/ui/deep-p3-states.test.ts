@@ -61,6 +61,8 @@ class FakeSession {
     retries: 0,
   };
   readonly refused: SendRefusal[] = [];
+  /** Mirrors the real session's submission-id allocator. */
+  sendId = 0;
   #handlers: Handlers | null = null;
 
   constructor(options: SoundChatSessionOptions) {
@@ -114,7 +116,20 @@ class FakeSession {
       this.refused.push(refusal);
       return { ok: false, reason: refusal };
     }
-    return { ok: true, queued: this.busy };
+    this.sendId += 1;
+    // A real session publishes the accepted-but-unclaimed note synchronously,
+    // before it returns, so the transcript row exists in the same tick. This
+    // fake has to do the same or it would be modelling a session nobody has.
+    this.emit({
+      type: "outbound",
+      sendId: this.sendId,
+      msgId: null,
+      status: "queued",
+      attempts: 0,
+      blocks: 1,
+      text,
+    });
+    return { ok: true, queued: this.busy, sendId: this.sendId };
   }
 
   restart(): { ok: false; reason: "codec-dead" | "not-restartable" } {
@@ -372,6 +387,7 @@ describe("S-B the transcript keeps the newest, not the oldest", () => {
       session.emit({
         type: "outbound",
         msgId: index,
+        sendId: index,
         status: "sent",
         attempts: 1,
         blocks: 1,
@@ -405,7 +421,15 @@ describe("S-B the transcript keeps the newest, not the oldest", () => {
   it("keeps a note in place when only its status changes", async () => {
     const { controller, session } = await live();
     const report = (status: "sending" | "sent" | "failed", attempts: number): void => {
-      session.emit({ type: "outbound", msgId: 7, status, attempts, blocks: 2, text: "hello" });
+      session.emit({
+        type: "outbound",
+        sendId: 7,
+        msgId: 7,
+        status,
+        attempts,
+        blocks: 2,
+        text: "hello",
+      });
     };
     report("sending", 1);
     const first = controller.getState().outbound[0];
@@ -424,6 +448,7 @@ describe("S-B the transcript keeps the newest, not the oldest", () => {
     session.emit({
       type: "outbound",
       msgId: 900,
+      sendId: 900,
       status: "sending",
       attempts: 1,
       blocks: 1,
@@ -433,6 +458,7 @@ describe("S-B the transcript keeps the newest, not the oldest", () => {
     session.emit({
       type: "outbound",
       msgId: 901,
+      sendId: 901,
       status: "sending",
       attempts: 1,
       blocks: 1,
@@ -483,6 +509,7 @@ describe("S-C a hostile or degenerate outbound event", () => {
     session.emit({
       type: "outbound",
       msgId: 1,
+      sendId: 1,
       status: "sending",
       attempts: 1,
       blocks: 0,
@@ -503,6 +530,7 @@ describe("S-C a hostile or degenerate outbound event", () => {
     session.emit({
       type: "outbound",
       msgId: 1,
+      sendId: 1,
       status: "sending",
       attempts: 1,
       blocks: 64,
@@ -527,6 +555,7 @@ describe("S-C a hostile or degenerate outbound event", () => {
     session.emit({
       type: "outbound",
       msgId: 1,
+      sendId: 1,
       status: "sending",
       attempts: 1,
       blocks: 1,
@@ -538,7 +567,15 @@ describe("S-C a hostile or degenerate outbound event", () => {
   it("carries a note with a lone surrogate, a CRLF and no whitespace trimming", async () => {
     const { controller, session } = await live();
     const text = "line one\r\n\ud800line two   ";
-    session.emit({ type: "outbound", msgId: 1, status: "sent", attempts: 1, blocks: 1, text });
+    session.emit({
+      type: "outbound",
+      msgId: 1,
+      sendId: 1,
+      status: "sent",
+      attempts: 1,
+      blocks: 1,
+      text,
+    });
     expect(controller.getState().outbound[0]?.text).toBe(text);
     session.emit({ type: "message", msgId: 2, text });
     expect(controller.getState().inbound[0]?.text).toBe(text);
@@ -557,6 +594,7 @@ describe("S-C a hostile or degenerate outbound event", () => {
     stale.emit({
       type: "outbound",
       msgId: 2,
+      sendId: 2,
       status: "sent",
       attempts: 1,
       blocks: 1,
@@ -577,6 +615,7 @@ describe("S-C a hostile or degenerate outbound event", () => {
     session.emit({
       type: "outbound",
       msgId: 2,
+      sendId: 2,
       status: "sent",
       attempts: 1,
       blocks: 1,
@@ -600,6 +639,7 @@ describe("S-D the fatal path", () => {
     session.emit({
       type: "outbound",
       msgId: 1,
+      sendId: 1,
       status: "sending",
       attempts: 1,
       blocks: 2,

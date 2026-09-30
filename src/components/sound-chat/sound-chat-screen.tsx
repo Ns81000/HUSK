@@ -26,8 +26,9 @@
  * than kept alive behind a cached route.
  */
 
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { BackIcon } from "@/components/husk/icons";
+import { Button, Modal } from "@/components/husk/primitives";
 import { BlockedPanel } from "./blocked-panel";
 import { Composer } from "./composer";
 import { FatalPanel } from "./fatal-panel";
@@ -83,10 +84,11 @@ function renderPhase(ui: SoundChatUi): ReactElement {
             <TransmitStatus
               transport={state.transport}
               transmitting={state.transmitting}
-              busy={state.busy}
               progress={state.progress}
+              attempts={state.outbound.at(-1)?.attempts ?? 0}
             />
             <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
+            <EndSessionButton onConfirm={ui.cancel} />
           </div>
           <MessageList inbound={state.inbound} outbound={state.outbound} />
           <Composer
@@ -129,17 +131,30 @@ function renderPhase(ui: SoundChatUi): ReactElement {
  * healthy session outright rather than reporting a success it cannot deliver,
  * and the honest recovery is a full teardown followed by a new one — which
  * `begin` is.
+ *
+ * WHY the enterer's code is reused rather than discarded. This used to call
+ * `cancel()` for any enterer, which threw away a code the person had typed and
+ * sent the control's own copy ("... then try again") to a screen that could not
+ * retry anything. The controller keeps the code across a failure that is not
+ * about it — a refused microphone says nothing about a pairing code — so the
+ * retry is now a real second attempt with the same code.
+ *
+ * The one case it cannot help is a code the protocol itself refused: that code
+ * is deliberately cleared from the published state, so there is nothing honest
+ * to re-run, and the code field is the only place it can be corrected.
  */
 function retry(ui: SoundChatUi): void {
-  const role = ui.state.role;
-  if (role === null || role === "enterer") {
-    // Either nothing was chosen, or the code that failed was never stored (a
-    // blocked enterer has `code: null`), so there is nothing honest to retry
-    // with: back to the code field rather than a silent re-prompt.
+  const { role, code } = ui.state;
+  if (role === null) {
+    // Nothing was chosen yet, so there is no attempt to repeat.
     ui.cancel();
     return;
   }
-  ui.begin(role);
+  if (role === "enterer" && code === null) {
+    ui.cancel();
+    return;
+  }
+  ui.begin(role, code ?? undefined);
 }
 
 /**
@@ -153,6 +168,60 @@ function PreparingNotice(): ReactElement {
     <div className="enter flex flex-1 items-center justify-center px-6" role="status">
       <p className="text-body text-ink-muted">{SOUND_CHAT_COPY.shell.preparing}</p>
     </div>
+  );
+}
+
+/**
+ * The in-app way out of a live session.
+ *
+ * WHY this exists at all when the header already has a "Back to Husk" anchor:
+ * the anchor leaves Sound Chat entirely, but the situation it cannot serve is
+ * pairing with the *wrong device* and wanting to try again inside this feature.
+ * Without a control here, `renderPhase` wired `cancel()` only into the blocked
+ * and pairing panels, so from `chat` the sole in-app transition was a codec
+ * death. That is a UX gap rather than a dead end (the header anchor was always
+ * there), but it is the gap a person hits the first time they mistype a code on
+ * the other side.
+ *
+ * WHY it is behind a confirmation, like the restart: it is the same three
+ * consequences — the session ends, the microphone is released, the transcript is
+ * cleared — and it can be pressed while a note is still on the air. Reusing the
+ * app's own `Modal` inherits the focus trap and Escape behaviour the rest of
+ * Husk already has, rather than inventing a second dialog.
+ *
+ * WHY it is a quiet button at the end of the status block and not in the header:
+ * ending a session is not navigation. The header's control gets you out of
+ * Sound Chat; this one gets you back to the start of it.
+ */
+function EndSessionButton({ onConfirm }: { readonly onConfirm: () => void }): ReactElement {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    // A sibling of nothing live: the dialog is never nested inside a live region,
+    // for the same reason the restart dialog is not nested inside its `role="alert"`.
+    <>
+      <div className="mt-2 flex justify-end">
+        <Button
+          tone="quiet"
+          onClick={() => setConfirming(true)}
+          aria-label={SOUND_CHAT_COPY.actions.leave}
+          className="h-9 px-3 text-caption"
+        >
+          <BackIcon className="h-3.5 w-3.5" aria-hidden="true" />
+          {SOUND_CHAT_COPY.actions.leave}
+        </Button>
+      </div>
+      <Modal
+        open={confirming}
+        title={SOUND_CHAT_COPY.modal.leaveTitle}
+        description={SOUND_CHAT_COPY.modal.leaveDescription}
+        confirmLabel={SOUND_CHAT_COPY.modal.leaveConfirm}
+        onConfirm={() => {
+          setConfirming(false);
+          onConfirm();
+        }}
+        onCancel={() => setConfirming(false)}
+      />
+    </>
   );
 }
 

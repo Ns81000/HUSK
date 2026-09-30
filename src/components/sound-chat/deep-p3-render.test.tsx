@@ -33,7 +33,7 @@ import {
   MAX_MESSAGE_PLAINTEXT_BYTES,
   SINGLE_BLOCK_PLAINTEXT_BYTES,
 } from "@/lib/sound-chat/protocol";
-import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+import { SOUND_CHAT_COPY, transportSentence } from "@/lib/sound-chat/ui/copy";
 import { measureMessage } from "@/lib/sound-chat/ui/budget";
 import type { SoundChatUiState } from "@/lib/sound-chat/ui/controller";
 import type { TransportState } from "@/lib/sound-chat/transport-machine";
@@ -119,7 +119,6 @@ describe("R-A the progress bar survives degenerate figures", () => {
         <TransmitStatus
           transport="transmitting"
           transmitting
-          busy
           progress={{ blocks, blockIndex, fraction, remainingMs: 500 }}
         />,
       );
@@ -142,7 +141,6 @@ describe("R-A the progress bar survives degenerate figures", () => {
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 1, blockIndex: 1, fraction: Number.NaN, remainingMs: 500 }}
       />,
     );
@@ -166,7 +164,6 @@ describe("R-A the progress bar survives degenerate figures", () => {
         <TransmitStatus
           transport="transmitting"
           transmitting
-          busy
           progress={{ blocks, blockIndex, fraction: 0.5, remainingMs: 900 }}
         />,
       );
@@ -186,7 +183,6 @@ describe("R-A the progress bar survives degenerate figures", () => {
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 0, blockIndex: 1, fraction: 0.5, remainingMs: 500 }}
       />,
     );
@@ -209,38 +205,41 @@ describe("R-B the transport block never contradicts itself", () => {
 
   for (const transport of ALL_STATES) {
     for (const transmitting of [false, true]) {
-      for (const busy of [false, true]) {
-        for (const withProgress of [false, true]) {
-          const label = `${transport}/t=${String(transmitting)}/b=${String(busy)}/p=${String(withProgress)}`;
-          it(`renders one honest set of lines for ${label}`, () => {
-            const markup = render(
-              <TransmitStatus
-                transport={transport}
-                transmitting={transmitting}
-                busy={busy}
-                progress={
-                  withProgress
-                    ? { blocks: 2, blockIndex: 1, fraction: 0.25, remainingMs: 2_880 }
-                    : null
-                }
-              />,
-            );
-            // The state sentence is always there, and it is the state's own.
-            expect(markup).toContain(SOUND_CHAT_COPY.transport[transport]);
-            if (!UNREACHABLE(transport, transmitting, withProgress)) {
-              const arming = markup.includes(SOUND_CHAT_COPY.transmit.arming);
-              const acking = markup.includes(SOUND_CHAT_COPY.transmit.acking);
-              expect(arming && acking, "both 'getting ready' and 'waiting to confirm'").toBe(false);
-            }
-            // The bar is not a delivery claim in any combination.
-            expect(markup).not.toMatch(/delivered/i);
-            // Exactly one live region, and it is the sentence.
-            expect((markup.match(/aria-live="polite"/g) ?? []).length).toBe(1);
-            expect((markup.match(/role="progressbar"/g) ?? []).length).toBe(withProgress ? 1 : 0);
-            // A bar is never rendered with a total it cannot justify.
-            if (withProgress) expect(markup).toMatch(/Block 1 of 2/);
-          });
-        }
+      // PHASE 3V. This sweep used to have a third axis, `busy`, which rendered
+      // the same markup twice for every combination. `busy` was removed from
+      // `TransmitStatus` when the global "Queued." sentence went: the per-note
+      // `outbound.queued` row owns that fact, attributed, so the transport block
+      // genuinely has no opinion about queued work. A sweep axis that cannot
+      // change the output is a duplicated test wearing a disguise.
+      for (const withProgress of [false, true]) {
+        const label = `${transport}/t=${String(transmitting)}/p=${String(withProgress)}`;
+        it(`renders one honest set of lines for ${label}`, () => {
+          const markup = render(
+            <TransmitStatus
+              transport={transport}
+              transmitting={transmitting}
+              progress={
+                withProgress
+                  ? { blocks: 2, blockIndex: 1, fraction: 0.25, remainingMs: 2_880 }
+                  : null
+              }
+            />,
+          );
+          // The state sentence is always there, and it is the state's own.
+          expect(markup).toContain(transportSentence(transport));
+          if (!UNREACHABLE(transport, transmitting, withProgress)) {
+            const arming = markup.includes(SOUND_CHAT_COPY.transmit.arming);
+            const acking = markup.includes(SOUND_CHAT_COPY.transmit.acking);
+            expect(arming && acking, "both 'getting ready' and 'waiting to confirm'").toBe(false);
+          }
+          // The bar is not a delivery claim in any combination.
+          expect(markup).not.toMatch(/delivered/i);
+          // Exactly one live region, and it is the sentence.
+          expect((markup.match(/aria-live="polite"/g) ?? []).length).toBe(1);
+          expect((markup.match(/role="progressbar"/g) ?? []).length).toBe(withProgress ? 1 : 0);
+          // A bar is never rendered with a total it cannot justify.
+          if (withProgress) expect(markup).toMatch(/Block 1 of 2/);
+        });
       }
     }
   }
@@ -249,10 +248,8 @@ describe("R-B the transport block never contradicts itself", () => {
     // FIXED. "Getting ready to play" and "waiting for the other device to
     // confirm" are two readings of the same instant, so `awaiting_ack` now
     // excludes the first: there, the blocks *are* scheduled.
-    const markup = render(
-      <TransmitStatus transport="awaiting_ack" transmitting busy progress={null} />,
-    );
-    expect(markup).toContain(SOUND_CHAT_COPY.transport.awaiting_ack);
+    const markup = render(<TransmitStatus transport="awaiting_ack" transmitting progress={null} />);
+    expect(markup).toContain(transportSentence("awaiting_ack"));
     expect(markup).not.toContain(SOUND_CHAT_COPY.transmit.arming);
     expect(markup).toContain(SOUND_CHAT_COPY.transmit.acking);
   });
@@ -264,13 +261,12 @@ describe("R-B the transport block never contradicts itself", () => {
       <TransmitStatus
         transport="awaiting_ack"
         transmitting={false}
-        busy
         progress={{ blocks: 2, blockIndex: 2, fraction: 1, remainingMs: 0 }}
       />,
     );
     expect(markup).toContain('aria-valuenow="100"');
     expect(markup).toContain("about 0 seconds left");
-    expect(markup).toContain(SOUND_CHAT_COPY.transport.awaiting_ack);
+    expect(markup).toContain(transportSentence("awaiting_ack"));
     expect(markup).not.toMatch(/delivered/i);
   });
 });
@@ -382,15 +378,18 @@ describe("R-D the composer's reason and the state that produced it", () => {
           // sentence. Either way there is exactly one and it is a real one.
           expect(reason).toBe(SOUND_CHAT_COPY.composer.blockedByPairing);
         } else if (transport === "hidden_hold") {
-          expect(reason).toBe(SOUND_CHAT_COPY.transport.hidden_hold);
+          expect(reason).toBe(transportSentence("hidden_hold"));
         } else if (transport === "error" || transport === "module_error") {
-          expect(reason).toBe(SOUND_CHAT_COPY.transport[transport]);
+          expect(reason).toBe(transportSentence(transport));
         } else {
           expect(reason).toBeNull();
         }
         // A reason is either a transport sentence or a composer sentence, never
-        // a mixture of the two vocabularies.
-        const transportWords = Object.values(SOUND_CHAT_COPY.transport);
+        // a mixture of the two vocabularies. Resolved through
+        // `transportSentence` because every entry of the record is a function.
+        const transportWords = Object.keys(SOUND_CHAT_COPY.transport).map((state) =>
+          transportSentence(state as Parameters<typeof transportSentence>[0]),
+        );
         if (reason !== null && transportWords.includes(reason)) {
           expect(SOUND_CHAT_COPY.composer.blockedByPairing).not.toBe(reason);
         }
@@ -433,6 +432,7 @@ describe("R-E the transcript at its bound", () => {
   const full = Array.from({ length: 200 }, (_unused, index) => ({
     seq: index + 1,
     msgId: index + 1,
+    sendId: index + 1,
     text: `n${String(index)}`,
     status: "sending" as const,
     attempts: 1,
@@ -475,7 +475,7 @@ describe("R-E the transcript at its bound", () => {
       const markup = render(
         <MessageList
           inbound={[]}
-          outbound={[{ seq: 1, msgId: 1, text: "n", status, attempts: 1, blocks: 1 }]}
+          outbound={[{ seq: 1, msgId: 1, text: "n", sendId: 1, status, attempts: 1, blocks: 1 }]}
         />,
       );
       const delivered = /delivered/i.test(markup);
@@ -595,19 +595,27 @@ describe("R-F copy that no component can reach", () => {
     expect(sources).toContain("SOUND_CHAT_COPY.actions.dismissNotices");
   });
 
-  it("states the queued state once, from a fact, and never from a past answer", () => {
+  it("states the queued state on the note, and never from a past answer", () => {
     // FIXED. The composer used to hold the queued state in React state written
     // from `send()`'s return value and never cleared it, so a note delivered ten
     // seconds in left "Queued" on screen inside a live region for the rest of the
-    // session. The composer has no such prop at all now; `TransmitStatus` derives
-    // it from `busy && !onAir`.
+    // session. The composer has no such prop at all now.
+    //
+    // CHANGED AGAIN IN PHASE 3V. The assertion used to be that `TransmitStatus`
+    // derives it from `busy && !ON_AIR[transport]`, which made the transport
+    // block the owner of a fact about a *note*. It is now owned by the note's own
+    // row — the session publishes every accepted note as `queued`, so the
+    // transcript states it once per note, attributed — and this asserts the
+    // transport block has no opinion about queuing at all.
     const composer = readFileSync(COMPONENT_DIR + "composer.tsx", "utf8");
     // The *prop* is gone; the word survives only in the comment that says why.
     expect(composer).not.toContain("readonly queued");
     const hook = readFileSync(COMPONENT_DIR + "use-sound-chat.ts", "utf8");
     expect(hook).not.toContain("setQueued");
     const status = readFileSync(COMPONENT_DIR + "transmit-status.tsx", "utf8");
-    expect(status).toContain("busy && !ON_AIR[transport]");
+    expect(status, "the transport block owns a queued state again").not.toContain(
+      "transmit.queued",
+    );
   });
 
   it("gives every unreadable reason the same sentence, whatever the reason was", () => {
@@ -694,7 +702,6 @@ describe("R-G ids and live regions across two of the same component", () => {
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 1, blockIndex: 1, fraction: 0.5, remainingMs: 960 }}
       />,
     );
@@ -805,7 +812,21 @@ describe("R-I the pairing screen under hostile codes", () => {
     });
   }
 
-  it("shows the enterer no code readout, because its code is not to be read aloud", () => {
+  it("shows the enterer its own code, because there is no field here to change it", () => {
+    // INVERTED IN PHASE 3V. This test pinned "shows the enterer no code readout,
+    // because its code is not to be read aloud", and the reasoning was sound for
+    // the case it was written for: an enterer types the code on the *pre-prompt*,
+    // so repeating it large on the next screen is noise.
+    //
+    // It stopped being the whole truth when the blocked panel's "Try again"
+    // learned to carry a typed code through a microphone failure. The enterer then
+    // arrives here from a screen that never had the code in front of them, this
+    // screen has no field, and the copy says "This is the code being used" — so
+    // the code has to be visible for that sentence to be checkable. A person
+    // whose retry silently used the wrong code has no other way to notice.
+    //
+    // What is still true, and asserted below: the code is never rendered as an
+    // editable field, and it is still never played as sound.
     const markup = render(
       <PairingPanel
         role="enterer"
@@ -817,8 +838,12 @@ describe("R-I the pairing screen under hostile codes", () => {
         onSwitchRole={noop}
       />,
     );
-    expect(markup).not.toContain("font-mono");
-    expect(markup).not.toContain("ABCD2345");
+    expect(markup).toContain("ABCD2345");
+    // Read as a readout, never as an input: the displayer's large monospaced
+    // treatment stays the displayer's, because that is the one meant to be read
+    // across a room.
+    expect(markup).not.toContain("<input");
+    expect(markup).toContain(SOUND_CHAT_COPY.pairing.enterRetryHeading);
   });
 
   it("keeps the permission pre-prompt's role step free of any input", () => {

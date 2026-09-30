@@ -69,6 +69,30 @@ function excludedLetters(): string {
  */
 export const PAIRING_CODE_RULE = `${PAIRING_CODE_LENGTH} characters using the digits 2 to 9 and the letters A to Z, except ${excludedLetters()}`;
 
+/**
+ * The sentence for one transport state.
+ *
+ * Every entry is a function of the attempt count even though only `backoff` uses
+ * it. That is deliberate: a mixed `Record<TransportState, string | Function>`
+ * needs a runtime `typeof` to read, and a `typeof` against a table is the shape
+ * the anti-slop rules ban because it usually means the table should be typed
+ * differently. One uniform type means no narrowing at the call site, and
+ * `satisfies Record<...>` still fails to compile if a state is ever added without
+ * a sentence.
+ *
+ * The attempt number earns its place in `backoff` for two reasons at once. It is
+ * the honest wording — "trying again" without a count does not say whether this
+ * is the second attempt or the last. And a byte-identical sentence is never
+ * re-announced: React does not touch the DOM when the text has not changed, so a
+ * person waiting through three attempts would hear it exactly once.
+ */
+export function transportSentence(state: TransportState, attempts = 1): string {
+  return SOUND_CHAT_COPY.transport[state](Math.max(1, Math.round(attempts)));
+}
+
+/** The attempt number `transport.backoff` quotes. Shared so it cannot drift. */
+const MAX_SEND_ATTEMPTS_SHOWN = 3;
+
 export const SOUND_CHAT_COPY = {
   /** Pre-prompt, before the browser's own microphone prompt is triggered. */
   permission: {
@@ -97,6 +121,18 @@ export const SOUND_CHAT_COPY = {
       "Type it into the second device. This one is listening, and will play a short tone to answer.",
     enterHeading: "Type the code from the other device",
     enterBody: `The code is ${PAIRING_CODE_RULE}. It is never played out loud as sound.`,
+    /**
+     * The same screen, after a retry that carried the typed code through.
+     *
+     * An enterer that already holds a code must not be told to type one: there is
+     * no field on this screen, so "Type the code from the other device" is an
+     * instruction to do something impossible. This states the code actually in
+     * use, which is the only thing a person in this state can act on — they can
+     * see whether it is the code they meant.
+     */
+    enterRetryHeading: "Playing your handshake tone",
+    enterRetryBody:
+      "This is the code being used. It is never played out loud as sound, only matched against the other device's tone.",
     fieldLabel: "Pairing code",
     codeLabel: "Pairing code to type in",
     codeAction: "Connect",
@@ -114,18 +150,32 @@ export const SOUND_CHAT_COPY = {
     } satisfies Record<PairingRole, string>,
   },
 
-  /** The live transport state, one sentence each, all nine states covered. */
+  /**
+   * The live transport state, one sentence each, all nine states covered.
+   *
+   * `backoff` is the only one that reads its argument; the other eight take it
+   * and ignore it, which is what keeps the whole record a single function type.
+   */
   transport: {
-    idle: "Not started",
-    listening: "Listening",
-    transmitting: "Playing your note out loud",
-    awaiting_turn: "The other device is on the air. Yours goes next.",
-    awaiting_ack: "On the air, waiting for the other device to confirm.",
-    backoff: "The channel was busy. Trying again.",
-    hidden_hold: "Held while this tab is in the background.",
-    error: "Sound Chat could not start.",
-    module_error: "The sound codec stopped working.",
-  } satisfies Record<TransportState, string>,
+    idle: () => "Not started",
+    listening: () => "Listening",
+    transmitting: () => "Playing your note out loud",
+    awaiting_turn: () => "The other device is on the air. Yours goes next.",
+    awaiting_ack: () => "On the air, waiting for the other device to confirm.",
+    /**
+     * `backoff` has three distinct causes in the machine — a detected collision,
+     * the peer starting while we wait, and an acknowledgement that simply never
+     * arrived — and the third is by far the most common. "The channel was busy"
+     * names a cause the software cannot observe: a missed decode, a wrong code,
+     * room noise and a device that was not listening are all indistinguishable
+     * from here, and every other sentence in this table names only what is known.
+     */
+    backoff: (attempts: number) =>
+      `Not confirmed yet, so it is being tried again (attempt ${attempts} of ${MAX_SEND_ATTEMPTS_SHOWN}).`,
+    hidden_hold: () => "Held while this tab is in the background.",
+    error: () => "Sound Chat could not start.",
+    module_error: () => "The sound codec stopped working.",
+  } satisfies Record<TransportState, (attempts: number) => string>,
 
   /** One-block and multi-block transmission progress. */
   transmit: {
@@ -135,7 +185,15 @@ export const SOUND_CHAT_COPY = {
     block: (blockIndex: number, blocks: number, remainingMs: number) =>
       `Block ${blockIndex} of ${blocks} - about ${secondsLabel(remainingMs)} left`,
     acking: "Your note is on the air. Waiting for the other device to confirm it.",
-    queued: "Queued. It goes out when the channel is clear.",
+    /**
+     * REMOVED IN PHASE 3V — there is no global "Queued." line here any more.
+     *
+     * It rendered for every busy-but-not-on-air state and said exactly what the
+     * per-note `outbound.queued` row says — "this note of mine is accepted and
+     * not played yet" — except without saying *which* note. Two sentences for one
+     * fact, one of them unattributed, is how two copies drift apart. The rows say
+     * it once each, attributed, which is the whole fix.
+     */
     retrying: (attempts: number) =>
       `Not confirmed yet. Attempt ${attempts} of 3, then it is given up.`,
     /** P6: something was in the air, and this pairing cannot read it. */
@@ -232,6 +290,16 @@ export const SOUND_CHAT_COPY = {
     back: "Go back",
     exit: "Back to Husk",
     dismissNotices: "Dismiss these messages",
+    /**
+     * Ends the chat session and returns to the start screen.
+     *
+     * NOT "Stop" or "Exit": the screen it returns to is the microphone
+     * pre-prompt inside this feature, so the honest name for the trade is that
+     * the session ends and you start again. The separate `actions.exit` above is
+     * a whole-page navigation out of Sound Chat, and two controls that both sound
+     * like leaving would differ only in a way nobody could see.
+     */
+    leave: "End this session",
   },
 
   /** The shell: title bar and the one in-between state that has no session yet. */
@@ -264,6 +332,17 @@ export const SOUND_CHAT_COPY = {
     restartDescription:
       "The current session ends, the microphone is released, and the whole transcript is cleared from this page. A new session starts with the same pairing code.",
     restartConfirm: "Restart Sound Chat",
+    /**
+     * The other direction: back to the microphone pre-prompt, keeping nothing.
+     * It names the same three consequences the restart does, because they are
+     * the same three: the session ending, the microphone being released, and the
+     * transcript going. A person who paired with the wrong device has to know the
+     * cost before paying it, not after.
+     */
+    leaveTitle: "End this Sound Chat session?",
+    leaveDescription:
+      "The session ends, the microphone is released, and the whole transcript is cleared from this page. You start again from the beginning, with a new pairing code.",
+    leaveConfirm: "End session",
   },
 
   info: {
@@ -284,6 +363,15 @@ export const SOUND_CHAT_COPY = {
 
   /** An outbound message's own status line, one per protocol status. */
   outbound: {
+    /**
+     * Accepted and in the session's queue, not yet on the air.
+     *
+     * NOT "Sending" and not "Waiting": neither is true yet. The word has to say
+     * the note is safely held and has not been played, because that is exactly
+     * the state a person cannot otherwise see — before this status existed a
+     * note accepted in that state had no row at all.
+     */
+    queued: "Queued, not played yet",
     sending: "Playing",
     sent: "Delivered",
     failed: "Not received",

@@ -325,7 +325,7 @@ describe("a session that runs out of message ids (P2, P12)", () => {
     expect(Array.from(displayer.session.sessionSalt.slice(0, 2))).toEqual([0xff, 0xff]);
 
     // The one and only id this session will ever have.
-    expect(displayer.session.send("the only one")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("the only one")).toMatchObject({ ok: true, queued: false });
     await settle();
     await deliver(displayer, enterer);
     expect(enterer.texts()).toEqual(["the only one"]);
@@ -408,7 +408,17 @@ describe("a session that runs out of message ids (P2, P12)", () => {
     const outbound = displayer.events.filter(
       (event): event is Extract<SessionEvent, { type: "outbound" }> => event.type === "outbound",
     );
-    expect(new Set(outbound.map((event) => event.msgId)).size).toBe(1);
+    // Exactly one message ever got a *wire* id, which is the whole point of the
+    // test: the allocator is exhausted, so the notes behind it are accepted into
+    // the queue and then fail to seal. Counting distinct `msgId`s would now read
+    // four, because the accept-time `queued` records carry a null id by design;
+    // what must be counted is the records that actually reached the air.
+    const sealed = outbound.filter((event) => event.msgId !== null);
+    expect(new Set(sealed.map((event) => event.msgId)).size).toBe(1);
+    // Every submission is still accounted for and none was silently dropped: four
+    // accepted notes, each with a record, and none of them ever sealed.
+    expect(new Set(outbound.map((event) => event.sendId)).size).toBe(4);
+    expect(outbound.every((event) => event.msgId === null || sealed.includes(event))).toBe(true);
     // P2V FINDING: expected a refusal the UI can show, received nothing until
     // the (now permanently stuck) queue fills.
     expect(displayer.listenerErrors).toHaveLength(0);

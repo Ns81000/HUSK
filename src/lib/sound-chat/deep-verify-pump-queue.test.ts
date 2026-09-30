@@ -403,16 +403,19 @@ describe("F1 — the queue slot is claimed synchronously", () => {
 
       // Exactly the texts that were queued, once each, in order.
       expect.soft(enterer.texts(), `burst of ${size}: delivery order`).toEqual(wanted);
-      // One msgId per message: no text sealed twice under two ids, none reused.
+      // One submission per message: no text sealed twice under two ids, none
+      // reused. `sendId` and not `msgId`, because the `queued` event published
+      // at accept time carries a null `msgId` — counting ids would see one extra
+      // identity per note and report a correct run as a duplicated message.
       const ids = new Set(
         displayer.events
           .filter(
             (event): event is Extract<SessionEvent, { type: "outbound" }> =>
               event.type === "outbound",
           )
-          .map((event) => event.msgId),
+          .map((event) => event.sendId),
       );
-      expect.soft(ids.size, `burst of ${size}: one msgId per message`).toBe(size);
+      expect.soft(ids.size, `burst of ${size}: one submission per message`).toBe(size);
       expect
         .soft(
           displayer.events.filter((event) => event.type === "outbound" && event.status === "sent"),

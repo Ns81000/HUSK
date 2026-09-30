@@ -45,6 +45,8 @@ class FakeSession {
   pairing: PairingState = { kind: "idle" };
   transmitting = false;
   busy = false;
+  /** Mirrors the real session's submission-id allocator. */
+  sendId = 0;
   stopped = 0;
   started = 0;
   readonly pairingCode: string;
@@ -102,7 +104,19 @@ class FakeSession {
             ? "queue-full"
             : null;
     if (refusal !== null) return { ok: false, reason: refusal };
-    return { ok: true, queued: this.busy };
+    // Mirrors the real session: the accepted note is published before `send()`
+    // returns, so the transcript row exists in the same tick.
+    this.sendId += 1;
+    this.emit({
+      type: "outbound",
+      sendId: this.sendId,
+      msgId: null,
+      status: "queued",
+      attempts: 0,
+      blocks: 1,
+      text,
+    });
+    return { ok: true, queued: this.busy, sendId: this.sendId };
   }
 
   restart(): { ok: false; reason: "codec-dead" | "not-restartable" } {
@@ -422,6 +436,7 @@ describe("M-2 `fatal` is not latched against a late session event", () => {
     session.emit({
       type: "outbound",
       msgId: 7,
+      sendId: 7,
       status: "sending",
       attempts: 1,
       blocks: 2,
@@ -579,6 +594,7 @@ describe("M-4 render combinations the controller publishes that no screen can re
     session.emit({
       type: "outbound",
       msgId: 1,
+      sendId: 1,
       status: "sending",
       attempts: 1,
       blocks: 2,
@@ -632,6 +648,7 @@ describe("M-5 hostile and out-of-order input", () => {
       session.emit({
         type: "outbound",
         msgId: 9,
+        sendId: 9,
         status: "sending",
         attempts: 1,
         blocks,

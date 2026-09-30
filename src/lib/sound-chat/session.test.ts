@@ -569,7 +569,7 @@ describe("messages, acks and dedupe", () => {
 
   it("delivers a message and resolves the sender on the peer's ACK", async () => {
     const { displayer, enterer } = await pairedPeers();
-    expect(displayer.session.send("hello there")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("hello there")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     expect(await deliver(displayer, enterer)).toBeGreaterThanOrEqual(90);
     const messages = enterer.events.filter((event) => event.type === "message");
@@ -592,7 +592,7 @@ describe("messages, acks and dedupe", () => {
   it("carries a two-block message at exactly the measured cap", async () => {
     const { displayer, enterer } = await pairedPeers();
     const text = "H".repeat(84);
-    expect(displayer.session.send(text)).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send(text)).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     // Two blocks, one after the other: 180 frames of audio.
     expect(await deliver(displayer, enterer)).toBeGreaterThanOrEqual(180);
@@ -605,7 +605,7 @@ describe("messages, acks and dedupe", () => {
 
   it("renders one message however many times the codec redelivers the block (P4)", async () => {
     const { displayer, enterer } = await pairedPeers();
-    expect(displayer.session.send("twice")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("twice")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     const waveform = displayer.takeAir()[0];
     if (waveform === undefined) {
@@ -710,7 +710,7 @@ describe("retry, hold and failure (P11, P12)", () => {
 
   it("retries the same msgId with byte-identical audio, then gives up (P11)", async () => {
     const { displayer } = await pairedPeers();
-    expect(displayer.session.send("no ack coming")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("no ack coming")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     const first = displayer.takeAir()[0];
     if (first === undefined) throw new Error("expected a first attempt");
@@ -735,8 +735,12 @@ describe("retry, hold and failure (P11, P12)", () => {
     await settle();
     const outbound = displayer.events.filter((event) => event.type === "outbound");
     expect(outbound.at(-1)).toMatchObject({ status: "failed", attempts: 3 });
+    // One submission across every retry — the property this test exists for.
+    // Counted on `sendId`, not `msgId`: the accept-time `queued` record carries
+    // a null `msgId`, so counting ids would read two identities where there is
+    // one message, and would pass a genuinely duplicated message.
     expect(
-      new Set(outbound.map((event) => (event.type === "outbound" ? event.msgId : -1))).size,
+      new Set(outbound.map((event) => (event.type === "outbound" ? event.sendId : -1))).size,
     ).toBe(1);
     const played = displayer.context.played.length;
     await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS * 4);
@@ -747,14 +751,14 @@ describe("retry, hold and failure (P11, P12)", () => {
 
   it("treats a peer message while awaiting our ACK as a collision (P11)", async () => {
     const { displayer, enterer } = await pairedPeers();
-    expect(displayer.session.send("collide")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("collide")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     const firstAttempt = displayer.takeAir()[0];
     if (firstAttempt === undefined) throw new Error("expected a first attempt");
     // The peer transmits a couple of seconds later — after the displayer's own
     // Rx feed is listening again, which is what makes this a *heard* collision.
     advanceRoom(2.5);
-    expect(enterer.session.send("after you")).toEqual({ ok: true, queued: false });
+    expect(enterer.session.send("after you")).toMatchObject({ ok: true, queued: false });
     await transmitted(enterer);
     await deliver(enterer, displayer);
     expect(displayer.events.some((event) => event.type === "message")).toBe(true);
@@ -782,7 +786,7 @@ describe("retry, hold and failure (P11, P12)", () => {
     expect(displayer.session.state).toBe("listening");
     setVisibility("hidden");
     expect(displayer.session.state).toBe("hidden_hold");
-    expect(displayer.session.send("while hidden")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("while hidden")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     await vi.advanceTimersByTimeAsync(TURN_GAP_MS * 4);
     await settle();
@@ -1017,7 +1021,7 @@ describe("the timing contract the medium sets (10.2 P11, class 11)", () => {
       pairingCode: displayer.session.pairingCode,
     });
     await pairUp(displayer, enterer);
-    expect(displayer.session.send("lost ack")).toEqual({ ok: true, queued: false });
+    expect(displayer.session.send("lost ack")).toMatchObject({ ok: true, queued: false });
     await transmitted(displayer);
     // The peer hears nothing at all, so nothing is ever acked: the session must
     // exhaust its attempts and report a failure per message, never grow (P12).

@@ -29,7 +29,7 @@ import { PairingPanel } from "@/components/sound-chat/pairing-panel";
 import { PermissionPrompt } from "@/components/sound-chat/permission-prompt";
 import { TransmitStatus } from "@/components/sound-chat/transmit-status";
 import { SoundChatEntry } from "@/components/sound-chat/sound-chat-entry";
-import { PAIRING_CONFIRMATION_COPY, SOUND_CHAT_COPY } from "./copy";
+import { PAIRING_CONFIRMATION_COPY, SOUND_CHAT_COPY, transportSentence } from "./copy";
 import { SOUND_CHAT_ENTRY_COPY } from "./entry-copy";
 import type { PairingState } from "../pairing";
 import type { SoundChatBlock, SoundChatFatal } from "./controller";
@@ -126,7 +126,7 @@ describe("the copy rules, over every string the feature can show", () => {
 
   it("says the note is audible, which is the honest description", () => {
     expect(SOUND_CHAT_COPY.permission.limits.join(" ")).toMatch(/audible|out loud/i);
-    expect(SOUND_CHAT_COPY.transport.transmitting).toBe("Playing your note out loud");
+    expect(transportSentence("transmitting")).toBe("Playing your note out loud");
   });
 
   it("covers every transport state, refusal, status and failure kind with its own sentence", () => {
@@ -142,7 +142,7 @@ describe("the copy rules, over every string the feature can show", () => {
       "module_error",
     ];
     for (const state of states) {
-      expect(SOUND_CHAT_COPY.transport[state], `no sentence for ${state}`).toBeTruthy();
+      expect(transportSentence(state), `no sentence for ${state}`).toBeTruthy();
     }
     const refusals: SendRefusal[] = [
       "not-paired",
@@ -285,11 +285,21 @@ describe("the pairing screen, one line per pairing state", () => {
         />,
       );
       expect(markup.length).toBeGreaterThan(200);
+      // An enterer that already holds a code must not be told to type one: there
+      // is no field on this screen. This case is reachable by retrying after a
+      // microphone refusal, which is exactly why it matters.
       expect(markup).toContain(
         state.kind === "idle" || state.role === "displayer"
           ? SOUND_CHAT_COPY.pairing.displayHeading
-          : SOUND_CHAT_COPY.pairing.enterHeading,
+          : SOUND_CHAT_COPY.pairing.enterRetryHeading,
       );
+      // `state.kind !== "idle"` first: the `idle` variant carries no `role`.
+      if (state.kind !== "idle" && state.role === "enterer") {
+        expect(
+          markup,
+          "an enterer holding a code is instructed to type a code it already has",
+        ).not.toContain(SOUND_CHAT_COPY.pairing.enterHeading);
+      }
     });
   }
 
@@ -427,12 +437,11 @@ describe("transmit status and the progress bar", () => {
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 1, blockIndex: 1, fraction: 0.5, remainingMs: 960 }}
       />,
     );
     expect(markup).toContain('role="status"');
-    expect(markup).toContain(SOUND_CHAT_COPY.transport.transmitting);
+    expect(markup).toContain(transportSentence("transmitting"));
     expect(markup).not.toMatch(/delivered/i);
   });
 
@@ -441,7 +450,6 @@ describe("transmit status and the progress bar", () => {
       <TransmitStatus
         transport="awaiting_ack"
         transmitting={false}
-        busy
         progress={{ blocks: 2, blockIndex: 2, fraction: 0.5, remainingMs: 1920 }}
       />,
     );
@@ -458,7 +466,6 @@ describe("transmit status and the progress bar", () => {
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 1, blockIndex: 1, fraction: 0.25, remainingMs: 1440 }}
       />,
     );
@@ -471,17 +478,15 @@ describe("transmit status and the progress bar", () => {
   });
 
   it("says it is getting ready in the window before the first block plays", () => {
-    const markup = render(
-      <TransmitStatus transport="transmitting" transmitting busy progress={null} />,
-    );
+    const markup = render(<TransmitStatus transport="transmitting" transmitting progress={null} />);
     expect(markup).toContain(SOUND_CHAT_COPY.transmit.arming);
   });
 
   it("shows a held send as held, not as failed", () => {
     const markup = render(
-      <TransmitStatus transport="hidden_hold" transmitting={false} busy progress={null} />,
+      <TransmitStatus transport="hidden_hold" transmitting={false} progress={null} />,
     );
-    expect(markup).toContain(SOUND_CHAT_COPY.transport.hidden_hold);
+    expect(markup).toContain(transportSentence("hidden_hold"));
     expect(markup).toMatch(/background/i);
   });
 
@@ -501,11 +506,10 @@ describe("transmit status and the progress bar", () => {
         <TransmitStatus
           transport={state}
           transmitting={state === "transmitting"}
-          busy={false}
           progress={null}
         />,
       );
-      expect(markup, `no markup for ${state}`).toContain(SOUND_CHAT_COPY.transport[state]);
+      expect(markup, `no markup for ${state}`).toContain(transportSentence(state));
     }
   });
 });
@@ -579,15 +583,21 @@ describe("the composer", () => {
     expect(markup).toMatch(/<textarea[^>]*disabled/);
   });
 
-  it("says a queued note is queued", () => {
-    // The queued state is stated once, by `TransmitStatus`, from the session's
-    // own facts — not from what a past `send()` returned. The composer has no
-    // such prop, which is why this asserts the absence rather than a string.
-    expect(render(<Composer {...base} value="" />)).not.toContain(SOUND_CHAT_COPY.transmit.queued);
+  it("says a queued note is queued — on the note, not on the radio", () => {
+    // REWRITTEN IN PHASE 3V. This asserted that `TransmitStatus` renders
+    // `transmit.queued` whenever the session is busy and nothing is on the air.
+    // That global sentence is deleted: it said the same thing the per-note
+    // `outbound.queued` row says, without saying which note, so a person with two
+    // queued notes was told "queued" three times and could not tell which was
+    // which. The rows own it now — attributed, once each — so the assertion moves
+    // there, and this checks only that the component states nothing on its own.
+    expect(render(<Composer {...base} value="" />)).not.toMatch(/Queued/);
     const markup = render(
-      <TransmitStatus transport="listening" transmitting={false} busy progress={null} />,
+      <TransmitStatus transport="listening" transmitting={false} progress={null} />,
     );
-    expect(markup).toContain(SOUND_CHAT_COPY.transmit.queued);
+    expect(markup, "the transport block still claims a queued state of its own").not.toMatch(
+      /Queued/,
+    );
   });
 });
 
@@ -596,7 +606,9 @@ describe("the transcript", () => {
     const markup = render(
       <MessageList
         inbound={[{ seq: 2, msgId: 7, text: "from them" }]}
-        outbound={[{ seq: 1, msgId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 3, sendId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     expect(markup).toContain('role="log"');
@@ -610,7 +622,9 @@ describe("the transcript", () => {
     const sending = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 3, text: "note", status: "sending", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 3, sendId: 3, text: "note", status: "sending", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     expect(sending).toContain(SOUND_CHAT_COPY.outbound.sending);
@@ -619,7 +633,9 @@ describe("the transcript", () => {
     const sent = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 3, text: "note", status: "sent", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 3, sendId: 3, text: "note", status: "sent", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     expect(sent).toContain(SOUND_CHAT_COPY.outbound.sent);
@@ -629,7 +645,9 @@ describe("the transcript", () => {
     const markup = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 3, text: "note", status: "failed", attempts: 3, blocks: 2 }]}
+        outbound={[
+          { seq: 1, msgId: 3, sendId: 3, text: "note", status: "failed", attempts: 3, blocks: 2 },
+        ]}
       />,
     );
     expect(markup).toContain(SOUND_CHAT_COPY.outbound.failed);
@@ -639,7 +657,9 @@ describe("the transcript", () => {
     const markup = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 3, text: "note", status: "sending", attempts: 2, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 3, sendId: 3, text: "note", status: "sending", attempts: 2, blocks: 1 },
+        ]}
       />,
     );
     expect(markup).toContain(SOUND_CHAT_COPY.transmit.retrying(2));
@@ -717,7 +737,9 @@ describe("no emoji and no false claims in the rendered output of any state", () 
       "chat",
       <MessageList
         inbound={[{ seq: 2, msgId: 1, text: "hello" }]}
-        outbound={[{ seq: 1, msgId: 9, text: "hi", status: "sent", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 9, sendId: 9, text: "hi", status: "sent", attempts: 1, blocks: 1 },
+        ]}
       />,
     ],
     [
@@ -737,7 +759,6 @@ describe("no emoji and no false claims in the rendered output of any state", () 
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 2, blockIndex: 1, fraction: 0.25, remainingMs: 2880 }}
       />,
     ],

@@ -40,7 +40,7 @@ import { PermissionPrompt } from "@/components/sound-chat/permission-prompt";
 import { TransmitStatus } from "@/components/sound-chat/transmit-status";
 import { SoundChatEntry } from "@/components/sound-chat/sound-chat-entry";
 import { SoundChatScreen } from "@/components/sound-chat/sound-chat-screen";
-import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+import { SOUND_CHAT_COPY, transportSentence } from "@/lib/sound-chat/ui/copy";
 import { SOUND_CHAT_ENTRY_COPY } from "@/lib/sound-chat/ui/entry-copy";
 import {
   PAIRING_CODE_ALPHABET,
@@ -140,14 +140,13 @@ const SCREENS: readonly (readonly [string, ReactElement])[] = [
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 2, blockIndex: 1, fraction: 0.25, remainingMs: 2880 }}
       />
       <MessageList
         inbound={[{ seq: 2, msgId: 1, text: "from them" }]}
         outbound={[
-          { seq: 1, msgId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 },
-          { seq: 3, msgId: 4, text: "over", status: "failed", attempts: 3, blocks: 2 },
+          { seq: 1, msgId: 3, sendId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 },
+          { seq: 3, msgId: 4, sendId: 4, text: "over", status: "failed", attempts: 3, blocks: 2 },
         ]}
       />
       {composer("a".repeat(85))}
@@ -426,12 +425,13 @@ describe("A3 one live region per event, and none of them narrates the same event
         <TransmitStatus
           transport="transmitting"
           transmitting
-          busy
           progress={{ blocks: 1, blockIndex: 1, fraction: 0.5, remainingMs: 960 }}
         />
         <MessageList
           inbound={[]}
-          outbound={[{ seq: 1, msgId: 1, text: "hi", status: "sending", attempts: 1, blocks: 1 }]}
+          outbound={[
+            { seq: 1, msgId: 1, sendId: 1, text: "hi", status: "sending", attempts: 1, blocks: 1 },
+          ]}
         />
         {composer("hi")}
       </div>,
@@ -451,16 +451,17 @@ describe("A3 one live region per event, and none of them narrates the same event
           <TransmitStatus
             transport={state}
             transmitting={state === "transmitting"}
-            busy
             progress={null}
           />
           <MessageList
             inbound={[]}
-            outbound={[{ seq: 1, msgId: 1, text: "note", status: "sent", attempts: 1, blocks: 1 }]}
+            outbound={[
+              { seq: 1, msgId: 1, sendId: 1, text: "note", status: "sent", attempts: 1, blocks: 1 },
+            ]}
           />
         </div>,
       );
-      const status = SOUND_CHAT_COPY.transport[state];
+      const status = transportSentence(state);
       const logAt = markup.indexOf('role="log"');
       expect(logAt, `${state} renders no log`).toBeGreaterThan(-1);
       // The status sentence appears once, before the log, and never inside it.
@@ -489,7 +490,6 @@ describe("A3 one live region per event, and none of them narrates the same event
         <TransmitStatus
           transport="transmitting"
           transmitting
-          busy
           progress={{
             blocks: 2,
             blockIndex: 1,
@@ -526,7 +526,6 @@ describe("A3 one live region per event, and none of them narrates the same event
           <TransmitStatus
             transport={state}
             transmitting={state === "transmitting"}
-            busy
             progress={progress}
           />,
         );
@@ -567,7 +566,9 @@ describe("A3 one live region per event, and none of them narrates the same event
     const one = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 1, sendId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     const region = (markup: string): string => {
@@ -1015,7 +1016,6 @@ describe("A8 the progress bar is determinate, finite, and out of the live region
         <TransmitStatus
           transport={state}
           transmitting={state === "transmitting"}
-          busy
           progress={{ blocks: 2, blockIndex: 1, fraction: 0.5, remainingMs: 1920 }}
         />,
       );
@@ -1044,7 +1044,6 @@ describe("A8 the progress bar is determinate, finite, and out of the live region
           <TransmitStatus
             transport="transmitting"
             transmitting
-            busy
             progress={{ blocks: 2, blockIndex: 2, fraction, remainingMs }}
           />,
         );
@@ -1062,7 +1061,6 @@ describe("A8 the progress bar is determinate, finite, and out of the live region
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 1, blockIndex: 1, fraction: 0.5, remainingMs: 960 }}
       />,
     );
@@ -1114,7 +1112,7 @@ describe("A9 no state is carried by colour alone", () => {
       const markup = render(
         <MessageList
           inbound={[]}
-          outbound={[{ seq: 1, msgId: 1, text: "n", status, attempts: 1, blocks: 1 }]}
+          outbound={[{ seq: 1, msgId: 1, text: "n", sendId: 1, status, attempts: 1, blocks: 1 }]}
         />,
       );
       expect(markup, status).toContain(SOUND_CHAT_COPY.outbound[status]);
@@ -1128,14 +1126,13 @@ describe("A9 no state is carried by colour alone", () => {
     // The dot is `aria-hidden`, so the sentence is the whole signal — which is
     // correct, and is why every state needs a sentence that differs.
     expect(source).toMatch(/aria-hidden="true"/);
-    const sentences = ALL_STATES.map((state) => SOUND_CHAT_COPY.transport[state]);
+    const sentences = ALL_STATES.map((state) => transportSentence(state));
     expect(new Set(sentences).size).toBe(sentences.length);
     for (const state of ALL_STATES) {
       const markup = render(
         <TransmitStatus
           transport={state}
           transmitting={state === "transmitting"}
-          busy={false}
           progress={null}
         />,
       );
@@ -1179,11 +1176,8 @@ describe("A9 no state is carried by colour alone", () => {
  * A10 — measured contrast of the tokens this feature's own text uses.
  * ================================================================== */
 
-/** OKLCH to linear sRGB, the transform a contrast ratio is computed from. */
-function oklch(L: number, C: number, H: number): [number, number, number] {
-  const h = (H * Math.PI) / 180;
-  const a = C * Math.cos(h);
-  const b = C * Math.sin(h);
+/** OKLab to LINEAR sRGB. The matrix alone — no transfer function. */
+function oklabToLinearSrgb(L: number, a: number, b: number): [number, number, number] {
   const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
   const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
   const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
@@ -1191,7 +1185,56 @@ function oklch(L: number, C: number, H: number): [number, number, number] {
     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
     -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
     -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
-  ].map((value) => Math.min(1, Math.max(0, value))) as [number, number, number];
+  ];
+}
+
+/** The sRGB transfer function, gamma-encoding linear to display. Applied ONCE. */
+function encode(c: number): number {
+  return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(Math.max(c, 0), 1 / 2.4) - 0.055;
+}
+
+const inSrgbGamut = ([r, g, b]: readonly [number, number, number]): boolean =>
+  [r, g, b].every((c) => c >= -1e-4 && c <= 1 + 1e-4);
+
+/**
+ * OKLCH to DISPLAY sRGB — the quantity a WCAG contrast ratio is defined over.
+ *
+ * WHY THIS FUNCTION WAS REWRITTEN IN PHASE 3V. It used to return the OKLab
+ * matrix's output directly, which is *linear* sRGB, and hand that straight to
+ * `luminance()`, which applies the sRGB transfer function again. That is a
+ * double-linearisation: it measured a different quantity from the one WCAG
+ * defines. It was exact on pure black and pure white — which is why it looked
+ * plausible — and wrong everywhere else.
+ *
+ * The consequence was not cosmetic. It reported `--ink-faint` on the canvas at
+ * **4.23:1** when the true figure is **7.79:1**, and this file asserted
+ * `toBeLessThan(4.5)` on that number as a "pinned defect". The token was never
+ * below 4.5:1. The Phase 3 log entry that recorded "text-ink-faint at
+ * 4.19-4.26:1 against a 4.5:1 requirement" is therefore false, and it is
+ * corrected in this phase's log entry rather than left standing.
+ *
+ * WHY GAMUT MAPPING AND NOT CLAMPING. A saturated token such as
+ * `--accent: oklch(0.836 0.236 135.4)` is outside sRGB. Clamping each channel
+ * independently shifts the hue and lightness and produces badly wrong ratios
+ * (it reported `--accent` at 1.35:1, which is absurd for a light colour on a
+ * dark canvas). Browsers reduce *chroma* until the colour fits, so that is what
+ * this does — a binary search, which is what CSS Color 4 specifies.
+ */
+function oklch(L: number, C: number, H: number): [number, number, number] {
+  const h = (H * Math.PI) / 180;
+  const at = (chroma: number) => oklabToLinearSrgb(L, chroma * Math.cos(h), chroma * Math.sin(h));
+  let chroma = C;
+  if (!inSrgbGamut(at(C))) {
+    let low = 0;
+    let high = C;
+    for (let step = 0; step < 24; step += 1) {
+      const mid = (low + high) / 2;
+      if (inSrgbGamut(at(mid))) low = mid;
+      else high = mid;
+    }
+    chroma = low;
+  }
+  return at(chroma).map((c) => Math.min(1, Math.max(0, encode(c)))) as [number, number, number];
 }
 
 function luminance(rgb: readonly [number, number, number]): number {
@@ -1251,11 +1294,28 @@ const BACKGROUNDS: readonly (readonly [string, [number, number, number]])[] = [
 
 describe("A10 measured contrast of the tokens this feature's text is painted in", () => {
   it("the converter is right, or none of the numbers below mean anything", () => {
-    expect(oklch(1, 0, 0)).toEqual([1, 1, 1]);
-    expect(oklch(0, 0, 0)).toEqual([0, 0, 0]);
-    // OKLab L of 0.5 is 0.125 linear for a neutral.
-    expect(oklch(0.5, 0, 0)[0]).toBeCloseTo(0.125, 6);
-    expect(contrast([1, 1, 1], [0, 0, 0])).toBeCloseTo(21, 6);
+    // Four ratios published by WCAG, none of them pure black on white. The old
+    // self-test asserted `oklch(0.5, 0, 0)[0] === 0.125`, which *certified the
+    // double-linearisation* — 0.125 is the LINEAR value, and asserting it made
+    // the bug look like the specification. A self-test has to check against
+    // something external, or it only proves the function matches itself.
+    expect(oklch(1, 0, 0)[0]).toBeCloseTo(1, 6);
+    expect(oklch(0, 0, 0)[0]).toBeCloseTo(0, 6);
+    // OKLab L of 0.5 is mid grey: 0.3886 in DISPLAY sRGB, and 0.125 linear. The
+    // old converter returned the linear value here and called it display.
+    expect(oklch(0.5, 0, 0)[0]).toBeCloseTo(0.3886, 4);
+    expect(
+      oklch(0.5, 0, 0)[0],
+      "the linear value, which the old converter returned",
+    ).not.toBeCloseTo(0.125, 3);
+    // WCAG's own worked examples.
+    expect(contrast([1, 1, 1], [0, 0, 0])).toBeCloseTo(21, 2);
+    expect(contrast([1, 1, 1], [0x77 / 255, 0x77 / 255, 0x77 / 255])).toBeCloseTo(4.48, 2);
+    expect(contrast([0, 0, 0], [1, 1, 0])).toBeCloseTo(19.56, 2);
+    expect(contrast([1, 1, 1], [0x11 / 255, 0x88 / 255, 1])).toBeCloseTo(3.53, 1);
+    // And a colour that is neither black nor white, which is exactly where the
+    // old pipeline failed.
+    expect(contrast([1, 1, 1], [0.5, 0.5, 0.5])).toBeCloseTo(3.98, 2);
   });
 
   it("the theme that renders is the dark one", () => {
@@ -1277,34 +1337,55 @@ describe("A10 measured contrast of the tokens this feature's text is painted in"
     }
   });
 
-  it("still measures how faint and muted compare, so the choice is visible", () => {
-    // The measurement that drove the decision, kept as a fact rather than a
-    // defect: `--ink-faint` paints every background this feature uses at
-    // 4.19-4.26:1 and WCAG 1.4.3 asks 4.5:1 of normal-size text, which all of it
-    // is (`text-caption` is 12.5px, the licence is 11px). `--ink-muted` is
-    // 5.50:1. `src/styles.css` is not this feature's to edit, so the fix is here:
-    // the feature uses `text-ink-muted` throughout and never `text-ink-faint`.
-    // `--ink-muted` is not asserted here: the token loop above already covers
-    // it on every background, including this one. Asserting it twice is how a
-    // test starts reading as two things at once.
-    expect(contrast(DARK.faint, DARK.canvas)).toBeLessThan(4.5);
+  it("`ink-faint` clears 4.5:1 everywhere, so no component may lean on that fact", () => {
+    // INVERTED IN PHASE 3V, and this is the correction of a logged false finding.
+    //
+    // This test used to read `expect(contrast(DARK.faint, DARK.canvas)).toBeLessThan(4.5)`
+    // and carry the comment "`--ink-faint` paints every background this feature
+    // uses at 4.19-4.26:1 and WCAG 1.4.3 asks 4.5:1". That number came from a
+    // converter which returned the OKLab matrix's output — *linear* sRGB — and
+    // fed it straight to a `luminance()` that applied the sRGB transfer function
+    // again. Measured on the corrected converter, here and independently by a
+    // script written from WCAG's definition: the real figure is **7.79:1**, and
+    // the token is not below 4.5:1 on any background this feature uses.
+    //
+    // So the token does not need avoiding. The decision the Phase 3 audit made
+    // (the feature uses `text-ink-muted` throughout and never `text-ink-faint`
+    // for meaningful text) is still the right one — it is a token-semantics
+    // choice, not a rescue job — but it is now recorded as a preference, with the
+    // measurement behind it, rather than as a fix for a defect that never existed.
+    for (const [name, colour] of BACKGROUNDS) {
+      expect(
+        contrast(DARK.faint, colour),
+        `text-ink-faint on ${name} — the measurement this comment used to get wrong`,
+      ).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
-  it("never paints meaningful text in ink-faint, which is below 4.5:1", () => {
+  it("never paints meaningful text in ink-faint", () => {
     for (const [name, colour] of BACKGROUNDS) {
       expect(contrast(DARK.muted, colour), `text-ink-muted on ${name}`).toBeGreaterThanOrEqual(4.5);
     }
-    // Every component paints its smallest text with `text-ink-muted`. The
-    // token itself still measures 4.2:1 and that is `styles.css`'s to change.
+    // A preference rather than a requirement, now that the token measures above
+    // 4.5:1 everywhere: meaningful text goes in `ink-muted`, and the reason is
+    // that `--ink-faint` is the token for decoration and separators in the rest
+    // of the app, not a second text colour.
     for (const source of componentSources()) {
       expect(source, "a component uses text-ink-faint").not.toContain("text-ink-faint");
     }
   });
 
-  it("names every place the feature puts meaningful text in ink-faint", () => {
-    // So the fix's blast radius is known: the MIT attribution, the full licence
-    // text at 11px, every pair of devices' worth of byte hint, the notice
-    // dismissal control, and the raw diagnostic on both failure screens.
+  it("names every place the feature paints its smallest text", () => {
+    // REWRITTEN IN PHASE 3V. This block was headed "names every place the feature
+    // puts meaningful text in ink-faint", which described a defect that was
+    // already fixed in the same working tree when the block was written: every
+    // pattern below matches `text-ink-muted`, and the assertion is that it does.
+    // It is the same class as the four "Pinned" blocks the Phase 3 log already
+    // records as finding 12 — a comment that names a defect that no longer
+    // exists, so a reader cannot tell whether the fix landed.
+    //
+    // What it is genuinely for: the *blast radius* of that decision. If any of
+    // these ever reverts to `text-ink-faint`, this names the place.
     const users: readonly (readonly [string, RegExp])[] = [
       ["info-panel.tsx: the attribution line", /text-caption text-ink-muted/],
       ["info-panel.tsx: the licence text", /text-\[11px\][^"]*text-ink-muted/],
@@ -1325,7 +1406,9 @@ describe("A10 measured contrast of the tokens this feature's text is painted in"
     const sending = render(
       <MessageList
         inbound={[]}
-        outbound={[{ seq: 1, msgId: 1, text: "n", status: "sending", attempts: 1, blocks: 1 }]}
+        outbound={[
+          { seq: 1, msgId: 1, sendId: 1, text: "n", status: "sending", attempts: 1, blocks: 1 },
+        ]}
       />,
     );
     expect(sending).toMatch(/class="[^"]*text-ink-muted/);

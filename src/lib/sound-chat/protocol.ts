@@ -21,7 +21,7 @@
  * |    1 | MESSAGE       | 5      | `ct(len) ‖ tag(16) ‖ zeros` → 43 plaintext bytes       |
  * |    2 | ACK           | 5      | `ct(1) ‖ tag(16) ‖ zeros` → one received-blocks bitmask|
  * |    3 | MESSAGE_MULTI | 6      | `byte 5 = seq`, then `ct(len) ‖ tag(16) ‖ zeros` → 42  |
- * |    4 | PAIR          | 5      | `salt(16) ? challenge(8) ? keyCheck(16) ? zeros` - HMAC over a domain-separated `salt/challenge/role`, never AEAD; `len` = 24 |
+ * |    4 | PAIR          | 5      | `salt(16) ‖ challenge(8) ‖ keyCheck(16) ‖ zeros` - HMAC over a domain-separated `salt/challenge/role`, never AEAD; `len` = 24 |
  *
  * `seq = (blockIndex << 4) | blockCount`, so a 2-block message is seq `0x02`
  * then `0x12`; `blockCount` is capped at `MAX_MESSAGE_BLOCKS` (2), which is the
@@ -84,6 +84,25 @@ export const MULTI_BLOCK_PLAINTEXT_BYTES = WIRE_BLOCK_BYTES - MULTI_HEADER_BYTES
 export const MAX_MESSAGE_PLAINTEXT_BYTES = MULTI_BLOCK_PLAINTEXT_BYTES * MAX_MESSAGE_BLOCKS;
 /** The same budget for the plain-ASCII copy the composer will count. */
 export const MAX_MESSAGE_ASCII_CHARACTERS = MAX_MESSAGE_PLAINTEXT_BYTES;
+
+/**
+ * How many 64-byte blocks `bytes` of plaintext needs, or `null` when it cannot
+ * fit inside the two-block cap.
+ *
+ * THE single implementation of that arithmetic. The composer's estimate, the
+ * session's accept-time estimate and the sealed `blockCount` all have to agree —
+ * a queued row that quoted one block for a two-block note is a progress bar that
+ * lies — so this lives beside the constants it derives from and everything else
+ * calls it. The two-block path carries one byte less per block than the
+ * single-block path, which is why 43 and 84 are the two interesting boundaries
+ * rather than 43 and 86.
+ */
+export function blocksForPlaintextBytes(bytes: number): number | null {
+  if (bytes <= 0) return 0;
+  if (bytes <= SINGLE_BLOCK_PLAINTEXT_BYTES) return 1;
+  if (bytes <= MAX_MESSAGE_PLAINTEXT_BYTES) return MAX_MESSAGE_BLOCKS;
+  return null;
+}
 
 /** How long an incomplete multi-block message is held before it is dropped. */
 export const PARTIAL_MESSAGE_TTL_MS = 30_000;
@@ -737,9 +756,37 @@ export class MessageIdAllocator {
 /** How many times one message may be put on the air before it is a failure. */
 export const MAX_SEND_ATTEMPTS = 3;
 
-export type OutboundStatus = "sending" | "sent" | "failed";
+/**
+ * One of our own messages, from acceptance to proof.
+ *
+ * `queued` is the state a note is in between `send()` accepting it and the pump
+ * claiming it. It exists so the transcript can show a note that is already ours
+ * but not yet on the air: without it, three notes accepted in one second produce
+ * no rendered rows at all until the pump reaches them, and the screen says
+ * "Queued" once, attributed to nothing.
+ *
+ * It is deliberately a *session* status rather than a UI invention. The session
+ * owns the queue, so the session publishes what is in it and the UI renders what
+ * it is told. A UI that published its own accepted-but-unclaimed rows and retired
+ * them against the real ones later would be a second owner of transcript state,
+ * which is the one thing this feature's controller exists to prevent.
+ */
+export type OutboundStatus = "queued" | "sending" | "sent" | "failed";
 
 export type OutboundMessage = {
+  /**
+   * The session-local identity of the submission, assigned when `send()`
+   * accepted it and carried unchanged through every later status.
+   *
+   * WHY this exists beside `msgId`: `msgId` is a 16-bit *wire* value the pump
+   * allocates only after the note has been sealed, so it does not exist at the
+   * one moment the UI most needs to name the note. `sendId` is the one counter
+   * that spans the whole life of a submission, which is what makes a queued row
+   * and its later `sending`/`sent`/`failed` row provably the same note: the key
+   * is never reassigned, so a note can neither appear twice nor fall out between
+   * two statuses.
+   */
+  readonly sendId: number;
   msgId: number;
   /** Kept for the composer/UI; never logged and never persisted (P9). */
   plaintext: Uint8Array;

@@ -37,8 +37,10 @@ import {
   PAIRING_CONFIRMATION_COPY,
   PAIRING_CODE_RULE,
   SOUND_CHAT_COPY,
+  transportSentence,
   describePairingFailure,
 } from "./copy";
+import type { TransportState } from "../transport-machine";
 import { SOUND_CHAT_ENTRY_COPY } from "./entry-copy";
 import { measureMessage, secondsLabel } from "./budget";
 import {
@@ -128,6 +130,36 @@ function resolvedStrings(): { path: string; text: string }[] {
   }
   out.push({ path: "PAIRING_CONFIRMATION_COPY", text: PAIRING_CONFIRMATION_COPY });
   out.push({ path: "ATTRIBUTION_LINE", text: ATTRIBUTION_LINE });
+  // Every transport state, resolved. All nine entries of that record are
+  // functions of the attempt count (see `copy.ts` — one uniform type, so no
+  // runtime narrowing at the call site), which means `everyString` skips the
+  // whole group. Without this the sweep below would report every rendered
+  // transport sentence as "text that is not in the copy table" — a false
+  // failure that looks exactly like a component with prose typed into it.
+  for (const state of [
+    "idle",
+    "listening",
+    "transmitting",
+    "awaiting_turn",
+    "awaiting_ack",
+    "backoff",
+    "hidden_hold",
+    "error",
+    "module_error",
+  ] as const) {
+    out.push({
+      path: `copy.transport.${state}`,
+      text: transportSentence(state),
+    });
+  }
+  // And the one entry whose text depends on the attempt, at both ends of its
+  // range, so the sweep can see every string that state can produce.
+  for (const attempts of [1, MAX_SEND_ATTEMPTS]) {
+    out.push({
+      path: `copy.transport.backoff(attempt ${String(attempts)})`,
+      text: transportSentence("backoff", attempts),
+    });
+  }
   return out;
 }
 
@@ -187,15 +219,14 @@ const SCREENS: readonly (readonly [string, ReactElement])[] = [
       <TransmitStatus
         transport="transmitting"
         transmitting
-        busy
         progress={{ blocks: 2, blockIndex: 1, fraction: 0.25, remainingMs: 2880 }}
       />
       <MessageList
         inbound={[{ seq: 2, msgId: 1, text: "from them" }]}
         outbound={[
-          { seq: 1, msgId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 },
-          { seq: 3, msgId: 4, text: "over", status: "failed", attempts: 3, blocks: 2 },
-          { seq: 4, msgId: 5, text: "held", status: "sending", attempts: 1, blocks: 1 },
+          { seq: 1, msgId: 3, sendId: 3, text: "from us", status: "sent", attempts: 1, blocks: 1 },
+          { seq: 3, msgId: 4, sendId: 4, text: "over", status: "failed", attempts: 3, blocks: 2 },
+          { seq: 4, msgId: 5, sendId: 5, text: "held", status: "sending", attempts: 1, blocks: 1 },
         ]}
       />
       <Composer
@@ -335,7 +366,7 @@ describe("H2 nothing claims the channel cannot be heard, seen or recorded", () =
     expect(audible).toMatch(/anyone nearby can hear it/i);
     expect(audible).toMatch(/microphone in the room can record it/i);
     expect(SOUND_CHAT_COPY.permission.lead).toMatch(/audible tones/i);
-    expect(SOUND_CHAT_COPY.transport.transmitting).toMatch(/out loud/i);
+    expect(transportSentence("transmitting")).toMatch(/out loud/i);
   });
 
   it("the disclosure that a recording cannot be read later is about the key, not the sound", () => {
@@ -493,7 +524,7 @@ describe("H4 only an acknowledged note is ever called delivered", () => {
       render(
         <MessageList
           inbound={[]}
-          outbound={[{ seq: 1, msgId: 1, text: "n", status, attempts: 1, blocks: 1 }]}
+          outbound={[{ seq: 1, msgId: 1, text: "n", sendId: 1, status, attempts: 1, blocks: 1 }]}
         />,
       );
     for (const status of ["sending", "sent", "failed"] as const) {
@@ -508,9 +539,9 @@ describe("H4 only an acknowledged note is ever called delivered", () => {
       <MessageList
         inbound={[]}
         outbound={[
-          { seq: 1, msgId: 1, text: "a", status: "sending", attempts: 1, blocks: 1 },
-          { seq: 2, msgId: 2, text: "b", status: "sent", attempts: 1, blocks: 1 },
-          { seq: 3, msgId: 3, text: "c", status: "failed", attempts: 3, blocks: 2 },
+          { seq: 1, msgId: 1, sendId: 1, text: "a", status: "sending", attempts: 1, blocks: 1 },
+          { seq: 2, msgId: 2, sendId: 2, text: "b", status: "sent", attempts: 1, blocks: 1 },
+          { seq: 3, msgId: 3, sendId: 3, text: "c", status: "failed", attempts: 3, blocks: 2 },
         ]}
       />,
     );
@@ -749,8 +780,23 @@ describe("H6 every failure the user can hit gets its own specific sentence", () 
   });
 
   it("the nine transport states are nine different lines", () => {
-    const sentences = Object.values(SOUND_CHAT_COPY.transport);
-    expect(new Set(sentences).size).toBe(sentences.length);
+    // Resolved through `transportSentence`, not by indexing the record: `backoff`
+    // is a function of the attempt count (see `copy.ts`), so `Object.values`
+    // would hand this loop a function object — one character long, and unique,
+    // so it would have passed the "nine different" check while testing nothing.
+    const states: readonly TransportState[] = [
+      "idle",
+      "listening",
+      "transmitting",
+      "awaiting_turn",
+      "awaiting_ack",
+      "backoff",
+      "hidden_hold",
+      "error",
+      "module_error",
+    ];
+    const sentences = states.map((state) => transportSentence(state));
+    expect(new Set(sentences).size, "two states share one sentence").toBe(sentences.length);
     for (const sentence of sentences) {
       expect(sentence.length).toBeGreaterThan(3);
       // A live status readout, not a paragraph: a long one is read out on every

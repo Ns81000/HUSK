@@ -65,6 +65,7 @@ import {
   MAX_SEND_ATTEMPTS,
   MessageIdAllocator,
   applyAck,
+  blocksForPlaintextBytes,
   decideRetry,
   fullMask,
   pendingBlocks,
@@ -155,7 +156,16 @@ export type SessionEvent =
    */
   | {
       type: "outbound";
-      msgId: number;
+      /**
+       * The submission's identity for its whole life, allocated by `send()`.
+       * This — not `msgId` — is what a consumer keys a transcript row on.
+       */
+      readonly sendId: number;
+      /**
+       * The wire id, or `null` while the note is only queued. It is nulled
+       * exactly once, on the `queued` event, and never again.
+       */
+      readonly msgId: number | null;
       status: OutboundStatus;
       attempts: number;
       blocks: number;
@@ -171,7 +181,8 @@ export type SessionEvent =
 export type SendRefusal =
   "not-paired" | "empty" | "too-long" | "queue-full" | "module-error" | "stopped";
 
-export type SendResult = { ok: true; queued: boolean } | { ok: false; reason: SendRefusal };
+export type SendResult =
+  { ok: true; queued: boolean; readonly sendId: number } | { ok: false; reason: SendRefusal };
 
 export type SoundChatSessionOptions = {
   codec: SoundChatCodec;
@@ -287,11 +298,33 @@ function outboundEvent(
 ): Extract<SessionEvent, { type: "outbound" }> {
   return {
     type: "outbound",
+    sendId: outbound.sendId,
     msgId: outbound.msgId,
     status,
     attempts: outbound.attempts,
     blocks: outbound.blockCount,
     text: decoder.decode(outbound.plaintext),
+  };
+}
+
+/**
+ * The one event for a note that has been accepted but not yet claimed.
+ *
+ * Published from `send()`, synchronously, before it returns, so the transcript
+ * row exists in the same tick the person pressed Send — and published by the
+ * session rather than by the UI, so the queue has exactly one owner. The `msgId`
+ * is `null` and the blocks are counted from the same `measureBlocks` the pump
+ * will use, so the two can never disagree about how long the note will take.
+ */
+function queuedEvent(sendId: number, text: string): Extract<SessionEvent, { type: "outbound" }> {
+  return {
+    type: "outbound",
+    sendId,
+    msgId: null,
+    status: "queued",
+    attempts: 0,
+    blocks: blocksForPlaintextBytes(encoder.encode(text).length) ?? 0,
+    text,
   };
 }
 
@@ -312,7 +345,20 @@ export class SoundChatSession {
    * read a half-built block set as "nothing to send".
    */
   #txBusy = false;
-  #pending: string[] = [];
+  /**
+   * The queue, as submissions rather than bare strings.
+   *
+   * `sendId` is allocated at accept time and is what a consumer keys a transcript
+   * row on, because `msgId` does not exist until the pump has sealed the note.
+   * Carrying the pair rather than just the string is what lets a queued row and
+   * its later row be provably the same note.
+   */
+  #pending: { readonly sendId: number; readonly text: string }[] = [];
+  /**
+   * The next submission id. Monotonic, never reused within a session, and not a
+   * wire value, so there is no 16-bit ceiling for it to reach.
+   */
+  #nextSendId = 0;
   #partialAck: { msgId: number; mask: number } | null = null;
   #ackExtensions = 0;
   /**
@@ -332,7 +378,28 @@ export class SoundChatSession {
   readonly #reAckBudget = new ReAckBudget();
   #listen: ListenHandle | null = null;
   #unsubscribe: Unsubscribe | null = null;
+  /**
+   * "This session does nothing more." Set by `stop()` and by `#moduleFailed`.
+   *
+   * It is one flag rather than two on purpose: the two events have different
+   * causes but the same consequence — nothing this session does afterwards may
+   * reach the radio or the consumer — and a second flag would have to be
+   * remembered at every one of the eleven places below, which is precisely the
+   * class of omission that left the pump resuming after a module death in the
+   * first place. `restart()` is the single thing that clears it.
+   */
   #stopped = false;
+  /**
+   * Bumped by anything that invalidates a claim already in flight, so a suspended
+   * `await` can tell "the world moved under me" from "I am still the pump".
+   *
+   * `#stopped` cannot do this job on its own: `restart()` clears it, so a pump
+   * parked inside `buildMessageFrames` when the codec died would wake up after a
+   * `restart()` and put a note on the air that the fatal screen had already told
+   * the user was never delivered. The epoch is captured before the `await` and
+   * compared after it, so the pump can only ever continue its own claim.
+   */
+  #epoch = 0;
   #chain: Promise<void> = Promise.resolve();
   readonly #timers = new TimerSlots();
   /** True from the moment we hear a block until the quiet timer says otherwise. */
@@ -478,6 +545,15 @@ export class SoundChatSession {
     if (this.#state !== "module_error" && this.#state !== "error") {
       return { ok: false, reason: "not-restartable" };
     }
+    // The one thing that makes a terminal session startable again. Both halves
+    // matter: without clearing `#stopped`, the `{ ok: true }` below would be a
+    // promise `start()` cannot keep, because `start()` refuses a stopped session
+    // — which is the same lie P2V finding 13 removed from the healthy path. And
+    // without clearing the report latch, the second module failure in the same
+    // page would be swallowed instead of reported.
+    this.#stopped = false;
+    this.#moduleFailureReported = false;
+    this.#epoch += 1;
     this.#emit({ type: "RESTART" });
     return { ok: true };
   }
@@ -485,6 +561,7 @@ export class SoundChatSession {
   /** Tears everything down. Idempotent, and safe with partial state. */
   stop(): void {
     this.#stopped = true;
+    this.#epoch += 1;
     for (const key of ["ack", "backoff", "partialAck", "pair", "quiet"] as const) {
       this.#clearTimer(key);
     }
@@ -496,6 +573,15 @@ export class SoundChatSession {
     this.#listen = null;
     this.#outbound = null;
     this.#pumping = false;
+    // `#pending` is dropped WITHOUT reporting. `stop()` is the caller's own
+    // teardown: it has already decided to discard everything, and the consumer
+    // owns the view it is discarding from. Publishing a `failed` record here
+    // would notify a consumer that is already tearing down, re-entrantly, from
+    // inside the teardown. `#moduleFailed` is the opposite case — the session
+    // ends but the screen stays up on a fatal panel, so anything still queued
+    // has to be retired visibly or it reads "Queued" for the life of the page.
+    // "Nothing at all after stop()" is the stronger contract, and it is the one
+    // Phase 2V established.
     this.#pending = [];
     this.#partialAck = null;
     this.#reAckBudget.clear();
@@ -512,14 +598,27 @@ export class SoundChatSession {
    * message is in flight) is what "hold the send" means.
    */
   send(text: string): SendResult {
-    if (this.#stopped) return { ok: false, reason: "stopped" };
+    // The codec verdict outranks `#stopped`, deliberately. `#moduleFailed` sets
+    // that flag, so a dead codec would otherwise report the generic "Sound Chat
+    // has stopped" and lose the sentence that names the actual cause; a real
+    // `stop()` leaves the codec ready, so the order costs nothing there.
     if (this.#options.codec.state !== "ready") return { ok: false, reason: "module-error" };
+    if (this.#stopped) return { ok: false, reason: "stopped" };
     if (!isPaired(this.#pairing)) return { ok: false, reason: "not-paired" };
     const bytes = encoder.encode(text);
     if (bytes.length === 0) return { ok: false, reason: "empty" };
     if (bytes.length > MAX_MESSAGE_PLAINTEXT_BYTES) return { ok: false, reason: "too-long" };
     if (this.#pending.length >= MAX_PENDING_MESSAGES) return { ok: false, reason: "queue-full" };
-    this.#pending.push(text);
+    this.#nextSendId += 1;
+    const sendId = this.#nextSendId;
+    this.#pending.push({ sendId, text });
+    // Published here, synchronously, before `send()` returns: the note is ours
+    // from this instant, and a consumer that waits for the pump to claim it would
+    // show nothing at all for up to four queued notes (Phase 3V residual 1). The
+    // session is the one that owns the queue, so the session is the one that
+    // reports what is in it — this is not a second copy of the truth in the UI,
+    // it is the truth.
+    this.#notify(queuedEvent(sendId, text));
     // "Queued" means anything is ahead of this message: a transmission under
     // way, a pump that has claimed the queue, or a message still waiting. With
     // the pump deferred (below) a fresh send leaves `#pending` at 1, so the count
@@ -537,7 +636,7 @@ export class SoundChatSession {
     queueMicrotask(() => {
       void this.#pump();
     });
-    return { ok: true, queued };
+    return { ok: true, queued, sendId };
   }
 
   #beginPairing(): void {
@@ -717,6 +816,22 @@ export class SoundChatSession {
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
   }
 
+  /**
+   * Reports a submission the session will never put on the air.
+   *
+   * A note that was accepted and published as `queued` has a rendered row behind
+   * it, so every path that abandons one has to retire that row — otherwise it
+   * reads "Queued" for the rest of the session. There are exactly two such paths
+   * that leave a consumer still listening: the pump failing to seal the note, and
+   * a module failure. (`stop()` is deliberately *not* one of them; see its body.)
+   *
+   * `failed` is the honest status in each case: the other device never confirmed
+   * anything, and never will.
+   */
+  #failSubmission(sendId: number, text: string): void {
+    this.#notify({ ...queuedEvent(sendId, text), status: "failed" });
+  }
+
   async #pump(): Promise<void> {
     if (this.#stopped || this.#outbound !== null || this.#pumping) {
       this.#txBusy = false;
@@ -734,12 +849,14 @@ export class SoundChatSession {
     // `#pump` is async, so two `send()` calls in one tick used to both pass the
     // guard above and both read `#pending[0]`: one message was sealed twice
     // under two msgIds and one was silently lost (P2V finding 1). Claiming the
-    // text here, before anything can suspend, is what makes the pump single.
-    const text = this.#pending.shift();
-    if (text === undefined) {
+    // submission here, before anything can suspend, is what makes the pump
+    // single.
+    const submission = this.#pending.shift();
+    if (submission === undefined) {
       this.#txBusy = false;
       return;
     }
+    const text = submission.text;
     this.#pumping = true;
     let msgId: number;
     let plaintext: Uint8Array;
@@ -751,10 +868,18 @@ export class SoundChatSession {
     } catch (error) {
       this.#pumping = false;
       this.#txBusy = false;
+      this.#failSubmission(submission.sendId, text);
       this.#reportLater(error);
       return;
     }
     let frames: Uint8Array[];
+    // Captured before the only suspension in this method, and compared after it.
+    // `#stopped` alone is not enough here: `restart()` clears it, so without the
+    // epoch a pump that was parked in `buildMessageFrames` when the codec died
+    // would wake up after a restart and re-create `#outbound`, re-emitting a
+    // `sending` event and arming a fresh ACK timer for a note the fatal screen
+    // had already reported as never delivered (Phase 3V residual 4).
+    const epoch = this.#epoch;
     try {
       frames = await this.#wire.buildMessageFrames(plaintext, msgId);
     } catch (error) {
@@ -762,21 +887,27 @@ export class SoundChatSession {
       // channel, and the queue keeps moving instead of stalling forever.
       this.#pumping = false;
       this.#txBusy = false;
+      this.#failSubmission(submission.sendId, text);
       this.#reportLater(error);
       return;
     }
-    // `stop()` may have run while the frames were being sealed. Re-checking here
-    // is what keeps the public `busy` getter honest: without it a session torn
-    // down mid-seal re-created `#outbound` and emitted an `outbound` event
-    // *after* teardown, and `busy` stayed true for good (P2V finding D1).
-    if (this.#stopped) {
+    // `stop()` or a module failure may have run while the frames were being
+    // sealed. Re-checking here is what keeps the public `busy` getter honest:
+    // without it a session torn down mid-seal re-created `#outbound` and emitted
+    // an `outbound` event *after* teardown, and `busy` stayed true for good
+    // (P2V finding D1).
+    if (this.#stopped || epoch !== this.#epoch) {
       this.#pumping = false;
       this.#txBusy = false;
+      // This note is never going on the air either, and it already has a rendered
+      // row from its `queued` event.
+      this.#failSubmission(submission.sendId, text);
       return;
     }
     this.#pumping = false;
     this.#txBusy = false;
     this.#outbound = {
+      sendId: submission.sendId,
       msgId,
       plaintext,
       frames,
@@ -1079,6 +1210,16 @@ export class SoundChatSession {
     // chunk fails too and used to report a second time (P2V finding 6).
     if (this.#moduleFailureReported) return;
     this.#moduleFailureReported = true;
+    // Terminal means terminal. Every timer is cleared, the feed is released and
+    // the queue is emptied below, so a session that keeps "working" after this
+    // point is not working — it is a pump resuming inside an already-abandoned
+    // message and emitting events nobody is left to honour (Phase 3V residual 4:
+    // this flag was never set, so a park in `buildMessageFrames` woke up after a
+    // module death, re-created `#outbound` and called `transmitBlocks` with a
+    // `#listen` that had already been released). `restart()` is the only way
+    // back, and it checks the codec first.
+    this.#stopped = true;
+    this.#epoch += 1;
     this.#emit({ type: "MODULE_DIED" });
     // `pair` is cleared here as well as in `stop()`: a 90 s listen timer that
     // outlived a terminal module error later emitted `pairing: failed`.
@@ -1092,6 +1233,14 @@ export class SoundChatSession {
     // mic indicator lit on a session that can no longer transmit.
     this.#listen?.stop();
     this.#listen = null;
+    // The one thing `#stopped` alone cannot cover: a block already dispatched
+    // into `#chain` before the death. `stop()` resets the chain for exactly this
+    // reason and `#moduleFailed` did not, so a frame that was already suspended
+    // inside `crypto.subtle` went on to be parsed, counted in `blocksDecoded` and
+    // reported to a consumer over a session that is now terminal. Resetting the
+    // chain abandons it identically, and cannot affect `restart()`'s contract
+    // because `restart()` is the only thing that clears `#stopped` again.
+    this.#chain = Promise.resolve();
     this.#unsubscribe?.();
     this.#unsubscribe = null;
     this.#reAckBudget.clear();
@@ -1101,6 +1250,11 @@ export class SoundChatSession {
       this.#notify(outboundEvent(outbound, "failed"));
     }
     this.#outbound = null;
+    // Every note still waiting behind it has a rendered `queued` row behind it
+    // now, and this session is never going to send any of them. Dropping the
+    // queue silently would leave those rows reading "Queued" on a fatal screen
+    // for the life of the page.
+    for (const queued of this.#pending) this.#failSubmission(queued.sendId, queued.text);
     this.#pending = [];
     this.#reportModuleError(error);
   }
