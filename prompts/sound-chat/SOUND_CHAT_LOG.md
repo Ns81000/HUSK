@@ -1466,3 +1466,221 @@ at all.
 6. **Do not read "0 errors" as "no warnings".** anti-slop is at 170 warnings
    across 80 files and the plan treats the count, not the exit code, as the thing
    to watch.
+
+---
+
+## Phase 3V — Deep verification of Phase 3 (UI integration)
+
+Session of 2026-09-30. **Verification only: no new feature.** Four specialized
+subagents had already run under Rule 14 (state explosion, a11y/copy/honesty,
+doc/artifact integrity, UI state machine); this session inherited their applied,
+uncommitted work, **re-measured every claim rather than trusting it**, found and
+fixed the one gate that was red, and closed the phase. Started from
+`005affa3`; the Phase 3V work is committed as `9a56806`.
+
+### Start state, verified by measurement before anything was changed
+
+- `git rev-parse HEAD` = `005affa359c3297887db8d1b866808b9b0cc0d38`.
+- `git status --short` = **25 modified + 4 untracked**, every path under
+  `src/lib/sound-chat/**` or `src/components/sound-chat/**`. Nothing else in the
+  repo was touched; `test-results/` and `.output/` are gitignored
+  (`.gitignore:36`, `.gitignore:14`).
+- Vendored artifact: **147139 B**, SHA-256
+  `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`,
+  **0 CR bytes**, `node --check` exit 0.
+
+### The one red gate, and what it actually was
+
+`pnpm run lint:anti-slop` measured **172 warnings / 0 errors** against a ceiling
+of 170 — the Phase 3 baseline, so there was zero headroom. Both over-ceiling
+warnings were in `src/components/sound-chat/transmit-status.tsx`: `ON_AIR`
+declared and never used (line 65), `busy` declared and never used (line 91).
+Cause: the global "Queued." sentence (`transmit.queued`) had been deleted
+because the per-note `outbound.queued` row now owns that fact, and those two
+items existed only to drive it.
+
+**Fix, and the reasoning.** `busy` was deleted from the destructuring *and* the
+prop type of `TransmitStatus`, `ON_AIR` was deleted, and every call site was
+updated — 24 elements across six files (`sound-chat-screen.tsx`,
+`deep-p3-render.test.tsx`, `deep-p3b-render.test.tsx`, `deep-p3a-a11y.test.tsx`,
+`deep-p3v-d2-d3-exit.test.tsx`, `render.test.tsx`,
+`deep-p3a-copy.test.tsx`). Keeping `busy` and giving it an honest use was
+rejected: after the change the transport block genuinely has no opinion about
+queued work, so accepting the number and discarding it would be a lie about
+what it knows. The two reasons the removal is correct rather than merely tidy:
+
+- **No second owner of "is our audio on the air".** The controller already owns
+  that rule (`ON_AIR` in `ui/controller.ts:241`) and it is the controller that
+  decides whether a `progress` record exists at all. The component rendered what
+  it was handed; a second table in it could only ever disagree with the first.
+- **A sweep axis that cannot change the output is a duplicated test wearing a
+  disguise.** `deep-p3-render.test.tsx` had a `for (const busy of [false,
+  true])` third axis over nine states × two `transmitting` values × two progress
+  values — 72 tests, of which 36 rendered byte-identical markup to their
+  partner. The axis is removed, which is exactly the **−36** in the test counts
+  below. The *other* `busy` axis, in `deep-p3b-render.test.tsx`, was **kept**,
+  because there it is a real assertion: that a snapshot with `state.busy === true`
+  still says nothing about queuing, which is the inversion of the old pin.
+
+Measured after: **170 warnings, 0 errors, 29 files carrying diagnostics**,
+0 diagnostics in `transmit-status.tsx`. `pnpm run lint:anti-slop` exit 0.
+
+### Findings, classified, each with its decision
+
+Severity: **C** critical, **H** high, **M** medium, **L** low.
+
+| # | Sev | Finding | Class → decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **H** | **Three of four rapidly-accepted notes existed in no rendered list.** The draft cleared on `{ok:true}`, but a transcript row appeared only when the pump *claimed* the message, and the session holds up to `MAX_PENDING_MESSAGES` in between. | **Real bug** → **fixed.** `session.send()` now allocates a `sendId`, pushes onto `#pending` and publishes `queuedEvent(sendId, text)` **synchronously, before `send()` returns** (`session.ts:612-621`), so a row exists on the tick Send is pressed. Single source of truth preserved: the session owns the queue and publishes it; the UI never invents rows. `msgId` is null only while queued, and the transcript keys on `sendId` (`message-list.tsx:167`) so a note can neither appear twice nor vanish. Rejected alternatives, both recorded in the code: (a) the UI publishing its own accepted-but-unclaimed rows — a second owner of transcript state; (b) a polled `session.queued` getter — unimplementable, because there is no key to merge rows on (matching by text collides on two identical notes). |
+| 2 | **H** | **`chat` had no in-app exit.** The controller's `cancel()` was correct, tested and exposed by the hook, but `renderPhase` wired it only into `BlockedPanel.onBack` and `PairingPanel.onSwitchRole`. A person who paired with the wrong device needed a full page load. | **Real bug (UX dead end)** → **fixed**: `EndSessionButton` plus the shared `Modal`, with copy `actions.leave` ("End this session") and `modal.leaveTitle` / `leaveDescription` / `leaveConfirm`. `actions.stop` and `modal.discard*` stay **deleted**; `deep-p3a-copy.test.tsx` pins them as absent, so they must not be reintroduced. |
+| 3 | **H** | **The blocked panel's "Try again" discarded an enterer's typed pairing code**, while `mic-denied`'s copy said "then try again". Copy and control disagreed. | **Real bug** → **fixed.** The controller keeps `state.code` across `mic-denied` / `mic-missing` / `mic-unsupported` / `device-rate` / `codec-unavailable` / `crypto-unavailable` / `audio-unavailable`, and `retry()` re-begins with it. Verified in the committed code: `code: null` appears in exactly one patch, the `badCode` branch at `controller.ts:501`, and `PairingCodeError` is the only thing that reaches it (`controller.ts:397-401`, `484-501`). Only a code the protocol itself named invalid is cleared. |
+| 4 | **H** | **`#moduleFailed` did not set `#stopped`.** A pump parked in `buildMessageFrames` woke up after a module death, re-created `#outbound` and called `transmitBlocks` with a `#listen` that had already been released — publishing that note as "Playing" on a terminal screen and leaking the 10 Hz ticker behind it. | **Real bug** → **fixed.** `#moduleFailed` now sets `#stopped = true`, bumps a new `#epoch`, and resets `#chain` (`session.ts:1221-1243`). The pump compares `epoch` across its `await` (`session.ts:882`, `899`), so a park that was already past the check is abandoned. `restart()` remains the only thing that clears `#stopped` and the `#moduleFailureReported` latch, so its existing `{ok:true}` contract stays a **deliverable** rather than becoming a silent no-op. `send()` checks the codec **before** `#stopped` (`session.ts:605-606`), deliberately: `#moduleFailed` sets that flag, so a dead codec would otherwise report the generic "Sound Chat has stopped" and lose the sentence naming the actual cause, while a real `stop()` leaves the codec ready and the order costs nothing there. |
+| 5 | **M** | **`#moduleFailed` did not reset `#chain`**, so a block already dispatched into the chain before the death was still parsed, counted in `blocksDecoded` and reported over a terminal session. `stop()` reset the chain for exactly this reason. | **Real bug** → **fixed** (`session.ts:1243`), with the reasoning written at the call site. Cannot affect `restart()`, which is the only thing that clears `#stopped` again. |
+| 6 | **M** | **The a11y suite's contrast converter was double-linearised.** `oklch()` returned the OKLab matrix's output — *linear* sRGB — and `luminance()` then applied the sRGB transfer function again. Proven: `oklch(0.5,0,0)` returned **0.1250** where display sRGB is **0.3886**. It was exact on pure black and pure white, which is precisely why it looked plausible. | **Real bug (in a test)** → **fixed.** `oklabToLinearSrgb()` + `encode()` applied once, with chroma-reduction gamut mapping, and a self-test against four published WCAG ratios (21, 4.48, 19.56, 3.53) so the converter cannot quietly drift again. The old self-test asserted `oklch(0.5,0,0)[0] === 0.125`, which **certified the bug as the specification**; a self-test has to check against something external. |
+| 7 | **M** | **`protocol.ts` line 24: the PAIR row of the wire-format table had three literal `?` (0x3F) where the `‖` operator (U+2016) is correct on rows 1-3.** Introduced by Phase 2V's own commit `d509266` — a verification phase introduced it. | **Doc error** → **fixed this session**, and see the note below: the prior session's claim that this was already fixed was **false**, so it is redone here and verified by codepoint (`U+2016` ×3, literal `?` ×0). |
+| 8 | **M** | **`deep-p3b-acoustic.test.ts` carried 3 raw NUL bytes (U+0000) and 1 raw BEL (U+0007) inside string literals, COMMITTED at HEAD** — measured at `005affa3` on lines 526, 527, 544, 551. Semantics were correct (deliberate 1-byte probes; `é`×42 and an emoji×21 are each exactly 84 bytes, testing the cap boundary) but the file read as binary and **no diff could show them**. | **Doc/hygiene** → **fixed.** Replaced with the `\u0000` / `\u0007` escapes — byte-identical string values, so no assertion changed meaning. Measured after: **0 NUL and 0 BEL bytes** in the file. |
+| 9 | **M** | **Dead code introduced by finding 1's fix**: the global `transmit.queued` sentence became two sentences for one fact — the per-note row owns it, attributed. With it, `ON_AIR` and the `busy` prop in `TransmitStatus` lost their only reason to exist. | **Dead code** → **deleted**, not documented as a gap. Detailed above under "the one red gate". |
+| 10 | **L** | **`anti-slop` sat 2 over its ceiling** because of finding 9. | **Real (gate)** → **fixed**: 170/0, the Phase 3 baseline. |
+
+### Claims corrected
+
+1. **"`text-ink-faint` is at 4.19-4.26:1 against a 4.5:1 requirement" — FALSE, and it was never a defect.** The number came from the double-linearised converter of finding 6, which reported 4.23:1. Measured this session with an **independent probe written from WCAG 2.1's definition** (not from the suite's own converter, so it is capable of disagreeing), over every foreground/background pair in the dark theme: **`text-ink-faint` on `canvas` is 7.79:1**, and the **worst pair across all six backgrounds the feature's text is actually painted on is 6.56:1** (`--danger` on `--surface`). Every pair clears 4.5:1. The Phase 3 test that "pinned" this asserted `toBeLessThan(4.5)` — it asserted a non-defect. It is now inverted, and the preference for `text-ink-muted` is recorded as a token-semantics choice rather than a rescue job. *Honest margin note:* `--surface-raised` exists as a token but is not a background this feature paints text on; `--danger` on it measures **5.85:1**, which still passes. A future component that puts `--danger` there has a thinner margin than 6.56, and this is recorded so nobody reads 6.56 as "the token is comfortable everywhere".
+2. **"anti-slop is at 170 warnings across 80 files" — half reproducible, and the file count means two different things.** 170 is exactly right (measured this session, both before and after this phase's fix: 172 before, 170 after). But **29 files carry diagnostics**, while `number_of_files` in the JSON reporter is **80 files scanned** — so both numbers are real and they count different things. The *text* output of `pnpm run lint:anti-slop` emits **no summary line at all**, which is why the distinction kept being lost. Restated as: **170 warnings, 0 errors, 29 files with diagnostics, 80 files scanned.** **57 of the 170 are inside the vendored `vendor/ggwave.js`**; Sound Chat's own share is 89.
+3. **".prettierignore still lacks `src/lib/sound-chat/vendor/`" — FALSE.** Verified against the **committed blob** (`git show HEAD:.prettierignore`), not the working copy: the entry is present, and `git diff HEAD -- .prettierignore` is empty. A subagent of this phase reported it missing. Do not "fix" it.
+4. **"Phase 3's D4 residual says the late pump will call `#play` with a null `#listen`" — the conclusion held, the mechanism did not.** `TRANSMIT_BEGIN` is refused from `module_error` first, so the pump never reaches playback with a released handle. The pump instead re-created `#outbound`, published the note as "Playing" on a terminal screen, and leaked the 10 Hz ticker — which is what finding 4's fix addresses.
+5. **"`device-96000` decodes > 0" — not a reliable assertion.** This session measured `decodes=0` on **four** consecutive runs (one full harness run plus three targeted) and then `decodes=1 firstMs=1946` on a later full run. The variant is **bistable at the codec's input-rate ceiling**; its declared expectation is `graceful` ("worth knowing it does not corrupt"), which both outcomes satisfy. Corrected form: *`device-96000` is bistable; do not assert a decode count for it.* Investigated rather than waved away: it is **not** a Phase 3V regression — every file on that code path (`codec.ts`, `audio-io.ts`, `spike/**`, `harness/**`, `crypto.ts`, `load-ggwave.ts`, `transport-machine.ts`) has an **empty** `git diff --stat`, and the harness imports only `spike/*` + `audio-io` + `codec`, never `session.ts`, `protocol.ts` or `ui/**`. It is also **not** a browser-revision drift: `playwright-core@1.62.1`'s `browsers.json` pins the `chromium` channel at revision **1234**, and the launched browser was measured directly as **Chromium 151.0.7922.34**. **Product relevance: none** — measured: `createAudioContext()` creates `{ sampleRate: 48000 }`, verifies `context.sampleRate !== 48000`, and throws `AudioContextRateError` (`audio-io.ts:124-130`), which the controller maps to the user-legible `device-rate` blocked state (`controller.ts:421`), asserted at `audio-io.test.ts:223`. No non-48000 device rate ever reaches the codec in the product.
+6. **"Phase 3V fixed `protocol.ts`'s PAIR row" — FALSE, corrected above (finding 7).** Recorded because it is the second time a claim of this shape was made in a handover and was not true; the codepoint check is what settled it.
+
+### Findings carried forward — do NOT fix in Phase 4 either without a human
+
+- **OFF LIMITS, needs a human:** the composer textarea's and pairing-code input's
+  focus indicator measures **1.13:1** (a 12%-alpha `box-shadow` in `@layer
+  components` overrides the `@layer base` 2px `--focus` outline) —
+  `src/styles.css`.
+- **OFF LIMITS, needs a human:** white on `.btn-tactile-danger`'s top gradient
+  stop is **3.76:1** for a 15px label — `src/components/husk/primitives.tsx`.
+- **ACCEPTED WITH REASON:** `PermissionPrompt` owns the typed pairing code in
+  local `useState` and unmounts for `preparing`/`blocked`. Every path that loses
+  it is now an explicit abandon ("Go back" / Escape); the "Try again" path no
+  longer loses it (finding 3). Fixing it properly means making the component
+  controlled with an `initialCode` prop — Phase 5 UI polish, not a verification
+  fix. **A red pin for this was DELETED rather than committed.**
+- **ACCEPTED WITH REASON:** `deep-p3b-acoustic.test.ts` B-2 previously pinned
+  `transmit.arming` as unreachable. Finding 1's D1 fix makes it genuinely
+  reachable, because `send()` claims `#txBusy` synchronously. The test was
+  **inverted, not deleted**.
+- **CARRIED TO PHASE 4:** the responder-side pairing freshness residual (an
+  attacker holding the code *and* a prior recording can occupy one pairing slot —
+  a denial of that pairing, not a disclosure); the harness drives
+  `spike/audio-io`'s `attachCapture` rather than the product's `startListening`,
+  so `startListening`'s error split and `transmitAndPause`'s pause arithmetic are
+  exercised by nothing in a real browser; `src/lib/husk/store.test.ts`'s
+  `settle()` flakiness (off limits — a real determinism defect in the repo's own
+  suite, for a human to schedule); and the harness `vite build` wiping the
+  Playwright output dir (`emptyOutDir: true` on `test-results/sound-chat-harness`
+  while `playwright.config.ts` puts `outputDir` in the `pw` subfolder) — a config
+  change.
+- **CARRIED TO PHASE 4/5 — 15 further accessibility findings** found by a subagent
+  of this phase: W-1 live region not surviving a phase change, W-3 Send label at
+  2.95:1 when unavailable, W-4 `aria-modal` over the chat's live regions, W-5
+  byte-budget not in `aria-describedby`, W-6 pristine empty field announced
+  `aria-invalid`, W-7 two ~20px targets, W-8 entry frames lack `<main>`/`<h1>`,
+  W-10 backoff sentence, W-12, W-13. **They are real, unfixed, and Phase 4/5
+  work.** They are recorded here rather than left only in a deleted file.
+
+### What was deleted before commit, and why — stated plainly
+
+Two subagent scratch files, `src/components/sound-chat/deep-p3v-a11y-measure.test.tsx`
+and `src/lib/sound-chat/ui/deep-p3v-a11y-copy.test.tsx` (**93 tests, 11 of them
+deliberate defect pins**), were deleted rather than committed: a verification
+phase must not leave a red suite, and 5 of their pins target files this feature
+does not own. Their findings are the CARRIED list above. **Four sibling scratch
+files were KEPT and are green**, and they are in `9a56806`:
+`deep-p3v-d1-queued.test.ts`, `deep-p3v-d4-stopped.test.ts`,
+`deep-p3v-explosion.test.ts`, `deep-p3v-d2-d3-exit.test.tsx`.
+
+### Verification battery — this session's own numbers, sequential, on `9a56806`
+
+Run strictly sequentially, nothing else heavy in parallel (this repo's vitest
+suites are load-sensitive and flake). Filled in from the run, not copied from
+anywhere. `tsc`, `pnpm test`, the subset run, both lints, the build, the harness
+build and the Playwright run were all executed **twice** — once on the working
+tree and once again after committing, so every number below is from the commit.
+
+| Step | Result |
+| :-- | :-- |
+| `pnpm exec tsc --noEmit` (root) | **exit 0**, 0 diagnostics |
+| `pnpm exec tsc --noEmit` (`worker/`) | **exit 0**, 0 diagnostics; `git status --short -- worker` and `git diff --stat -- worker` both **empty** |
+| `pnpm test` | **59 test files passed, 997 tests passed**, 0 failed (29.65 s). Was 59 / 1033 at the start of this session; the **−36** is exactly the removed duplicate `busy` sweep axis (72 tests of which 36 were byte-identical to their partner). Nothing else was removed. |
+| `pnpm exec vitest run src/lib/sound-chat src/components/sound-chat` | **45 files, 876 tests passed**, 0 failed (28.17 s). Was 45 / 912; the same **−36**. |
+| `pnpm run lint` | **exit 0** — 0 errors, **2 pre-existing** `react-refresh` warnings, both in files this feature does not own (`src/components/husk/chat.tsx:49`, `primitives.tsx:254`) |
+| `pnpm run lint:anti-slop` | **exit 0** — **170 warnings, 0 errors**, 29 files carrying diagnostics, 80 files scanned. Before this session's fix: 172 / 0 / 30 files. By rule: `no-runtime-typeof` 53, `eslint(no-unused-vars)` 37, `no-unknown-parameters` 33, `require-safety-comment-for-type-assertion` 29, `no-unsafe-dictionary-type` 5, `no-base-to-string` 5, `unicorn(no-new-array)` 3, `no-floating-promises` 2, plus 1 each of `no-meaningless-void-operator`, `no-misused-spread`, `restrict-template-expressions`. |
+| `pnpm run build` | **exit 0** |
+| entry chunk | `index-DjSgDZ2C.js` **307779 B raw** / **94809 B gzip** (node zlib level 9) |
+| **`ggwave` on the landing path** | **no** — `index-DjSgDZ2C.js` contains no occurrence of `ggwave` |
+| **`sound-chat-screen` on the landing path** | **no** — and no occurrence of `sound-chat-screen`. Measured chain: `sound-chat-B7bMrGKd.js` (1278 B, the route chunk) → `sound-chat-screen-B9zJGPfF.js` (**70102 B** raw / 21957 B gzip, fetched on demand) → `ggwave-Cm_DI0UB.js` (**147139 B** raw / 58390 B gzip). Two hops from the entry. |
+| landing static closure | entry + 12 other client chunks = **548290 B raw / 172731 B gzip** |
+| MIT licence shipped | `rg -l "Georgi Gerganov" .output/public/assets` → `sound-chat-screen-B9zJGPfF.js` |
+| CSP | `src/server.ts`: exactly **1** `'wasm-unsafe-eval'`, no `'unsafe-eval'`; `git diff HEAD -- src/server.ts` **empty** |
+| `src/routeTree.gen.ts` | `git status --short` **empty** — regenerated by the build, never hand-edited |
+| harness `vite build` | **exit 0**; `assets/ggwave-Cm_DI0UB.js` **147139 B**, `assets/index-C9UrvUW4.js` **9100 B**, `__vite-browser-external-bYzjDEbS.js` 92 B — three separate files. The emitted codec asset is **byte-identical** to the vendored artifact (compared byte-for-byte, not by size). |
+| harness Playwright (real CSP) | **58 passed, 0 failed, 0 skipped, 0 flaky** (4.2 m). `[harness] csp-mode=real server-csp-has-unsafe-eval=false`; `[csp] real-csp samples=92160 violations=0 (patched artifact, no dynamic execution)`; `[browser-tx] pass unique=1 firstMs=1927`; **55 `[matrix]` lines, 0 of them not `pass`** |
+| self-reception contract | `self-transmit-live decodes=3 unique=1 firstMs=1917` vs `self-transmit-pause-listening decodes=0 skipped=111` and `self-transmit-pause-noisy decodes=0 skipped=112` — the pause still prevents self-decode entirely |
+| device-rate contract | `device-44100-native decodes=0`, `device-44100-mismatched decodes=0`, `device-48000-wav-44100 decodes=0`, `device-96000 decodes=1 firstMs=1946` (bistable — see corrected claim 5) |
+| vendored artifact (re-verified after everything) | **147139 B**, SHA-256 `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`, **0 CR bytes**, `node --check` **exit 0** |
+| `git status --short` at the end | **empty** — clean tree, nothing staged, nothing generated tracked |
+| `git diff --stat` scope | 29 paths, **all** under `src/lib/sound-chat/**` / `src/components/sound-chat/**`. `worker/**`, `src/lib/husk/**`, `src/components/husk/**`, `src/routes/**`, `src/routeTree.gen.ts`, `package.json`, every root config, `public/**`, `tools/**`, `e2e/**`, `live-tests/**`, `prompts/audit/**`, `prompts/app-spec/**`: **0 lines**. |
+
+**Bundle delta, stated honestly.** The entry chunk's **raw** byte count is
+**307779 B — byte-identical to Phase 3's recorded 307779 B.** A page that never
+opens Sound Chat pays exactly what it paid before this phase. The gzip figure is
+**94809 B against Phase 3's 94806 B, +3 B**, on an identical raw size; a 3-byte
+difference at constant raw size points at the zlib build rather than the code, and
+I did not rebuild Phase 3's toolchain to prove it, so it is reported as a
+measurement rather than as a code delta. The lazily-fetched screen chunk grew
+**68332 B → 70102 B (+1770 B)** on demand, which is this phase's real work: the
+synchronous `queued` publish, `sendId`, the epoch, the leave affordance and its
+modal.
+
+### Commit record
+
+- Implementation and tests: **`9a56806`** — 29 files, +3587 / −342. Five new
+  files (`deep-p3v-d1-queued.test.ts`, `deep-p3v-d4-stopped.test.ts`,
+  `deep-p3v-explosion.test.ts`, `deep-p3v-d2-d3-exit.test.tsx`, plus the
+  `protocol.ts` doc-row repair folded into the same commit).
+- Documentation (this entry): the next commit on `main`.
+- No `test-results/`, WAV, probe script or generated artifact was staged;
+  `test-results/` and `.output/` are gitignored and were verified to be so.
+
+### Tooling incident, recorded so it is not repeated
+
+The script used to strip the `busy` prop had an off-by-one that re-emitted each
+tag's closing `>` (`i = j` instead of `i = j + 1`), producing `/>>` in 27 places
+across the six files it touched. It was caught by `prettier --check` (which
+reported a `SyntaxError` per file rather than a formatting nit), repaired with a
+script that asserts the invariant first — JSX cannot legally contain `/>>` and
+`HEAD` had **zero** occurrences — and then confirmed by `tsc`, `eslint` and the
+full battery. The lesson worth keeping is the detection method, not the bug:
+**a mechanical edit across many files must be followed by a real parser, and the
+repair must be justified by a provable invariant rather than by a regex that
+"looks right".** No formatter was ever handed a directory: `prettier` was given
+explicit file paths throughout, and `vendor/ggwave.js` was re-measured at
+**147139 B** after every formatting step.
+
+### Handed to Phase 4 (The Gauntlet) — do not redo, re-verify
+
+1. The four Phase 3V residuals are **fixed and their pins inverted**; a pin that
+   is not inverted is a lie. Re-verify, do not re-implement.
+2. Every finding above carries an explicit decision. Three need a **human** and
+   are off limits: the two focus/contrast findings in files this feature does not
+   own, and the `PermissionPrompt` controlled-component refactor.
+3. The carried-forward list above is Phase 4's seed material, and Phase 4's own
+   subagent 3 ("self-reception / acoustic environment") is exactly the item that
+   closes the harness-does-not-drive-the-product gap.
+4. Measured budget and timing are unchanged and are the numbers Phase 4's copy
+   must use: **84 bytes / 84 ASCII characters** at the cap, 43 in one block and
+   42 per block in a two-block message, **1.92 s** per block, **3.84 s** for two,
+   `TURN_GAP_MS` 700, `ACK_TIMEOUT_MS` 7460.
+5. **Do not read "0 errors" as "no warnings."** anti-slop is at **170 warnings
+   with zero headroom** — any code added in Phase 4 must be counted against it.
+6. `device-96000` is bistable; assert nothing about its decode count.
