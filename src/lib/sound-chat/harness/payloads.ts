@@ -69,6 +69,9 @@ export const PRIMARY_PAYLOAD = payload(0x1234);
 /** Used as the "someone else in the room" second transmission. */
 export const FOREIGN_PAYLOAD = payload(0x5678);
 
+/** A third speaker in a busy room, for the three-way collision variant. */
+export const THIRD_PAYLOAD = payload(0x0abc);
+
 /** Three back-to-back transmissions, for the dedupe/long-session variant. */
 export const SEQUENCE_PAYLOADS = [payload(0x0001), payload(0x0002), payload(0x0003)];
 

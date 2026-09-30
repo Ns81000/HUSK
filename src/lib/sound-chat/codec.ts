@@ -19,10 +19,16 @@
  *   module can still encode after an empty-payload trap, but a trap in
  *   Emscripten leaves C++ state undefined, so the session is restarted rather
  *   than reusing an instance that trapped — never retried.
- * - every misuse guard (payload length, chunk length, view alignment) runs
- *   *before* that latch, so a caller's mistake can never mark a healthy module
- *   dead. This is the independent verification pass's finding: the obvious
+ * - every misuse guard (payload type and length, chunk length, view alignment)
+ *   runs *before* that latch, so a caller's mistake can never mark a healthy
+ *   module dead. This is the independent verification pass's finding: the obvious
  *   frame-length guard placed inside `#guard()` would have done exactly that.
+ * - correction, measured in Phase 4: `decode()` on an invalid or freed instance
+ *   id does **not** abort the module — it returns empty, so a dead Rx id is
+ *   indistinguishable from silence. Only `encode()` on a bad id aborts, and it
+ *   rejects with a bare *number* (an address, not a code). That asymmetry is why
+ *   `init()` results are checked where they are obtained and never left to the
+ *   call site to discover.
  */
 
 import type { GgwaveEnumValue, GgwaveInstance, GgwaveModule } from "./vendor/ggwave";
@@ -70,10 +76,11 @@ const RX_PROTOCOLS_TO_DISABLE = [
 const PROTOCOL_KEY = "GGWAVE_PROTOCOL_AUDIBLE_FASTEST";
 
 /**
- * Raw F32 samples -> the byte view the binding expects. The binding takes
- * `std::string`; a `Float32Array` passed directly would be marshalled
- * element-by-element (values, not bytes). No copy: the buffer must never be a
- * view into wasm memory.
+ * Raw F32 samples -> the byte view the binding expects. The binding takes a
+ * `std::string`, so what it needs is the samples' *bytes*. Do not pass a
+ * `Float32Array` to `encode()` directly: the binding raises
+ * `BindingError: Cannot pass non-string to std::string` rather than reinterpreting
+ * it. No copy here: the buffer must never be a view into wasm memory.
  */
 export function float32ToBytes(samples: Float32Array): Uint8Array {
   return new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
@@ -117,6 +124,24 @@ export function flushReceiver(codec: SoundChatCodec, frames = 120): number {
   return stale;
 }
 
+/**
+ * Whether a value is a byte array the binding can take.
+ *
+ * `encode()`'s contract is bytes, not "some typed array": a `Float32Array`
+ * reaches embind as element values rather than as the buffer's bytes and is
+ * rejected there with a `BindingError` that would otherwise be reported as a
+ * dead module. Checking at this boundary is what keeps a caller's mistake a
+ * usage error (Section 10.1 class 10).
+ *
+ * The parameter is typed rather than `unknown` on purpose. The only caller has
+ * a declared `Uint8Array`, so this is a *runtime* check against a lie the
+ * compiler cannot see (a cast, a value from JSON, an untyped consumer) — not an
+ * input-parsing boundary, which is what a loose parameter here would imply.
+ */
+function isByteArray(value: Uint8Array | Float32Array | number[]): boolean {
+  return value instanceof Uint8Array;
+}
+
 export class SoundChatCodec {
   readonly #module: GgwaveModule;
   readonly #protocol: GgwaveEnumValue;
@@ -151,6 +176,19 @@ export class SoundChatCodec {
    * by the C++ layer (`ggwave.cpp:693-696` truncates and still reports success).
    */
   encode(payload: Uint8Array): Float32Array {
+    if (!isByteArray(payload)) {
+      // The binding takes a `std::string`; handing it anything else raises an
+      // embind `BindingError` from *inside* `#guard()`, which would latch a
+      // perfectly healthy module dead. Measured: the module encodes normally
+      // afterwards. A caller's type mistake is our misuse, not a module death.
+      // The check is a byte-array predicate rather than a `typeof` so it states
+      // the contract this method actually has.
+      throw new CodecUsageError(
+        "payload must be a Uint8Array of bytes. A Float32Array is not accepted: the " +
+          "binding reads the buffer's bytes, and a typed array of samples must go " +
+          "through float32ToBytes() first.",
+      );
+    }
     if (payload.length === 0) {
       throw new CodecUsageError(
         "refusing to encode an empty payload: it traps the codec, and abandoning the instance is our policy, not a measured fact",
@@ -269,6 +307,13 @@ export async function openSoundChatCodec(device?: {
   const rx = module.init(rxParameters);
 
   if (tx < 0 || rx < 0) {
+    // A half-satisfied allocation would otherwise leak the instance that *did*
+    // succeed. The module holds four slots and Sound Chat's own design never
+    // approaches that, but the leak is permanent for the page: `init()` was
+    // measured returning `0,1,2,3,-1,-1`, so a dropped slot is gone for good and
+    // a repeated failure walks the module down to nothing.
+    if (tx >= 0) module.free(tx);
+    if (rx >= 0) module.free(rx);
     throw new CodecModuleError(`codec refused to allocate both instances (tx=${tx}, rx=${rx})`);
   }
 

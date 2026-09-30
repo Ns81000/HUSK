@@ -95,5 +95,9 @@ describe("in-process degradation matrix", () => {
       failures.map((result) => result.variant.id),
       "every in-process variant must honour its contract",
     ).toEqual([]);
-  });
+    // The timeout below is a pure function of how many variants the matrix holds.
+    // Measured: 1.8 s before the Phase 4 ambient extensions, 5.8 s after. The
+    // harmonic tone complex is 30 sines per sample, so the cost is real, but
+    // nothing here waits on anything but arithmetic.
+  }, 30_000);
 });

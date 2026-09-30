@@ -114,7 +114,17 @@ export const TURN_GAP_MS = 700;
  */
 export const ACK_TIMEOUT_MS =
   BLOCK_DURATION_MS * MAX_MESSAGE_BLOCKS + TURN_GAP_MS + BLOCK_DURATION_MS + 1_000;
-/** Past one whole block, so a second block of the same message can still land. */
+/**
+ * How long to wait before answering a partially-received message.
+ *
+ * A sender's own Rx feed is shut for its whole transmission plus the 0.5 s tail,
+ * so an answer sent too early lands in a window that cannot decode: a one-block
+ * sender reopens after 1920 + 500 = 2420 ms, and a two-block sender after
+ * 3840 + 500 = 4340 ms. A single fixed delay cannot serve both — measured, the
+ * 1-block delay put a two-block sender's answer 150 ms *inside* its closed
+ * window, so it had to retransmit all 84 bytes. `#schedulePartialAck` therefore
+ * scales this by the block count the answer is about.
+ */
 export const PARTIAL_ACK_DELAY_MS = BLOCK_DURATION_MS + 300;
 export const BACKOFF_MIN_MS = 400;
 export const BACKOFF_MAX_MS = 1_200;
@@ -359,7 +369,14 @@ export class SoundChatSession {
    * wire value, so there is no 16-bit ceiling for it to reach.
    */
   #nextSendId = 0;
-  #partialAck: { msgId: number; mask: number } | null = null;
+  /**
+   * A partial acknowledgement owed but not yet on the air.
+   *
+   * `blockCount` is the number of blocks the *sender* is putting out, which is
+   * what sizes the wait: its Rx feed is shut for all of them, so the answer has
+   * to outlast the whole transmission rather than one block.
+   */
+  #partialAck: { msgId: number; mask: number; blockCount: number } | null = null;
   #ackExtensions = 0;
   /**
    * The handshake challenge, once we have one: invented by the enterer, echoed
@@ -376,6 +393,16 @@ export class SoundChatSession {
    * playing it.
    */
   readonly #reAckBudget = new ReAckBudget();
+  /**
+   * The `(msgId, mask)` ACKs already acted on for the message now in flight.
+   *
+   * The codec redelivers each block 2-4 times, so one partial ACK is delivered
+   * 2-4 times and every copy used to spend another of the sender's three
+   * attempts on byte-identical audio that then overlapped itself. Cleared
+   * whenever `#outbound` is cleared or replaced, so it holds at most the
+   * distinct masks of one message: bounded by construction (Section 10.2 P12).
+   */
+  readonly #handledAcks = new Set<string>();
   #listen: ListenHandle | null = null;
   #unsubscribe: Unsubscribe | null = null;
   /**
@@ -572,6 +599,7 @@ export class SoundChatSession {
     this.#listen?.stop();
     this.#listen = null;
     this.#outbound = null;
+    this.#handledAcks.clear();
     this.#pumping = false;
     // `#pending` is dropped WITHOUT reporting. `stop()` is the caller's own
     // teardown: it has already decided to discard everything, and the consumer
@@ -742,6 +770,15 @@ export class SoundChatSession {
     if (this.#stopped) return;
     this.#emit({ type: hidden ? "HIDDEN" : "VISIBLE" });
     if (hidden || this.#state !== "listening") return;
+    // An ACK we owe has to go out before anything of ours does, for the same
+    // reason `#onChannelQuiet` sends it first. While the page was hidden the
+    // quiet timer fired into `hidden_hold`, where `TRANSMIT_BEGIN` is refused —
+    // so without this the ACK was stranded for good: measured, the sender then
+    // burned all three attempts and reported "failed" for a note that was
+    // sitting delivered on screen, with `acksSent` still 0.
+    if (this.#pendingAck !== null && !this.#heardRecently) {
+      if (this.#attemptAck()) return;
+    }
     // Coming back: resume a held message before starting anything new.
     if (this.#outbound !== null) {
       void this.#transmitBlocks(pendingBlocks(this.#outbound));
@@ -786,9 +823,23 @@ export class SoundChatSession {
     if (this.#pendingPairReply) {
       this.#pendingPairReply = false;
       void this.#transmitPairFrame();
+      return;
     }
-    this.#attemptAck();
-    if (this.#currentState() !== "listening") return;
+    // Whatever we transmit next has to be the *only* thing on the air. An owed
+    // ACK is played at `start(0)` — now — and is a full 1.92 s block, so starting
+    // our own queued note behind it stacked two waveforms at the destination,
+    // which neither end can decode: measured, the sender then never resolved
+    // because its ACK landed inside the overlap. So the ACK goes first and
+    // returns; the pump is re-entered by the next quiet moment, which this very
+    // transmission will arm.
+    if (this.#pendingAck !== null) {
+      if (!this.#attemptAck()) {
+        // The channel was not ours after all. `#attemptAck` kept the ACK, and
+        // the next quiet moment will try again.
+        return;
+      }
+      if (this.#currentState() !== "listening") return;
+    }
     if (this.#outbound !== null) {
       // A held or partially-sent message resumes now that the air is clear.
       const missing = pendingBlocks(this.#outbound);
@@ -804,16 +855,20 @@ export class SoundChatSession {
    * Sends the ACK we owe, if the channel is ours. A refused attempt is *kept*,
    * not dropped: the next quiet moment tries again, which is what makes the
    * reply independent of the order two timers happened to fire in.
+   *
+   * Returns whether the ACK actually went out, so a caller can keep the rest of
+   * the turn to itself rather than stacking our own block on top of this one.
    */
-  #attemptAck(): void {
+  #attemptAck(): boolean {
     const frame = this.#pendingAck;
-    if (frame === null || this.#heardRecently || this.#stopped) return;
+    if (frame === null || this.#heardRecently || this.#stopped) return false;
     this.#emit({ type: "TRANSMIT_BEGIN" });
-    if (this.#currentState() !== "transmitting") return;
-    if (!this.#play(frame)) return;
+    if (this.#currentState() !== "transmitting") return false;
+    if (!this.#play(frame)) return false;
     this.#pendingAck = null;
     this.#stats.acksSent += 1;
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
+    return true;
   }
 
   /**
@@ -906,6 +961,9 @@ export class SoundChatSession {
     }
     this.#pumping = false;
     this.#txBusy = false;
+    // A new message is a new ACK window: the previous one's dedupe keys must not
+    // suppress a legitimate answer to this one.
+    this.#handledAcks.clear();
     this.#outbound = {
       sendId: submission.sendId,
       msgId,
@@ -993,6 +1051,7 @@ export class SoundChatSession {
     outbound.status = "failed";
     this.#notify(outboundEvent(outbound, "failed"));
     this.#outbound = null;
+    this.#handledAcks.clear();
     this.#ackExtensions = 0;
     this.#emit({ type: "BACKOFF_EXPIRED" });
     void this.#pump();
@@ -1072,7 +1131,17 @@ export class SoundChatSession {
         reason: outcome.reason,
         count: this.#stats.framesUnreadable,
       });
-      if (outcome.reason === "auth-failed") this.#onPairRejected();
+      // Only a *well-formed PAIR frame* whose key check failed says "that device
+      // is using a different code" — a conclusion worth ending a handshake on.
+      // Treating every pre-pairing auth failure as one meant any noise did it: a
+      // 64-byte block with two non-zero bytes was enough, so no code and no
+      // recording were needed to kill a live pairing, which then refused the
+      // genuine peer's real PAIR frame and could not re-pair at all (Phase 4).
+      // Everything else unauthenticated is "something was heard that we cannot
+      // read" (P5/P6), and the handshake ends on its own timeout instead.
+      if (outcome.reason === "pair-key-failed" && !isPaired(this.#pairing)) {
+        this.#onPairRejected();
+      }
       this.#extendAckDeadline();
       return;
     }
@@ -1093,6 +1162,18 @@ export class SoundChatSession {
     // An ACK for a message we never sent (or already resolved) is ignored: it
     // cannot move anything, and it is exactly what a hostile peer would try.
     if (outbound === null || outbound.msgId !== msgId) return;
+    // The codec redelivers every block 2-4 times, so a *partial* ACK arrives 2-4
+    // times too. Each redelivery used to re-enter `#transmitBlocks` and spend
+    // another one of the sender's three attempts on byte-identical audio that
+    // then stacked on itself — measured: two overlapping retransmissions and a
+    // `failed` note while the peer had assembled the whole message. One
+    // retransmission per distinct (msgId, mask) per ACK window is the intent, so
+    // the same answer twice is a no-op. A genuinely *changed* mask (more blocks
+    // arrived) still gets through.
+    const seen = this.#handledAcks;
+    const key = `${msgId}:${mask}`;
+    if (seen.has(key)) return;
+    seen.add(key);
     this.#clearTimer("ack");
     this.#ackExtensions = 0;
     const status = applyAck(outbound, mask);
@@ -1100,6 +1181,7 @@ export class SoundChatSession {
     this.#emit({ type: "ACK_RECEIVED" });
     if (status === "sent") {
       this.#outbound = null;
+      this.#handledAcks.clear();
       void this.#pump();
       return;
     }
@@ -1129,10 +1211,20 @@ export class SoundChatSession {
           msgId: outcome.msgId,
           text: decoder.decode(outcome.plaintext),
         });
+        // The whole note is in hand, so any partial-ACK timer still armed for it
+        // is now obsolete. Left armed, it put a *second* ACK on the air about a
+        // second later carrying the stale partial mask — measured on the wire as
+        // `[0b11, 0b01]` — which cost a wasted 1.92 s block per two-block message
+        // and could make the sender retransmit a block it had already sent.
+        this.#clearPartialAck();
         void this.#sendAck(outcome.msgId, fullMask(outcome.blockCount));
         break;
       case "partial":
-        this.#partialAck = { msgId: outcome.msgId, mask: outcome.mask };
+        this.#partialAck = {
+          msgId: outcome.msgId,
+          mask: outcome.mask,
+          blockCount: outcome.blockCount,
+        };
         this.#schedulePartialAck();
         break;
       case "duplicate":
@@ -1140,6 +1232,12 @@ export class SoundChatSession {
         // sender retry for ever (the codec redelivers every block 2-4 times).
         // The budget bounds that: a replayed recording must not be able to make
         // this device transmit for as long as the attacker keeps playing it.
+        //
+        // Note the pending partial-ACK is deliberately NOT cleared here. A
+        // duplicate is what the codec emits when it re-hears block 0 of a
+        // message whose second block has not arrived yet — clearing there
+        // cancelled the very timer the answer depends on, so the partial
+        // message was never answered at all.
         this.#stats.duplicatesSuppressed += 1;
         if (this.#reAckBudget.take(outcome.msgId)) {
           void this.#sendAck(outcome.msgId, outcome.mask);
@@ -1155,6 +1253,8 @@ export class SoundChatSession {
           reason: "conflicting-block",
           count: this.#stats.conflicts,
         });
+        // The answer here supersedes any partial answer owed for the same note.
+        this.#clearPartialAck();
         void this.#sendAck(outcome.msgId, outcome.mask);
         break;
       case "stale":
@@ -1177,15 +1277,32 @@ export class SoundChatSession {
     this.#attemptAck();
   }
 
+  /**
+   * Forgets a partial acknowledgement we owe but have not sent.
+   *
+   * Called whenever a definitive answer for the same note supersedes it. Without
+   * it the armed timer fired anyway, a second time, with a mask that no longer
+   * described what the sender actually holds.
+   */
+  #clearPartialAck(): void {
+    this.#partialAck = null;
+    this.#clearTimer("partialAck");
+  }
+
   #schedulePartialAck(): void {
     this.#clearTimer("partialAck");
+    // Scaled to the transmission we are answering: the sender's feed is shut for
+    // all of its blocks plus the tail, so a fixed one-block delay is too early for
+    // a two-block message and its answer is simply lost.
+    const blockCount = this.#partialAck?.blockCount ?? 1;
+    const delay = blockCount * BLOCK_DURATION_MS + 300;
     this.#timers.partialAck = setTimeout(() => {
       this.#timers.partialAck = undefined;
       const pendingAck = this.#partialAck;
       this.#partialAck = null;
       if (pendingAck === null) return;
       void this.#sendAck(pendingAck.msgId, pendingAck.mask);
-    }, PARTIAL_ACK_DELAY_MS);
+    }, delay);
   }
 
   /**
@@ -1250,6 +1367,7 @@ export class SoundChatSession {
       this.#notify(outboundEvent(outbound, "failed"));
     }
     this.#outbound = null;
+    this.#handledAcks.clear();
     // Every note still waiting behind it has a rendered `queued` row behind it
     // now, and this session is never going to send any of them. Dropping the
     // queue silently would leave those rows reading "Queued" on a fatal screen

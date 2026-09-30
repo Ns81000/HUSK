@@ -268,9 +268,14 @@ describe("P5/P6 — heard but unreadable is not silence, and is not an error", (
     const other = await derivePairingKeys("ABCD2346");
     const stranger = new FrameCodec({ keys: other, selfId: 0, sendSalt: salt(0x91) });
     const receiver = new FrameCodec({ keys, selfId: 1, sendSalt: salt(0x92) });
+    // `pair-key-failed` since Phase 4: a well-formed PAIR frame whose key check
+    // fails is the one rejection that is a *conclusion* about the other device
+    // rather than an absence, so the driver may report "different pairing code"
+    // on it. Every other unauthenticated block still yields plain `auth-failed`,
+    // which is what stopped any noise from ending a live handshake.
     expect(await receiver.parse(await stranger.buildPairFrame(TEST_CHALLENGE))).toEqual({
       ok: false,
-      reason: "auth-failed",
+      reason: "pair-key-failed",
     });
     // The right code, the wrong role: a reflected confirmation is not a pairing.
     const reflected = new FrameCodec({ keys, selfId: 0, sendSalt: salt(0x92) });

@@ -150,6 +150,15 @@ export type ParsedFrame =
  * more than that (deep dive §3.1). `auth-failed` is the AEAD/key-confirmation
  * case, which is the one the UI turns into "a transmission was heard but this
  * pairing code cannot read it" (P6).
+ *
+ * `pair-key-failed` is the one rejection that carries a *conclusion* rather than
+ * an absence, and it is deliberately narrow: it is only ever returned for a
+ * well-formed PAIR frame whose key check failed, which is a real device
+ * answering with a different code. Every other unauthenticated block before
+ * pairing is plain `auth-failed` — a 64-byte block with two non-zero bytes is
+ * enough to reach that path, so treating it as "wrong code" let any noise end a
+ * live handshake (Phase 4 finding: one crafted block killed pairing on both
+ * roles, with no code and no recording).
  */
 export type FrameRejection =
   | "short-frame"
@@ -159,7 +168,8 @@ export type FrameRejection =
   | "bad-seq"
   | "bad-peer"
   | "reserved-field"
-  | "auth-failed";
+  | "auth-failed"
+  | "pair-key-failed";
 
 export type ParseOutcome = { ok: true; frame: ParsedFrame } | { ok: false; reason: FrameRejection };
 
@@ -505,7 +515,11 @@ export class FrameCodec {
     );
     const tag = block.subarray(PAIR_KEY_CHECK_OFFSET, PAIR_KEY_CHECK_OFFSET + PAIR_KEY_CHECK_BYTES);
     if (!(await verifyKeyCheck(this.#keys.mac, salt, challenge, this.#peerId, tag))) {
-      return { ok: false, reason: "auth-failed" };
+      // Distinct from `auth-failed` on purpose. This block is well formed *and*
+      // claims to be a handshake, so a device really is answering — with a code
+      // that does not derive this key check. That is a conclusion the UI may
+      // report; a failed AEAD elsewhere may not.
+      return { ok: false, reason: "pair-key-failed" };
     }
     return { ok: true, frame: { kind: "pair", peerId: this.#peerId, salt, challenge } };
   }

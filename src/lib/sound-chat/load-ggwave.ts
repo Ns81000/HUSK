@@ -72,8 +72,18 @@ async function loadViaRequire(): Promise<GgwaveFactory> {
 }
 
 /**
- * The resolved factory, cached for the page session: the module is instantiated
- * once and its instances are held for the whole session (master plan Section 3).
+ * The resolved *factory*, cached for the page session; the browser also keeps one
+ * classic `<script>` tag, so the 147139-byte artifact is fetched at most once.
+ *
+ * The **module** itself is not cached, and this is deliberate. Measured: holding
+ * one module for the page would make the four-instance ceiling a *page-wide*
+ * budget, and a restart that raced its predecessor could push a live session to
+ * `init() === -1`. One module per codec keeps the ceiling per-codec, so a
+ * discarded codec takes its own instances with it. The cost is real and was
+ * measured rather than assumed: each module instantiates a fresh 16 MiB wasm
+ * heap and exposes no `destroy`/`exit`, so a closed codec's heap is reclaimed by
+ * the garbage collector dropping the module, not by an explicit call. The codec
+ * is closed on every teardown path in `ui/controller.ts`.
  */
 export async function loadGgwaveModule(): Promise<GgwaveModule> {
   factory ??= typeof document === "undefined" ? loadViaRequire() : loadViaScriptTag(codecUrl);

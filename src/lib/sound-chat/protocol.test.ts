@@ -271,9 +271,13 @@ describe("hostile frames (Section 10.3, protocol row)", () => {
     stranger.adoptPeerSalt(SALT_A);
     expect(await stranger.parse(message)).toEqual({ ok: false, reason: "auth-failed" });
     const strangerDisplayer = new FrameCodec({ keys, selfId: 0, sendSalt: SALT_A });
+    // A PAIR frame that reaches the key check and fails it reports `pair-key-failed`
+    // (Phase 4), not the generic `auth-failed`: it is the one rejection that is a
+    // conclusion about the other device rather than an absence, and the driver
+    // only acts on that one.
     expect(await first.b.parse(await strangerDisplayer.buildPairFrame(TEST_CHALLENGE))).toEqual({
       ok: false,
-      reason: "auth-failed",
+      reason: "pair-key-failed",
     });
   });
 });

@@ -29,6 +29,18 @@ import { CHANNEL_MATRIX, findVariant, type ChannelVariant } from "./matrix";
 import { PRIMARY_PAYLOAD } from "./payloads";
 import type { EncodedBlock, HarnessOptions, HarnessResult } from "./page";
 
+/**
+ * The variants a real capture device adds something to.
+ *
+ * `CHANNEL_MATRIX` is the union of both runners, and `browser: false` opts a
+ * variant out of this one: the Phase 4 ambient and cross-talk extensions measure
+ * the codec's acoustic margin, and a capture device cannot change their outcome
+ * (a 48 kHz WAV, the locked clean constraints, no device rate mismatch in the
+ * path). They still run in `spike/matrix.test.ts`. The set below is exactly the
+ * set that ran here before the field existed.
+ */
+const BROWSER_VARIANTS = CHANNEL_MATRIX.filter((variant) => variant.browser);
+
 const HARNESS_URL = "http://localhost:3000/__sound-chat-harness";
 const APP_URL = "http://localhost:3000/";
 const WAV_DIR = resolve(process.cwd(), "test-results/sound-chat-wavs");
@@ -269,7 +281,7 @@ function assertVariantContract(variant: ChannelVariant, result: HarnessResult): 
 }
 
 test.describe("Phase 0 fake-microphone degradation matrix", () => {
-  for (const variant of CHANNEL_MATRIX) {
+  for (const variant of BROWSER_VARIANTS) {
     test(`${variant.id} — ${variant.label}`, async () => {
       const { wavPath, sampleCount } = writeVariantWav(variant);
       const result = await captureWithBrowser(wavPath, harnessOptions(variant));

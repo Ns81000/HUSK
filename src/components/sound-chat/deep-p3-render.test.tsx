@@ -868,17 +868,28 @@ describe("R-J the entry point and the notice list", () => {
     expect(markup).not.toContain('role="alert"');
   });
 
-  it("keeps the notice list out of a live region, so six warnings are not six interruptions", () => {
+  it("announces notices politely, so the one that reports a room fact is not silent", () => {
+    // INVERTED in Phase 4. This used to assert that `NoticeList` was kept *out*
+    // of a live region, on the stated grounds that "the events that produce them
+    // are announced where they happen". That was true for a listener error and
+    // false for "a transmission was heard, but this pairing code cannot read
+    // it": `HEARD_UNREADABLE` changes no transport state and has no sentence of
+    // its own, so that notice arrived silently — the one notice that reports a
+    // fact about the room, and the one a person would not notice arriving.
+    //
+    // Polite, not assertive: a notice is a warning, not an interruption, and the
+    // screen already reserves `role="alert"` for refusals the user caused.
+    //
     // `NoticeList` is not exported from `sound-chat-screen.tsx`, so what is
-    // asserted is the body of the function that builds it: a labelled `<ul>`,
-    // and no live-region attribute anywhere inside it.
+    // asserted is the body of the function that builds it.
     const sources = componentSources();
     const start = sources.indexOf("function NoticeList");
     expect(start).toBeGreaterThan(-1);
     const body = sources.slice(start, start + 1_400);
     expect(body).toContain("aria-label={SOUND_CHAT_COPY.shell.noticesLabel}");
-    expect(body).not.toContain("aria-live");
-    expect(body).not.toContain('role="status"');
+    expect(body).toContain('aria-live="polite"');
+    expect(body).toContain('role="status"');
+    // Still not an interruption, and never a log.
     expect(body).not.toContain('role="log"');
     expect(body).not.toContain('role="alert"');
   });

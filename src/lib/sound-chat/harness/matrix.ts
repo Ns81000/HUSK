@@ -19,17 +19,27 @@
 
 import type { MicrophoneProfile } from "../spike/audio-io";
 import {
+  addMusic,
   addPinkNoise,
+  addSweep,
   addWhiteNoise,
   applyGainDb,
   hardClip,
   overlay,
+  overlayOffset,
+  pinkNoise,
   resample,
   trimStart,
   withDropouts,
   withEcho,
 } from "../spike/degrade";
-import { FOREIGN_PAYLOAD, PRIMARY_PAYLOAD, SEQUENCE_PAYLOADS, type TestPayload } from "./payloads";
+import {
+  FOREIGN_PAYLOAD,
+  PRIMARY_PAYLOAD,
+  SEQUENCE_PAYLOADS,
+  THIRD_PAYLOAD,
+  type TestPayload,
+} from "./payloads";
 
 export type VariantExpectation = "decode" | "graceful" | "silence";
 
@@ -71,6 +81,18 @@ export type ChannelVariant = {
   profile: MicrophoneProfile;
   /** False for variants that only exist in a browser (device rate, mic chain). */
   inProcess: boolean;
+  /**
+   * Whether the Chromium runner measures this variant.
+   *
+   * Two axes, deliberately separate. `inProcess` is "needs a capture device";
+   * `browser` is "a second browser run would add evidence". Every variant that
+   * existed when both runners were written is `true` here, so the browser set
+   * did not shrink when this field appeared — it only lets the Phase 4 ambient
+   * and cross-talk extensions stay in-process, where a real capture device
+   * cannot change their outcome (the WAV is 48 kHz, the constraints are the
+   * locked clean ones, and Chromium's resampler is not in the path).
+   */
+  browser: boolean;
   /** Human note for the log: what the variant is meant to prove. */
   note: string;
 };
@@ -91,6 +113,7 @@ type VariantSpec = {
   settleAfterDecodeMs?: number;
   profile?: MicrophoneProfile;
   inProcess?: boolean;
+  browser?: boolean;
 };
 
 const RATE = 48000;
@@ -117,6 +140,7 @@ function resolve(spec: VariantSpec): ChannelVariant {
     settleAfterDecodeMs: spec.settleAfterDecodeMs ?? (payloads.length > 1 ? 0 : 700),
     profile: spec.profile ?? "clean",
     inProcess: spec.inProcess ?? true,
+    browser: spec.browser ?? true,
     note: spec.note,
   };
 }
@@ -557,6 +581,215 @@ const SESSION_VARIANTS: VariantSpec[] = [
   },
 ];
 
+/**
+ * A real room is not hiss. Phase 4 extends the ambient half of the matrix with
+ * two tonal interferers that no `addWhiteNoise` variant can express: a music-like
+ * harmonic stack (what a phone on the table next to yours is playing) and a log
+ * sweep that crosses the whole decoder band (what a notification tone or a
+ * passing siren is). Both are tonal, so they put energy into single FFT bins —
+ * the failure mode a noise sweep hides — and both are scaled to an explicit SNR
+ * against the transmitted block, exactly like the existing noise helpers.
+ */
+const AMBIENT_SPECS: {
+  id: string;
+  label: string;
+  snrDb: number;
+  expectation: VariantExpectation;
+  note: string;
+}[] = [
+  {
+    id: "music-12db",
+    label: "music-like harmonic stack, 12 dB SNR",
+    snrDb: 12,
+    expectation: "decode",
+    note: "A 200 Hz tone complex reaching past 6 kHz under a 4 Hz tremolo — a held chord, not a hiss.",
+  },
+  {
+    id: "music-0db",
+    label: "music-like harmonic stack, 0 dB SNR",
+    snrDb: 0,
+    expectation: "decode",
+    note: "Signal and interferer at equal RMS: the realistic 'music is playing in the room' case.",
+  },
+  {
+    id: "music-minus-6db",
+    label: "music-like harmonic stack, -6 dB SNR",
+    snrDb: -6,
+    expectation: "decode",
+    note: "The interferer is twice as loud as the note, and still decodes — measured, in-process.",
+  },
+  {
+    id: "music-minus-12db",
+    label: "music-like harmonic stack, -12 dB SNR",
+    snrDb: -12,
+    expectation: "decode",
+    note: "Four times as loud as the note in RMS — and it still decodes. Measured.",
+  },
+  {
+    id: "music-minus-18db",
+    label: "music-like harmonic stack, -18 dB SNR",
+    snrDb: -18,
+    expectation: "graceful",
+    note: "Eight times as loud. This is the measured edge of the tonal interferer: -12 dB decodes, -18 dB is gated out by the 75% tone quorum, cleanly and without garbage.",
+  },
+  {
+    id: "sweep-6db",
+    label: "300 Hz to 8 kHz log sweep, 6 dB SNR",
+    snrDb: 6,
+    expectation: "decode",
+    note: "One tone at a time, never absent from the band, simply somewhere else every moment.",
+  },
+  {
+    id: "sweep-minus-6db",
+    label: "300 Hz to 8 kHz log sweep, -6 dB SNR",
+    snrDb: -6,
+    expectation: "decode",
+    note: "The sweep twice as loud as the note, crossing the band once per block.",
+  },
+];
+
+const AMBIENT_VARIANTS: VariantSpec[] = [
+  ...AMBIENT_SPECS.map(({ id, label, snrDb, note, expectation }) => ({
+    id,
+    label,
+    expectation,
+    note,
+    browser: false,
+    build: impairing(
+      id,
+      id.startsWith("sweep-")
+        ? (clean) => addSweep(clean, snrDb, 300, 8000, 61)
+        : (clean) => addMusic(clean, snrDb, 61),
+    ),
+  })),
+  {
+    id: "noise-floor-pink-20db",
+    label: "a quiet room: pink noise at 20 dB, no transmission at all",
+    expectation: "silence",
+    note: "The muted input, honestly: noise and nothing else. Must decode nothing, must not error.",
+    browser: false,
+    build: roomNoiseOnly,
+  },
+];
+
+/**
+ * 2.5 s of room noise with no carrier anywhere in it — what a microphone that is
+ * working but has nothing to hear actually produces, which is not zeroes.
+ */
+function roomNoiseOnly(): Float32Array {
+  return pinkNoise(120_000, 0.002, 63);
+}
+
+/**
+ * Cross-talk past the single half-amplitude case the matrix already had, plus the
+ * two shapes ordinary neighbour traffic actually takes: a neighbour too far away
+ * to matter, and a neighbour that simply started at a different moment.
+ */
+const CROSSTALK_VARIANTS: VariantSpec[] = [
+  {
+    id: "crosstalk-foreign-quarter",
+    label: "a second transmission overlaid at -12 dB",
+    expectation: "decode",
+    expected: [PRIMARY_PAYLOAD],
+    allowed: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    payloads: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    captureMs: 6200,
+    browser: false,
+    note: "A neighbour two thirds quieter than us: the gap the single half-amplitude case left open.",
+    build: (encode) => overlay(encode(PRIMARY_PAYLOAD), encode(FOREIGN_PAYLOAD), 0.25),
+  },
+  {
+    id: "crosstalk-offset-250ms-quiet",
+    label: "a second transmission starting 250 ms later, 9 dB down",
+    expectation: "decode",
+    expected: [PRIMARY_PAYLOAD],
+    allowed: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    payloads: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    captureMs: 6200,
+    browser: false,
+    note: "Unsynchronised neighbours rather than a collision: the common case, and the one a strict turn-taking protocol has to survive.",
+    build: (encode) =>
+      overlayOffset(encode(PRIMARY_PAYLOAD), encode(FOREIGN_PAYLOAD), 0.35, 12_000),
+  },
+  {
+    id: "crosstalk-offset-500ms-full",
+    label: "a second transmission starting 500 ms later, at full level",
+    expectation: "graceful",
+    expected: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    allowed: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    payloads: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD],
+    captureMs: 6200,
+    browser: false,
+    note: "Equal level, offset: 74% of our own block is overpowered, so the window can hold neither block whole.",
+    build: (encode) => overlayOffset(encode(PRIMARY_PAYLOAD), encode(FOREIGN_PAYLOAD), 1, 24_000),
+  },
+  {
+    id: "collision-three-way",
+    label: "three transmissions at once, equal level",
+    expectation: "graceful",
+    expected: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD, THIRD_PAYLOAD],
+    allowed: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD, THIRD_PAYLOAD],
+    payloads: [PRIMARY_PAYLOAD, FOREIGN_PAYLOAD, THIRD_PAYLOAD],
+    captureMs: 6200,
+    browser: false,
+    note: "A busy room. The 75% tone quorum has to gate every block out, and none may come back as a blend.",
+    build: (encode) =>
+      overlay(
+        overlay(encode(PRIMARY_PAYLOAD), encode(FOREIGN_PAYLOAD), 1),
+        encode(THIRD_PAYLOAD),
+        1,
+      ),
+  },
+];
+
+/** Levels the six existing gain/clip variants do not reach, in both directions. */
+const EXTREME_LEVEL_VARIANTS: VariantSpec[] = [
+  {
+    id: "gain-plus-24db-clipped",
+    label: "+24 dB into a hard clip at full scale",
+    expectation: "decode",
+    browser: false,
+    note: "A speaker at maximum that distorts: peak 0.242 becomes 3.8, so the waveform is squared off twice over, and it still decodes.",
+    build: impairing("gain-plus-24db-clipped", (clean) => hardClip(applyGainDb(clean, 24), 1)),
+  },
+  {
+    id: "gain-minus-80db",
+    label: "-80 dB, far below the 16-bit noise floor",
+    expectation: "decode",
+    browser: false,
+    note: "A file of this is a run of zeroes in 16-bit PCM, so the browser half would be the silence case. In F32 it still decodes: the decoder compares relative bin powers, and the float mantissa does not run out. Recorded as a fact about the two representations, not as a claim about a real device.",
+    build: impairing("gain-minus-80db", (clean) => applyGainDb(clean, -80)),
+  },
+];
+
+/**
+ * The muted-input half: an input that carries nothing for longer than the
+ * receiver's own 90-frame analysis window, and then a burst. The failure this
+ * rules out is a receiver that treats a long quiet stretch as desynchronised and
+ * stops decoding for the rest of the session.
+ */
+const QUIET_ROOM_VARIANTS: VariantSpec[] = [
+  {
+    id: "quiet-3s-then-burst",
+    label: "3 s of nothing, then the block",
+    expectation: "decode",
+    browser: false,
+    captureMs: 6600,
+    settleAfterDecodeMs: 900,
+    note: "A microphone that was disconnected and reconnected. Longer quiet than the 1.92 s analysis window.",
+    build: (encode) => concat(silence(3000), encode(PRIMARY_PAYLOAD)),
+  },
+  {
+    id: "quiet-5s-only",
+    label: "5 s of digital quiet",
+    expectation: "silence",
+    browser: false,
+    captureMs: 6600,
+    note: "A muted input held for longer than the whole session's ack timeout: the 'nothing received' case.",
+    build: () => silence(5000),
+  },
+];
+
 const ALL_VARIANTS: VariantSpec[] = [
   {
     id: "clean",
@@ -568,15 +801,19 @@ const ALL_VARIANTS: VariantSpec[] = [
   ...WHITE_NOISE_VARIANTS,
   ...PINK_NOISE_VARIANTS,
   ...LEVEL_VARIANTS,
+  ...EXTREME_LEVEL_VARIANTS,
   ...DROPOUT_VARIANTS,
   ...TRIM_VARIANTS,
   ...RESAMPLE_VARIANTS,
   ...DEVICE_RATE_VARIANTS,
   ...PROFILE_VARIANTS,
   ...ROOM_VARIANTS,
+  ...AMBIENT_VARIANTS,
   ...INTERFERENCE_VARIANTS,
+  ...CROSSTALK_VARIANTS,
   ...SELF_RECEPTION_VARIANTS,
   ...SESSION_VARIANTS,
+  ...QUIET_ROOM_VARIANTS,
 ];
 
 export const CHANNEL_MATRIX: ChannelVariant[] = ALL_VARIANTS.map(resolve);

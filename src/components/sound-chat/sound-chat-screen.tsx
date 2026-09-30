@@ -54,6 +54,21 @@ export function SoundChatScreen(): ReactElement {
 
 function renderPhase(ui: SoundChatUi): ReactElement {
   const { state } = ui;
+  // The transport block reports progress for *one* note: whichever is on the air.
+  // Taking the newest row instead meant a queue of four showed the wrong
+  // attempt count while an earlier note was being retried — measured: "attempt 1
+  // of 3" for a note on its second try, because the newest row had never been
+  // transmitted at all. The rows themselves read their own status, so only this
+  // unattributed line was wrong.
+  const attemptCount = (() => {
+    const onAir = state.outbound.find((row) => row.status === "sending");
+    if (onAir !== undefined) return onAir.attempts;
+    for (let index = state.outbound.length - 1; index >= 0; index -= 1) {
+      const row = state.outbound[index];
+      if (row !== undefined && row.attempts > 0) return row.attempts;
+    }
+    return 0;
+  })();
   switch (state.phase) {
     case "permission":
       return (
@@ -85,7 +100,7 @@ function renderPhase(ui: SoundChatUi): ReactElement {
               transport={state.transport}
               transmitting={state.transmitting}
               progress={state.progress}
-              attempts={state.outbound.at(-1)?.attempts ?? 0}
+              attempts={attemptCount}
             />
             <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
             <EndSessionButton onConfirm={ui.cancel} />
@@ -231,8 +246,15 @@ function EndSessionButton({ onConfirm }: { readonly onConfirm: () => void }): Re
  * Without the control the list would be permanent: a warning that the session
  * recovered from one of its own errors is worth reading, but not for the rest of
  * the session, and a list nothing can empty becomes the only thing on screen.
- * Deliberately not a live region — these are for reading on demand, and the
- * events that produce them are announced where they happen.
+ *
+ * A polite live region, and not only "for reading on demand". The claim that the
+ * events behind these are announced where they happen is true for a listener
+ * error but false for "a transmission was heard, but this pairing code cannot
+ * read it": `HEARD_UNREADABLE` changes no transport state and has no sentence of
+ * its own, so that notice used to appear silently — measured, the announced
+ * status line was byte-identical before and after. It is the one notice that
+ * reports a fact about the room, and it is exactly the one a person would not
+ * notice arriving.
  */
 function NoticeList({
   notices,
@@ -250,7 +272,12 @@ function NoticeList({
   }
   return (
     <div className="mt-3">
-      <ul className="space-y-1.5" aria-label={SOUND_CHAT_COPY.shell.noticesLabel}>
+      <ul
+        className="space-y-1.5"
+        aria-label={SOUND_CHAT_COPY.shell.noticesLabel}
+        role="status"
+        aria-live="polite"
+      >
         {notices.map((notice) => (
           <li
             key={notice.id}

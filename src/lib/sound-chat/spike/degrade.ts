@@ -97,6 +97,129 @@ export function addPinkNoise(reference: Float32Array, snrDb: number, seed: numbe
   return mix(reference, pinkNoise(reference.length, rms(reference) / 10 ** (snrDb / 20), seed));
 }
 
+/**
+ * A music-like interferer: a harmonic tone complex under a slow tremolo.
+ *
+ * WHY this and not more noise: white and pink noise spread their energy evenly,
+ * so they understate the real case. A room with music or speech in it puts most
+ * of its energy at low frequencies — and the decoder's tones start at 1893 Hz,
+ * so a 200 Hz fundamental with harmonics reaching past 6 kHz lands squarely
+ * across the whole band. Amplitudes fall as 1/h so the stack is pink-ish rather
+ * than a single dominant partial.
+ */
+export function musicLike(
+  length: number,
+  targetRms: number,
+  seed: number,
+  options?: { sampleRate?: number; fundamentalHz?: number; harmonics?: number },
+): Float32Array {
+  const sampleRate = options?.sampleRate ?? 48_000;
+  const fundamental = options?.fundamentalHz ?? 200;
+  const harmonics = options?.harmonics ?? 30;
+  const random = mulberry32(seed);
+  const phases: number[] = [];
+  for (let h = 0; h < harmonics; h += 1) phases.push(random() * 2 * Math.PI);
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    const t = i / sampleRate;
+    let sum = 0;
+    for (let h = 0; h < harmonics; h += 1) {
+      const frequency = fundamental * (h + 1);
+      if (frequency >= sampleRate / 2) break;
+      sum += Math.sin(2 * Math.PI * frequency * t + (phases[h] ?? 0)) / (h + 1);
+    }
+    // 4 Hz tremolo: a held chord rather than a steady drone.
+    const tremolo = 0.7 + 0.3 * Math.sin(2 * Math.PI * 4 * t);
+    out[i] = sum * tremolo;
+  }
+  const scale = targetRms / Math.max(rms(out), 1e-12);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = (out[i] ?? 0) * scale;
+  }
+  return out;
+}
+
+/** Mixes a music-like interferer in at the requested SNR relative to `reference`. */
+export function addMusic(
+  reference: Float32Array,
+  snrDb: number,
+  seed: number,
+  options?: { sampleRate?: number; fundamentalHz?: number; harmonics?: number },
+): Float32Array {
+  return mix(
+    reference,
+    musicLike(reference.length, rms(reference) / 10 ** (snrDb / 20), seed, options),
+  );
+}
+
+/**
+ * A log sweep from `fromHz` to `toHz` — one tone at a time, crossing the whole
+ * decoder band. The worst-case *stationary* interferer: unlike a tone complex
+ * it is never absent from the band, it is simply somewhere else every moment.
+ */
+export function sweepTone(
+  length: number,
+  targetRms: number,
+  fromHz: number,
+  toHz: number,
+  seed = 0,
+  sampleRate = 48_000,
+): Float32Array {
+  const random = mulberry32(seed);
+  const phase = random() * 2 * Math.PI;
+  const logRatio = Math.log(toHz / fromHz);
+  const durationSeconds = length / sampleRate;
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    const t = i / sampleRate;
+    // The integral of a log sweep's instantaneous frequency, so the tone is
+    // continuous: at t = duration it has reached `toHz`.
+    const phaseAt =
+      2 * Math.PI * fromHz * ((Math.exp((logRatio * t) / durationSeconds) - 1) / logRatio);
+    out[i] = Math.sin(phaseAt + phase);
+  }
+  const scale = targetRms / Math.max(rms(out), 1e-12);
+  for (let i = 0; i < length; i += 1) {
+    out[i] = (out[i] ?? 0) * scale;
+  }
+  return out;
+}
+
+/** Mixes a band-crossing sweep in at the requested SNR. */
+export function addSweep(
+  reference: Float32Array,
+  snrDb: number,
+  fromHz: number,
+  toHz: number,
+  seed = 0,
+): Float32Array {
+  return mix(
+    reference,
+    sweepTone(reference.length, rms(reference) / 10 ** (snrDb / 20), fromHz, toHz, seed),
+  );
+}
+
+/**
+ * Overlays a second waveform at a time offset — two devices that do not start
+ * their transmissions at the same instant. `overlay` can only mix waveforms of
+ * one length, which is a model of a *collision*; this is the model of ordinary
+ * cross-talk between neighbours who are not synchronised at all.
+ */
+export function overlayOffset(
+  base: Float32Array,
+  other: Float32Array,
+  level: number,
+  offsetSamples: number,
+): Float32Array {
+  const out = Float32Array.from(base);
+  for (let i = 0; i < other.length; i += 1) {
+    const at = offsetSamples + i;
+    if (at < 0 || at >= out.length) continue;
+    out[at] = (out[at] ?? 0) + (other[i] ?? 0) * level;
+  }
+  return out;
+}
+
 /** Zeroes `count` random short segments — capture-buffer glitches. */
 export function withDropouts(
   samples: Float32Array,

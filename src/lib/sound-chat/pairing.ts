@@ -105,7 +105,11 @@ export function describePairingFailure(reason: PairingFailureReason): string {
     case "wrong-code":
       return "A device answered, but it is using a different pairing code. Check the code and try again.";
     case "no-peer":
-      return "No paired device was heard. Make sure the other device is listening, then start again.";
+      // Same honesty rule as `no-confirmation`, applied to the one sentence that
+      // had been missed: "no paired device was heard" is the fact, but "make sure
+      // the other device is listening" names a cause nothing here can observe —
+      // and it is wrong precisely when *this* device's own input is dead.
+      return "No paired device was heard. Check that both devices are on and in the same room, then start again.";
     case "no-confirmation":
       // No distance claim and one action. Nothing in Sound Chat measures range:
       // the wait is a wall-clock timer, so the only fact it can report is that
