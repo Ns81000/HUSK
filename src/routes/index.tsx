@@ -100,7 +100,7 @@ function Landing() {
           Ephemeral encrypted rooms
         </p>
 
-        <div className="enter mt-10 w-full max-w-[320px]" style={enter(150)}>
+        <div className="enter mt-10 w-full max-w-[320px] space-y-2.5" style={enter(150)}>
           <Button
             full
             loading={busy}
@@ -127,8 +127,19 @@ function Landing() {
               </svg>
             ) : null}
           </Button>
+          {/* The second mode, not a replacement: Sound Chat needs no relay, so it
+              works where a room cannot. */}
+          <Button
+            full
+            tone="quiet"
+            onClick={() => void navigate({ to: "/sound-chat" })}
+            className="h-13 rounded-2xl text-[16px] font-semibold tracking-[-0.01em]"
+          >
+            <span>Try Sound Chat</span>
+            <span className="text-caption font-medium opacity-80">no Wi-Fi needed</span>
+          </Button>
           {failure !== null ? (
-            <p className="fade-in mt-4 text-[14px] text-danger" role="alert">
+            <p className="fade-in text-[14px] text-danger" role="alert">
               {failure}
             </p>
           ) : null}

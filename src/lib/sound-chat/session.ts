@@ -29,9 +29,10 @@
  *   A complete message is acked in ~1.95 s; a *partial* one waits
  *   `PARTIAL_ACK_DELAY_MS` (2220 ms, past the point where a second block would
  *   have been decoded) and is then acked, so ~4.15 s. `ACK_TIMEOUT_MS` is
- *   2 x 1920 + `TURN_GAP_MS` + 1000 = 5540 ms: 2.84x the fast path, +1.39 s
- *   over the slow one. The turn gap is inside the window on purpose — a reply
- *   is only heard after the peer's Rx feed reopens.
+ *   2 x 1920 + `TURN_GAP_MS` (700) + 1920 + 1000 = 7460 ms, sized for the
+ *   *longest* message the cap allows: 3.8x the fast path and +3.3 s over the
+ *   slow one. The turn gap is inside the window on purpose — a reply is only
+ *   heard after the peer's Rx feed reopens.
  * - pairing: the enterer's confirmation window is 2 blocks + 2 s, and the
  *   displayer's listen stays open for `PAIR_PEER_TIMEOUT_MS` because a human is
  *   typing a code into the other device.
@@ -137,7 +138,29 @@ export type SessionEvent =
   | { type: "transport"; state: TransportState }
   | { type: "pairing"; state: PairingState }
   | { type: "message"; msgId: number; text: string }
-  | { type: "outbound"; msgId: number; status: OutboundStatus; attempts: number }
+  /**
+   * One of *our* messages, reported every time its status changes.
+   *
+   * `text` and `blockCount` are part of the event rather than something the
+   * consumer reconstructs. `blockCount` is the only honest source for a transmit
+   * progress bar's total (a one-block note is 1.92 s of sound and a two-block
+   * note is 3.84 s, and guessing wrong is a progress bar that lies), and `text`
+   * is what stops the consumer from having to pair an event up with the
+   * submission it belongs to by position — a submission the pump rejects before
+   * it allocates a `msgId` would otherwise shift every later pairing and put the
+   * wrong words under a "delivered" badge. This is master plan Section 10.1
+   * class 12: a phase-boundary interface whose real consumer did not exist yet,
+   * stated explicitly instead of left implicit. The plaintext is already in
+   * memory on both sides, is never logged and never persisted.
+   */
+  | {
+      type: "outbound";
+      msgId: number;
+      status: OutboundStatus;
+      attempts: number;
+      blocks: number;
+      text: string;
+    }
   | {
       type: "heard-unreadable";
       /** Why the block could not be read; `conflicting-block` is authenticated but inconsistent. */
@@ -251,6 +274,25 @@ function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
     difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
   }
   return difference === 0;
+}
+
+/**
+ * The self-describing form of an outbound status change, so every report site
+ * carries the same fields. `blocks` and `text` exist for the UI's honest
+ * progress bar and for exact attribution (see the `outbound` event's contract).
+ */
+function outboundEvent(
+  outbound: OutboundMessage,
+  status: OutboundStatus,
+): Extract<SessionEvent, { type: "outbound" }> {
+  return {
+    type: "outbound",
+    msgId: outbound.msgId,
+    status,
+    attempts: outbound.attempts,
+    blocks: outbound.blockCount,
+    text: decoder.decode(outbound.plaintext),
+  };
 }
 
 export class SoundChatSession {
@@ -743,7 +785,7 @@ export class SoundChatSession {
       ackedMask: 0,
       status: "sending",
     };
-    this.#notify({ type: "outbound", msgId, status: "sending", attempts: 0 });
+    this.#notify(outboundEvent(this.#outbound, "sending"));
     await this.#transmitBlocks(pendingBlocks(this.#outbound));
   }
 
@@ -769,12 +811,7 @@ export class SoundChatSession {
     outbound.attempts += 1;
     if (outbound.attempts > 1) {
       this.#stats.retries += 1;
-      this.#notify({
-        type: "outbound",
-        msgId: outbound.msgId,
-        status: outbound.status,
-        attempts: outbound.attempts,
-      });
+      this.#notify(outboundEvent(outbound, outbound.status));
     }
     for (const [offset, index] of indices.entries()) {
       // A tab that goes hidden mid-message stops the remaining blocks here: the
@@ -823,12 +860,7 @@ export class SoundChatSession {
 
   #failOutbound(outbound: OutboundMessage): void {
     outbound.status = "failed";
-    this.#notify({
-      type: "outbound",
-      msgId: outbound.msgId,
-      status: "failed",
-      attempts: outbound.attempts,
-    });
+    this.#notify(outboundEvent(outbound, "failed"));
     this.#outbound = null;
     this.#ackExtensions = 0;
     this.#emit({ type: "BACKOFF_EXPIRED" });
@@ -933,7 +965,7 @@ export class SoundChatSession {
     this.#clearTimer("ack");
     this.#ackExtensions = 0;
     const status = applyAck(outbound, mask);
-    this.#notify({ type: "outbound", msgId, status, attempts: outbound.attempts });
+    this.#notify(outboundEvent(outbound, status));
     this.#emit({ type: "ACK_RECEIVED" });
     if (status === "sent") {
       this.#outbound = null;
@@ -1066,12 +1098,7 @@ export class SoundChatSession {
     const outbound = this.#outbound;
     if (outbound !== null) {
       outbound.status = "failed";
-      this.#notify({
-        type: "outbound",
-        msgId: outbound.msgId,
-        status: "failed",
-        attempts: outbound.attempts,
-      });
+      this.#notify(outboundEvent(outbound, "failed"));
     }
     this.#outbound = null;
     this.#pending = [];

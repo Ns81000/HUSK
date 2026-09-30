@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SoundChatRouteImport } from './routes/sound-chat'
 import { Route as RRoomIdRouteImport } from './routes/r.$roomId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SoundChatRoute = SoundChatRouteImport.update({
+  id: '/sound-chat',
+  path: '/sound-chat',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RRoomIdRoute = RRoomIdRouteImport.update({
@@ -25,27 +31,31 @@ const RRoomIdRoute = RRoomIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/sound-chat': typeof SoundChatRoute
   '/r/$roomId': typeof RRoomIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/sound-chat': typeof SoundChatRoute
   '/r/$roomId': typeof RRoomIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/sound-chat': typeof SoundChatRoute
   '/r/$roomId': typeof RRoomIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/r/$roomId'
+  fullPaths: '/' | '/sound-chat' | '/r/$roomId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/r/$roomId'
-  id: '__root__' | '/' | '/r/$roomId'
+  to: '/' | '/sound-chat' | '/r/$roomId'
+  id: '__root__' | '/' | '/sound-chat' | '/r/$roomId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SoundChatRoute: typeof SoundChatRoute
   RRoomIdRoute: typeof RRoomIdRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sound-chat': {
+      id: '/sound-chat'
+      path: '/sound-chat'
+      fullPath: '/sound-chat'
+      preLoaderRoute: typeof SoundChatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/r/$roomId': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SoundChatRoute: SoundChatRoute,
   RRoomIdRoute: RRoomIdRoute,
 }
 export const routeTree = rootRouteImport
