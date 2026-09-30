@@ -1684,3 +1684,336 @@ explicit file paths throughout, and `vendor/ggwave.js` was re-measured at
 5. **Do not read "0 errors" as "no warnings."** anti-slop is at **170 warnings
    with zero headroom** — any code added in Phase 4 must be counted against it.
 6. `device-96000` is bistable; assert nothing about its decode count.
+
+---
+
+## Phase 4 — The Gauntlet (subagent-driven adversarial hardening)
+
+Session of 2026-09-30. Started from `21250d1` with a clean tree. Phase work is
+committed as **`1f125c2`**, and a follow-up test-determinism fix as **`a70e61b`**.
+30 files changed, +10645 / −136, every one under `src/lib/sound-chat/**`,
+`src/components/sound-chat/**` or `prompts/sound-chat/**`.
+
+This is the phase the master plan describes as "a loop, not a checklist", and it
+used the most aggressive subagent deployment of the feature: **eight specialized
+adversarial subagents, one per scenario category, each with full liberty to
+brainstorm and discover beyond its seed list.** No subagent was given a bounded
+question. Three more were used later for repair work (types, formatting, test
+determinism).
+
+### Start state, re-measured before anything was changed
+
+The Phase 3V log's numbers were **reproduced exactly**, not trusted. Nothing in
+the start state was wrong, which is itself the finding worth recording: the
+Phase 3V entry was accurate about everything this phase built on.
+
+- `git rev-parse HEAD` = `21250d12dbbfeef2c8406b87ba4ae05473e12c22`;
+  `git status --short` **empty**.
+- Vendored artifact **147139 B**, SHA-256
+  `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`,
+  **0 CR bytes**, `node --check` exit 0.
+- `tsc --noEmit` root **exit 0**; `worker/` **exit 0** with `git status --short
+  -- worker` and `git diff --stat -- worker` both **empty**.
+- `pnpm test` → **59 files / 997 tests passed** (30.21 s).
+- `vitest run src/lib/sound-chat src/components/sound-chat` → **45 files / 876
+  tests** passed.
+- `pnpm run lint` → **exit 0**, 2 pre-existing `react-refresh` warnings, both in
+  `src/components/husk/**` (files this feature does not own).
+- `lint:anti-slop` → measured with `oxlint --type-aware --format=json`, because
+  the script prints no summary line: **170 warnings, 0 errors, 29 files
+  carrying diagnostics, 80 files scanned.** One correction to the Phase 3V
+  entry's phrasing, below.
+- `pnpm run build` → exit 0; entry `index-DjSgDZ2C.js` **307779 B raw** /
+  94809 B gzip (node zlib 9), containing no occurrence of `ggwave` and none of
+  `sound-chat-screen`. Chain: `sound-chat-B7bMrGKd.js` 1278 B →
+  `sound-chat-screen-B9zJGPfF.js` 70102 B → `ggwave-Cm_DI0UB.js` 147139 B,
+  byte-identical to the vendored file.
+- Harness `vite build` → exit 0; `ggwave-Cm_DI0UB.js` 147139 B, byte-identical.
+- Playwright (real CSP) → **58 passed** (4.2 m), 55 `[matrix]` lines, 0 not
+  `pass`, `[csp] real-csp samples=92160 violations=0`.
+
+### What each subagent found
+
+Severity: **C** critical, **H** high, **M** medium, **L** low. Every row carries
+an explicit decision, per Section 10.4.
+
+| # | Sev | Finding | Class → decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **C** | **One partial ACK transmission burned the sender's entire attempt budget.** `#onAckFrame` had no dedupe and the codec redelivers every block 2–4×, so each redelivered *partial* ACK re-entered `#transmitBlocks`. Measured: one ACK transmission cost `retries = 2` byte-identical retransmissions scheduled in the same tick (so they summed at the speaker) and the sender ended `failed` at `attempts = 3` while the peer assembled the whole note. | **Real bug** → **fixed**. ACKs are deduped by `(msgId, mask)` for the message in flight (`#handledAcks`), cleared wherever `#outbound` is cleared or replaced. A genuinely *changed* mask still gets through. |
+| 2 | **C** | **`#onChannelQuiet` stacked the owed ACK and our own queued note on the same air.** The ACK plays at `start(0)` (now) and the pump then schedules our block at `currentTime + 0.05`. Measured: 2 blocks, `overlaps = true`, second starting 50 ms after the first; the sender then never resolved because its ACK landed inside the overlap. | **Real bug** → **fixed**. `#attemptAck()` now returns whether it transmitted, and `#onChannelQuiet` sends the ACK alone and lets the next quiet moment re-enter the pump. |
+| 3 | **C** | **A reply owed while the tab was hidden was stranded for ever.** `#onVisibility` never called `#attemptAck`; `TRANSMIT_BEGIN` is refused in `hidden_hold`, and the quiet timer that could have retried had already fired. Measured: `acksSent = 0`, the sender burned all three attempts and reported `failed` for a note sitting delivered on screen. | **Real bug** → **fixed**. Becoming visible flushes an owed ACK before anything of ours. |
+| 4 | **H** | **A completed 2-block message put a *second* ACK on the air carrying the stale mask.** The `partialAck` timer armed against block 0 was never cleared when the message completed ~1.9 s later. Read off the wire: masks `[0b11, 0b01]`. Cost: a wasted 1.92 s block per two-block message, and it could make the sender retransmit a block it had already sent. | **Real bug** → **fixed** via `#clearPartialAck()` in the `delivered` and `conflict` cases — deliberately **not** in `duplicate`, because a duplicate is exactly what the codec emits when it re-hears block 0 before block 1 arrives, and clearing there cancelled the very timer the answer depends on (found and fixed within the same round). |
+| 5 | **H** | **`PARTIAL_ACK_DELAY_MS` was sized for a one-block sender.** A two-block sender's feed is shut for 3840 + 500 ms, so the fixed 2220 ms delay put the answer 150 ms *inside* a window that cannot decode; the sender had to retransmit all 84 bytes. | **Real bug** → **fixed**. The delay scales with the block count it answers (`#partialAck` now carries `blockCount`). |
+| 6 | **H** | **One crafted 64-byte block killed a live pairing handshake — with no code, no recording and no prior session.** `session.ts` mapped every `auth-failed` to `#onPairRejected()`, and an unpaired codec has no peer salt, so *every* AEAD frame is `auth-failed`. A block with `byte0 = 1` and `byte4 = 1` — two non-zero bytes — was enough. Measured on both roles: pairing `failed`, the copy blamed the other device's code, the genuine peer's real PAIR frame refused afterwards, and `#beginPairing` refusing anything but `idle`, so the session could never re-pair. | **Real bug** → **fixed**, and this is the finding that changed the protocol's vocabulary. A rejection is now only a *conclusion* when it is one: `protocol.ts` returns a new `pair-key-failed`, reachable **only** by a well-formed PAIR frame whose key check failed, and only that ends a handshake. Everything else stays `auth-failed` = "heard and unreadable" (P5/P6). The legitimate wrong-code diagnosis is preserved and still tested. |
+| 7 | **H** | **`openSoundChatCodec` leaked a ggwave instance slot on a half-satisfied allocation.** `tx` and `rx` were both `init()`ed, and a throw when one returned −1 freed neither. Measured: 3 fillers then the block verbatim → `tx = 3, rx = -1`, and after freeing the fillers the module was left at `0,1,2,-1`. The module holds four slots and `init()` returns `-1` when full, so a dropped slot is gone for the page. | **Real bug (latent-unreachable from the product)** → **fixed**. A succeeded id is freed before the throw. |
+| 8 | **H** | **A wrong payload *type* latched a healthy module dead.** `encode(new Float32Array(8))` reached embind, raised `BindingError`, and `#guard` reported a module death — while the module encoded normally afterwards. The file's own header promised "every misuse guard runs before that latch", which was false for the payload's type. | **Real hole in the stated contract** → **fixed**. Guarded by a byte-array predicate *outside* `#guard()`, so `state` stays `ready` and the next legitimate call succeeds (Section 10.1 class 10). |
+| 9 | **H** | **The retry status line quoted the wrong note's attempt count.** `attempts={state.outbound.at(-1)?.attempts ?? 0}` took the *newest* row, which for a queue of four had never been transmitted. Measured: note "one" on its 2nd attempt rendered "attempt 1 of 3". Single-note sessions were correct, which is why nothing caught it. | **Real bug** → **fixed**; the count now comes from the row that is actually `sending`. |
+| 10 | **H** | **The one notice that reports a real channel fact was never announced.** `HEARD_UNREADABLE` maps to no transport state and no copy, so "a transmission was heard, but this pairing code cannot read it" existed only as a bare `<li>`. Measured: the `role="status"` line was byte-identical before and after. The code comment claimed such events "are announced where they happen" — true for a listener error, false for this one. | **Real bug (a11y)** → **fixed**. `NoticeList` is a polite `role="status"`. A pre-existing pin in `deep-p3-render.test.tsx` had asserted the *absence* of every live-region attribute here, so it was **inverted**, with the reason recorded in the test. |
+| 11 | **H** | **The documented pairing residual escalates to forgery.** The plan and three log entries said an attacker holding the code *and* a prior recording can "occupy one pairing slot" and that "nothing is forged". Measured: after the responder adopts a recorded salt, the same attacker **mints frames the responder renders as authentic**, and reads what the user sends (its salt went out in the PAIR answer). It is a full session MITM for the responder, not a denial. | **Doc error, understated** → **corrected in the master plan**, both in Section 4 and in the Section 3 hard-limits bullet. The claims that *do* hold are kept and stay pinned: the genuine peer is refused rather than silently paired, no recording crosses into a later session, and the initiator is fully protected. |
+| 12 | **M** | Four `close()`/`.catch` guards existed with **no test that could fail**: deleting `teardownAudio`'s `.catch`, the error-path `.catch` in `createAudioContext`, `SoundChatCodec.close()`'s idempotency, and the captured-`document` guard in `onVisibilityChange` each left the whole suite green. | **Real (test) bug** → **fixed**. All four now killed by a process-level `unhandledRejection` trap and by counting `free()` calls. `close()` on an already-closed context is idempotent, and the real-Chromium double teardown is asserted independently so "no leak" cannot pass vacuously. |
+| 13 | **M** | The over-strict-guard test fed 1024/2048/3072-sample chunks of **silence**, so a guard that silently returned `null` — legal length, no decode — passed it. | **Test bug** → **fixed**: the new test carries a real block through those chunk sizes. |
+| 14 | **M** | `load-ggwave.ts` claimed the module is instantiated once per page session; only the *factory* is cached. Measured: 1 `begin()` + 2 `restart()` = 3 modules × 16 MiB, with no `destroy`/`terminate` on the module. | **Doc error** → **corrected**, with the reason the non-cached behaviour is *deliberate* written down: one module per codec keeps the 4-instance ceiling per-codec, so a restart cannot push a live session to `init() === -1`. |
+| 15 | **M** | The `no-peer` pairing sentence said "make sure the other device is listening" — a cause nothing can observe, and wrong precisely when the user's own input is dead. Its sibling `no-confirmation` had already been reworded for this reason; only one of the two was fixed. | **Copy** → **fixed**, reworded to the sibling's shape. |
+| 16 | **M** | One-shot `AudioBufferSourceNode`/`AudioBuffer` are never disconnected (97 of each over a 24-message session, 0 released). | **By-design, correct per the Web Audio spec** (a finished one-shot is engine-released) → **no change**, now documented so it does not read as a leak. |
+| 17 | **M** | The browser matrix is CPU-contention-flaky near the decode threshold: five `decode`-expectation variants failed while a vitest suite ran concurrently, and all five passed alone. | **Latent** → **accepted, and now stated as a rule**: run the harness on an idle machine. No marginal expectation was changed. |
+| 18 | **L** | `device-96000` decoded 2× this run and 0× on four earlier Phase 3V runs. | **Bistable, as Phase 3V recorded** → nothing asserted about its decode count. |
+| 19 | **L** | `deep-crypto-replay.test.ts:300` uses `frameBytes.includes(byte)` against 16 random HMAC bytes. Measured false-failure rate **39.84 %** over 20 000 trials. A sibling test already called this class of check meaningless. | **Real (test) bug** in a file this phase does not otherwise own → **reported, not fixed**; the new security suite uses an 8-byte substring search instead. |
+
+### The carried residual is CLOSED — the point of subagent 3
+
+Since Phase 2V the harness has driven `spike/audio-io`'s `attachCapture`, a
+*second* implementation of the capture pipeline, so `startListening`'s error
+split and `transmitAndPause`'s pause arithmetic were exercised by **nothing** in
+a real browser. That is now closed by driving the product's own functions in
+real Chromium under the real CSP (`harness/product-page.ts` +
+`harness/gauntlet-product-capture.spec.ts`, 7 tests). Measured:
+
+```
+[product] capture chunks=126 decodes=2 firstMs=2081 trackRate=44100
+[product] self-transmit-hazard decodes=3 pausedWindow=-1s   transmittedMs=1920
+[product] self-transmit-paused  decodes=0 pausedWindow=2.429s expected=2.42s skipped=112
+[product] two-block            decodes=0 pausedWindow=4.349s expected=4.34s skipped=202 (window=180)
+[product] error-split consumer  consumerErrors=2 moduleErrors=0
+[product] error-split codec     moduleErrors=1 consumerErrors=0
+[product] muted-input           decodes=0 errorKind=none paused=false
+```
+
+Hazard and mitigation differ by **one argument** (`pauseSeconds`); the tail is
+counted once (2.429 s, not 2.92 s); the two-block skip of 202 against a 180-frame
+window proves the second block is inside it. The error split is now *measured*:
+a throwing consumer produces `consumerErrors=2, moduleErrors=0` and the feed
+keeps running, while a codec failure produces `moduleErrors=1` and stops it.
+Muted input returns on its own clock with no error and nothing paused — the UI
+shows "nothing received" rather than hanging.
+
+### Test determinism, found by running the battery after committing
+
+Rule 3 commits first and verifies after, which is how this surfaced. One
+full-suite run failed: `deep-p3b-acoustic.test.ts` "timed out waiting for…". The
+same file passed **6/6 in isolation** and **1 in 4** under the full concurrent
+run. Root cause: `until()` waited a fixed number of `setImmediate` **turns**,
+which is not time — under CPU contention the budget is exhausted before a chain
+that hands work to `crypto.subtle` and libuv's threadpool has finished.
+
+**Fixed** by giving every condition-wait a 20 s wall-clock deadline checked
+inside the loop, keeping the turn counter as a backstop so a spinning loop still
+terminates and the `throw` is unchanged: **+76 lines, zero deletions**, no
+assertion weakened, skipped or removed. The fixed-turn `settle()`/`drain()`
+helpers were deliberately left alone — bounding those by wall clock would change
+what they are for. Verified **7 consecutive green full-suite runs** afterwards
+(4 primary, 3 subagent) against 1-in-4 before.
+
+### Claims corrected this phase
+
+1. **"An attacker … can occupy a displayer's pairing slot … nothing is forged"
+   (Section 4, restated through Phase 2V and Phase 3V) — FALSE and withdrawn.**
+   Measured: the attacker can forge frames the responder renders as authentic
+   and read what the user sends. It is a full session MITM for the responder.
+   The plan now says so in Section 4 and in the Section 3 hard-limits bullet.
+2. **"`decode()` on an invalid instance id aborts the module" (deep-dive-shaped
+   claim carried in `codec.ts`) — FALSE.** Measured: `decode(-1)` and
+   `decode(<freed id>)` both return empty; only `encode` aborts, and it rejects
+   with a bare *number* (an address, not a code). `codec.ts` now records the
+   asymmetry and why `init()` results are checked where they are obtained.
+3. **"The module is instantiated once for the whole session"
+   (`load-ggwave.ts`) — FALSE**, and the opposite is now the deliberate design.
+   Corrected with the reason.
+4. **"Every misuse guard runs before the latch" (`codec.ts` header) — was
+   FALSE** for the payload's *type*. Fixed, and the header's claim is now true.
+5. **"The module is not instantiated once per page, so a restart leaks 16 MiB" —
+   the leak reading was right, the conclusion was not.** The codec *is* closed on
+   every teardown path in `ui/controller.ts`; what is left is a module the GC
+   reclaims. Documented rather than "fixed", because caching one module would
+   make the 4-instance ceiling page-wide.
+6. **"`provenance.test.ts` machine-checks the artifact" — true, and now
+   *proven falsifiable* rather than assumed.** A size-preserving one-byte flip of
+   a copy in a shadow tree makes it fail (hash + blob id); appending
+   `new Function` makes three assertions fail. Control: 6/6 green. The test is
+   not unfalsifiable.
+7. **The Phase 3V entry's "57 of the 170 are inside the vendored artifact.
+   Sound Chat's own share is 89"** — both figures are right, but "its own share"
+   reads as *excluding* the artifact when it means *the whole namespace*
+   (57 artifact + 32 elsewhere in the namespace = 89). A first pass here
+   mis-parsed it the same way; recorded because the phrasing is a trap.
+8. **"The status line says the next phase is Phase 3V"** — stale; Phase 3V was
+   complete and logged at `21250d1`, and Phase 3V's entry explicitly deferred the
+   plan's phase ledger to this phase. Updated.
+9. **"`pnpm run lint:anti-slop` prints a summary"** — it prints none. All counts
+   here come from `oxlint --type-aware --format=json` plus `number_of_files`.
+
+### Accepted limits, with the reason stated
+
+1. **The responder-side pairing freshness residual remains open, and is now
+   described accurately rather than favourably.** Closing it requires inverting
+   the handshake (the displayer speaks first and repeats its PAIR until
+   answered) — a larger protocol change than this phase should ship. Its
+   *severity* is now stated correctly (session MITM for the responder, not a
+   denial), which is the part that matters for a user reading the docs.
+2. **Phase 4 subagent 3's copy finding that a second Sound Chat tab is the
+   likely cause of every unreadable block** — no product sentence names it. The
+   existing copy is *true* ("this pairing code cannot read it") and the
+   permission pre-prompt already warns that a recording can occupy a pairing, so
+   this is a **gap, not a lie**. Recorded for Phase 5 copy work rather than
+   patched here: adding a line to `permission.limits` is a judgement call about
+   what to tell a first-time user, and this phase's remit was correctness.
+3. **`vite build` still wipes the Playwright evidence directory** — the harness
+   `outDir` is an *ancestor* of Playwright's `outputDir`. Reproduced with a
+   canary file. The fix is a **config** change, which is off limits, so it is
+   recorded with its two-line shape rather than applied.
+4. **`pnpm run preview` is broken** (`Cannot find module 'dist/server/server.js'`)
+   because the plugin looks in `dist/` while Nitro emits `.output/server/`.
+   **Pre-existing, unrelated to Sound Chat**, but it blocked live HTTP
+   verification of two serving claims; those were verified from
+   `public/_headers`, `.output/public/_headers` and the production site instead.
+5. **`deep-crypto-replay.test.ts`'s 39.84 %-flaky assertion** — reported, not
+   fixed; the file is a Phase 2V artefact and rewriting its intent is not this
+   phase's call.
+6. **`src/lib/husk/store.test.ts`'s `settle()` flakiness** — off limits, as
+   Phase 2V recorded. It did not fail in any of this phase's runs.
+
+### Deployment — deliberately NOT done, and why
+
+The human flagged that the deployed version is very old, and offered the
+Cloudflare docs, the two worker URLs, and authorisation to redeploy. Measured
+first, then **a decision not to redeploy**, recorded here as Rule 4 requires:
+
+- `https://ns81000-husk.ns8pc1.workers.dev/` → **200**, but its entry is
+  `assets/index-BYe4iDMa.js` (this build emits `index-3n-6PTTs.js`), the page
+  contains **no Sound Chat link**, and `/sound-chat` **404s**. It predates the
+  feature entirely. `https://husk.ns8pc1.workers.dev/` → **404**.
+- The production `/assets/*` header is already correct and was verified live:
+  `Cache-Control: public, max-age=31536000, immutable`, `Content-Type:
+  text/javascript`, `CF-Cache-Status: HIT`. The codec will inherit that rule for
+  free, exactly as the plan predicted.
+- **Not redeployed**, because every gate in this phase is local (`tsc`, vitest,
+  both builds, real Chromium under the real CSP) and none of them needs a live
+  site; the tree was mid-flight with eight subagents editing it, which is the
+  worst moment to publish; and deployment is an outward-facing, hard-to-reverse
+  action that belongs to Phase 5 sign-off. `wrangler login` also needs real
+  credentials, which are not available unattended.
+
+**Consequence, stated plainly:** the live site is unchanged and still does not
+have Sound Chat. Nothing in this phase is deployed.
+
+### Verification battery — this session's own numbers, sequential
+
+Run strictly sequentially, nothing else heavy in parallel. Filled in from the
+runs, not copied from anywhere. `tsc`, `pnpm test`, the subset run, both lints,
+the app build, the harness build and Playwright were all run on the **committed**
+state.
+
+| Step | Result |
+| :-- | :-- |
+| `pnpm exec tsc --noEmit` (root) | **exit 0**, 0 diagnostics |
+| `pnpm exec tsc --noEmit` (`worker/`) | **exit 0**; `git status --short -- worker` and `git diff --stat -- worker` both **empty** |
+| `pnpm test` | **68 files / 1215 tests passed**, 0 failed. Repeated **4× consecutively green with identical counts** after the determinism fix (plus 3 more from the repairing subagent = 7). Before this phase: 59 / 997. |
+| `vitest run src/lib/sound-chat src/components/sound-chat` | **54 files / 1094 tests passed**. Repeated **7× green** on the committed state. Was 45 / 876. |
+| `pnpm run lint` | **exit 0** — 0 errors, **2 pre-existing** `react-refresh` warnings, both in files this feature does not own |
+| `pnpm run lint:anti-slop` | **exit 0** — **170 warnings, 0 errors, 29 files carrying diagnostics, 84 files scanned** (was 80). **57 in the vendored artifact, 89 across the Sound Chat namespace.** The ceiling held exactly, with **zero net new diagnostics** despite ~2000 lines of new test code. One new diagnostic appeared mid-phase from a `typeof` guard in `codec.ts` and was removed by stating the contract as a byte-array predicate instead. |
+| `pnpm run build` | **exit 0** |
+| entry chunk | `index-3n-6PTTs.js` **307779 B raw** — **byte-identical to the `21250d1` baseline**; 94810 B gzip (node zlib 9) |
+| **`ggwave` on the landing path** | **no** — the entry contains no occurrence of `ggwave` (string search, not size) |
+| **`sound-chat-screen` on the landing path** | **no** — chain: `sound-chat-B6ONqpyP.js` 1278 B → `sound-chat-screen-Ckq5L_x9.js` **70980 B** (was 70102) → `ggwave-Cm_DI0UB.js` 147139 B |
+| MIT licence shipped | present in `sound-chat-screen-Ckq5L_x9.js` |
+| `src/routeTree.gen.ts` | **clean** — regenerated by the build, never hand-edited |
+| harness `vite build` | **exit 0**; `ggwave-Cm_DI0UB.js` **147139 B**, **byte-identical** to the vendored file (compared byte-for-byte) |
+| harness Playwright (real CSP) | **66 passed, 0 failed, 0 skipped** (6.5 m) — 58 before this phase, +8 new. `[harness] csp-mode=real server-csp-has-unsafe-eval=false`; `[csp] real-csp samples=92160 violations=0`; `[browser-tx] pass unique=1`; **55 `[matrix]` lines, 0 not `pass`**; 7 `[product]` lines above |
+| self-reception contract | `self-transmit-live decodes=3` vs `self-transmit-pause-listening decodes=0 skipped=112` and `-noisy decodes=0 skipped=112` — unchanged |
+| vendored artifact (re-verified last) | **147139 B**, `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`, **0 CR bytes**, `node --check` exit 0 |
+| WebRTC / STUN / TURN | **0 real hits** (the 5 matches are the word "turns" in turn-taking prose) |
+| emoji sweep | **0** |
+| "silent" / "inaudible" in UI copy strings | **0** (15 matches, all in code comments and test names) |
+| `TODO`/`FIXME`/`XXX`/`HACK` | **1**, a regex inside a test |
+| storage APIs in production code | **0** |
+| `git status --short` at the end | **empty** — clean tree, nothing generated tracked |
+| scope of `git diff 21250d1..HEAD` | 30 paths, **all** under `src/lib/sound-chat/**`, `src/components/sound-chat/**`, `prompts/sound-chat/**`. `worker/**`, `src/lib/husk/**`, `src/components/husk/**`, `src/routes/**`, `src/routeTree.gen.ts`, `package.json`, every root config, `public/**`, `tools/**`, `e2e/**`, `live-tests/**`, `prompts/audit/**`, `prompts/app-spec/**`: **0 lines**. |
+
+**Bundle delta, stated honestly.** The entry chunk's **raw** size is
+**byte-identical** at 307779 B: a page that never opens Sound Chat pays exactly
+what it paid before this phase. The gzip figure is 94810 B against Phase 3V's
+94809 B, **+1 B** on an identical raw size — a 1-byte difference at constant
+raw size points at the zlib build, not the code, and is reported as a
+measurement rather than a code delta. The lazily-fetched screen chunk grew
+70102 → 70980 B (**+878 B** on demand), which is this phase's real UI work.
+
+### Files touched
+
+**New — eight adversarial suites** (`src/lib/sound-chat/`): `gauntlet-codec`
+(36), `gauntlet-timing` (29), `gauntlet-security` (24), `gauntlet-seams` (31),
+`gauntlet-resources` (21), `gauntlet-provenance` (7); `spike/degrade-acoustic`
+(11) and `spike/product-path-coverage` (6); `src/components/sound-chat/gauntlet-ux`
+(45). **Plus the harness** `harness/product-page.ts`,
+`harness/gauntlet-product-capture.spec.ts` (7),
+`harness/gauntlet-teardown.spec.ts`, `harness/teardown-proof.ts`.
+
+**Edited product code:** `session.ts` (ACK dedupe, the quiet-moment turn, the
+hidden-tab flush, the partial-ACK lifecycle, the scaled delay, the pairing
+verdict), `protocol.ts` (`pair-key-failed`), `codec.ts` (slot leak, payload-type
+guard, two doc corrections), `audio-io.ts` (one-shot node comment),
+`load-ggwave.ts` (module-lifetime comment), `pairing.ts` (the `no-peer`
+sentence), `sound-chat-screen.tsx` (the attempt count, the live region).
+
+**Edited tests/harness:** `protocol.test.ts`, `deep-crypto-replay.test.ts`,
+`deep-p3-render.test.tsx` (a pin inverted), `ui/deep-p3b-acoustic.test.ts` (the
+wall-clock deadline), `harness/matrix.ts` (+16 variants, `browser` flag),
+`harness/payloads.ts`, `harness/fake-mic.spec.ts`, `spike/degrade.ts`
+(`musicLike`/`addMusic`, `sweepTone`/`addSweep`, `overlayOffset`),
+`spike/matrix.test.ts` (timeout only).
+
+**Edited docs:** `prompts/sound-chat/SOUND_CHAT_MASTER_PLAN.md` — the status
+line, the Section 3 hard-limits bullet, and the Section 4 residual (rewritten
+upward in severity).
+
+**Untouched, as required:** `worker/**` (zero diff), `src/lib/husk/**`,
+`src/components/husk/**`, `src/routes/**` including `sound-chat.tsx`,
+`src/routeTree.gen.ts`, `src/styles.css`, `package.json`, every root config,
+`public/**`, `tools/**`, `e2e/**`, `live-tests/**`, `prompts/audit/**`,
+`prompts/app-spec/**`, and the vendored artifact's bytes.
+
+### Process notes worth keeping
+
+- **Never handed a formatter a directory.** Every `prettier` invocation in this
+  phase used explicit file paths, and `vendor/ggwave.js` was re-measured at
+  147139 B / `B097B329…577F` after each batch. It never moved.
+- **Subagents were given real liberty and used it.** They wrote ~2000 lines of
+  tests I did not ask for by name, found a 39.84 %-flaky assertion in a file
+  this phase does not own, and reported a *pre-existing* broken `pnpm run
+  preview` that has nothing to do with Sound Chat. Two of them also reported
+  honestly that they had seen my concurrent edits and had not paper over the
+  consequences — one of which (a stale fragment left by my own edit) was real
+  and is now gone.
+- **Every finding pin was inverted, not deleted.** Eleven adversarial tests
+  asserted the *bugs* this phase fixed. Each now asserts the fix, with a comment
+  naming what it used to assert and why. A pin that is deleted rather than
+  inverted is a silent regression allowance.
+- **The battery runs after the commit, not before.** That ordering is the only
+  reason the test-determinism defect surfaced: it appeared in the run on the
+  committed tree, not in the run on the working tree.
+
+### Carried to Phase 4V
+
+1. **The two commits are the unit of re-examination.** `1f125c2` changed
+   `session.ts`'s turn logic in four interlocking ways (ACK dedupe, the
+   quiet-moment early return, the hidden-tab flush, the partial-ACK lifecycle
+   plus a scaled delay). Interaction effects between them are the highest-value
+   thing left to check — in particular whether the `#onChannelQuiet` early return
+   can ever *strand* an outbound note now that the pump is no longer called on
+   the same pass.
+2. **The new `pair-key-failed` reason** is new protocol vocabulary. Confirm every
+   consumer of `FrameRejection` handles it, and that no path still treats a
+   generic `auth-failed` as a pairing conclusion.
+3. **The ack dedupe set** is cleared in five places by hand. Verify no path
+   leaves it populated across a message boundary (it is bounded per message, and
+   a stale entry would only ever *suppress* a legitimate ACK).
+4. **`gauntlet-ux.test.tsx` is 45 tests and `gauntlet-timing.test.ts` is 29**;
+   both are long single-session simulations. Phase 4V should check they are not
+   load-sensitive in a way the wall-clock deadline only papers over.
+5. **The three human-owned findings remain off limits**: the composer/pairing
+   focus indicator at 1.13:1 (`src/styles.css`), white on
+   `.btn-tactile-danger`'s top gradient stop at 3.76:1
+   (`src/components/husk/primitives.tsx`), and the `PermissionPrompt` controlled
+   refactor. Fifteen further accessibility findings (W-1, W-3…W-8, W-10, W-12,
+   W-13) are carried forward unfixed. **W-3 and W-7 interact with the live
+   region this phase added** and are worth re-reading.
+6. **Not deployed, and still not deployed.** See the decision above; Phase 5
+   owns the first real `wrangler deploy`.
