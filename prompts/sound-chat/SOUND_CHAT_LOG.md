@@ -2017,3 +2017,258 @@ upward in severity).
    region this phase added** and are worth re-reading.
 6. **Not deployed, and still not deployed.** See the decision above; Phase 5
    owns the first real `wrangler deploy`.
+
+---
+
+## Phase 4V — Deep verification of Phase 4 (The Gauntlet)
+
+Session of 2026-09-30 / 2026-10-01. Started from `86bb52c` with a clean tree.
+Work committed as `090e149`, `6710442`, `dc8c78c`, `34340ac`, `f770ee9`,
+`3b1113e`, `1c6f6c2`, `7e50ad2`, `4ab464d`, `31c0f7e`, `758508f`, `38d51ca`.
+
+**Verification only.** No new feature. Nothing deployed. Rule 14's three
+subagents were all run, and one of them — the deep-diver — was run twice.
+
+### A process failure of my own, recorded first
+
+Rule 14 makes three subagents mandatory for a verification phase. I ran **none**
+of them for the first several hours of this phase: I found the CRITICAL below on
+my first read of `1f125c2`, then simply kept executing instead of coordinating.
+The primary agent coordinates; the subagents do the digging. Collapsing both into
+one thread is why my early passes were narrower than the rule requires and why
+several defects here were found one flake at a time, reactively, instead of in the
+sweep the rule asks for. The three subagents below were run properly, late.
+
+### The headline: a CRITICAL Phase 4 recorded as fixed was not fixed
+
+Phase 4's finding 2 states: *"`#onChannelQuiet` stacked the owed ACK and our own
+queued note on the same air… **Real bug** → **fixed**."* It was not fixed.
+
+`1f125c2` moved `#attemptAck()` ahead of the outbound block in `#onChannelQuiet`
+and made it return whether it transmitted. What it left as the guard for the rest
+of the turn was `if (this.#currentState() !== "listening") return;` — and that
+guard **can never fire after a successful attempt**, because `#attemptAck` ends in
+`TRANSMIT_DONE_UNACKED`, which puts the machine straight back in `listening`
+(`transport-machine.ts:112`). So the owed ACK still played at `start(0)`, the
+queued note was still scheduled `TRANSMIT_LEAD_SECONDS` (50 ms) behind it, and the
+two still summed at the speaker.
+
+**Measured, against the real codec and a room that sums overlapping schedules:**
+`expect(overlaps(air)).toBe(true)`. Two tests in `gauntlet-timing.test.ts` were
+supposed to have been *inverted to pin the fix*; both were still asserting the
+defect. The Phase 4 process note — *"Every finding pin was inverted, not deleted.
+Eleven adversarial tests asserted the bugs this phase fixed"* — was **false for
+these two**. The pins were green because they were red tests wearing the fix's
+name.
+
+### The fix, and the two other doors the same defect had
+
+The honest question is not "where is the guard" but "can the session know whether
+its own speaker is still talking". The transport machine cannot: it reports
+`listening` the moment an un-acknowledged transmission is *scheduled*.
+
+`ListenHandle` now exposes `pausedUntilSeconds` — the instant the Rx pause
+expires. That pause is measured on the AudioContext clock and already covers the
+whole transmit window plus the measured 0.5 s tail, so it *is* the answer, read as
+a fact rather than recomputed (which is exactly how Phase 2V's pairwise
+double-count shipped). On top of it: `#speakerBusy()`,
+`#rearmQuietWhenYourSpeakerIsFree()`, `#airIsOurs()`. A transmission that finds
+our speaker busy is **deferred, never dropped** — the quiet timer is re-armed for
+the instant the feed reopens, because nothing else can re-arm it (our own audio
+pauses our own Rx feed and so produces no decodes for `#noteHeard` to hear).
+
+The deep-diver's second pass then found the fix had **three more doors**, each
+closed in turn:
+
+| # | Sev | Finding | Class → decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **C** | The stacking defect above, still live. | **Real bug** → **fixed** as above. Two pins asserting the defect inverted, each recording what it used to assert. |
+| 2 | **H** | `#transmitPairFrame` was **never gated** on `#airIsOurs()` — the commit message and the code comment both claimed it was; only `#transmitBlocks` was. Measured: a hide/show inside the PAIR window put two byte-identical PAIR blocks 1 s apart on the air, which sums them, and the enterer's confirmation then timed out against a peer 1.92 s away. | **Real bug** → **fixed**. The claim in the commit message was false; the comment now describes what the code does. |
+| 3 | **H** | A note sent in the ~700 ms between `pairing: paired` and the displayer's PAIR answer **preempted the answer outright**, and a refusal consumed `#pendingPairReply` without checking whether the answer had played. The displayer went on reporting itself paired and accepting sends; the enterer failed with "the other device did not answer". | **Real bug** → **fixed**. The flag is consumed only on a real play, raised *before* the air is asked for (so the held turn can see it), and `#pump` yields to an owed answer. |
+| 4 | **H** | `#onVisibility` was a **third** door into the turn and the fix had closed only the other two. A resumed note took the air on `VISIBLE`, the owed answer stayed set with nothing armed, and no path in the session re-sends a PAIR answer. | **Real bug** → **fixed**. Found only because the deep-diver's second pass attacked the *fixes* by a different route than the first pass's tests. |
+| 5 | **M** | `#transmitPairFrame` checked the air **before** its only `await`. Two calls overlapping by one threadpool round trip both cleared the gate and both reached `#play`: measured two byte-identical PAIR blocks at the same room-clock instant. | **Real bug** → **fixed**. The check is repeated after the seal, which is also where a refusal must restore the flag. |
+| 6 | **M** | `#moduleFailed` and `restart()` never cleared `#pumping`, so a pump parked in `buildMessageFrames` when the codec died refused **every** later pump. Measured: a restarted session accepted `send()`, published `queued`, and put nothing on the air for the rest of its life. | **Real bug** → **fixed**. A pin in `deep-p3b-acoustic` asserted `busy === true` here — it was pinning the defect, and is inverted with the reason recorded. |
+| 7 | **M** | The re-arm guard counted `#outbound`, `#pending` and `#pumping` but not the two **owed answers**. Those are the only deferrals with no second way back. | **Latent-unreachable** → **fixed anyway**, plus both invariants the guard silently depended on are now pinned by tests. |
+| 8 | **M** | A `#notify` consumer calling `stop()` from the pump's own `sending` event made the pump read a cleared `#outbound` — a `TypeError` inside an `async` method every call site reaches with `void`, so an unowned rejection. | **Real bug** → **fixed**. Pre-existing, found by targeting the fix. |
+| 9 | **M** | A caller-supplied `keys` that is not `PairingKeys` escaped the same way, from `#transmitPairFrame`. | **Real bug** → **fixed by reporting**, not by validating the shape: a duck-type guard cost 3 anti-slop diagnostics against a ceiling with zero headroom, and reporting where the failure actually happens is both cheaper and more honest. |
+| 10 | **M** | `drain.ts`'s floor loop had neither the turn cap nor the deadline that bounded the loop above it. | **Real bug (in a test)** → **fixed**. |
+| 11 | **M** | The drain's `moved` gate — "skip the floor when the signature has not moved" — was wrong, and wrong in a way that looked like the fix. Every `activity()` here counts what a **completed** step changed, so a job already on libuv and not yet delivered is invisible to it. "Nothing has landed yet" is not "nothing is in flight", which is the exact state the floor exists for. | **Real bug (in a test)** → **fixed**; the floor is unconditional again, and the two suites that genuinely cannot afford 25 ms a call say so explicitly rather than the shared drain behaving differently depending on what moved. |
+
+### The test-determinism defect, and the measurements behind it
+
+Phase 4's `a70e61b` gave the two long simulations a wall-clock deadline — but it
+gave it to the **condition-waits**, while the **drains** (`settle()` in every
+harness) stayed turn-counted, and that is where the flakes were.
+
+- Measured: **256 `setImmediate` turns cost ~1 ms** uncontended — the same order as
+  one `crypto.subtle` AEAD operation, which is exactly what a drain waits for. Under
+  the full suite a queued seal waits many milliseconds while those turns still cost
+  about one, so a turn-only drain returns with the seal **still on the threadpool**;
+  the work then lands in the *next* drain, where it reads as fresh activity, and the
+  assertion in between sees a half-finished exchange.
+- **Baseline measured at `86bb52c`: 2 flakes in 7 sequential `pnpm test` runs**, each
+  on a different test. Phase 4 recorded "7 consecutive green". It does not
+  reproduce.
+- The drains were **21 local copies in 4–6 behavioural shapes** (not the "fourteen
+  in three" my own commit message claimed — corrected below), consolidated into
+  `drain.ts`.
+- That exposed **nine more tests** whose harness advanced only the fake timers. The
+  ACK deadline and the backoff are wall-clock `setTimeout`s, but the turn each
+  attempt holds open is on the AudioContext clock, so those sessions believed their
+  speaker was still busy and the attempt never happened. Each fixed where it
+  surfaced.
+- A separate, independent cause of cross-suite flakiness: **`derivePairingKeys` is
+  600 000 PBKDF2 iterations (~150 ms) on a threadpool of four shared across every
+  suite.** The deep-diver's own 19-session suite added ~3 s of pool load and tipped
+  unrelated timing suites — measured one extra full-suite failure on 2 of 3 runs,
+  against a green baseline without it. Fixed with an **injection point**
+  (`SoundChatSessionOptions.keys`), deliberately not a cache inside `crypto.ts`, so
+  P9's "no key material retained beyond the caller's closure" is untouched and the
+  production path still derives.
+
+**After this phase: 5 of 5 sequential `pnpm test` runs green, 3 of 3 subset runs
+green**, from a measured 2-in-7.
+
+### The deep-diver's verdict on the primary question, verbatim in substance
+
+The Phase 4 hand-off asked whether `#onChannelQuiet`'s early return strands an
+outbound note. Answered: **no, and that is proven by a test** — but only because
+of the re-arm, and the re-arm's guard originally did not count the owed answers
+(finding 7). The strand was real and reachable through `#onVisibility`, which the
+first fix had not closed (finding 4). The deep-diver also confirmed it could
+**not** construct the strand through the product's own protocol and capture
+pipeline, because two distinct owed answers are unreachable — and had that
+invariant held only in someone's head rather than in a test, it would have.
+
+### Documentation and artifact findings, all measured and corrected
+
+`38d51ca`. Every claim re-derived rather than quoted: the whole provenance chain
+including the upstream hashes fetched live at `060aec7`; the falsifiability of every
+`provenance.test.ts` assertion (a 1-byte truncation and a size-preserving 1-bit
+flip each make it fail); all 16 capacity and timing constants; the plan's rate
+arithmetic; the `57 + 32 = 89` anti-slop decomposition.
+
+| # | Sev | Finding | Class → decision |
+| :-- | :-- | :-- | :-- |
+| 1 | **M** | `drain.ts` documented the **retracted** behaviour of its own floor, contradicting the function it pointed at. | **Doc error** → **fixed**. |
+| 2 | **M** | `session.ts`'s header mixed two round-trip readings: 1.95 s is when the peer's ACK block *begins to sound*, not when the message resolves. "3.8x the fast path" is **1.9x**, and the partial path's real margin is **+1.3 s**, not +3.3 s. | **Doc error** → **fixed**. The constant was always right. |
+| 3 | **M** | The "150 ms" partial-ACK shortfall, stated three times, is **not derivable from the constants**. Re-derived against the harness's own clock model: **~100 ms**. | **Doc error** → **fixed**. The conclusion is unchanged; the figure now matches the model the test runs on. |
+| 4 | **M** | `gauntlet-ux.test.tsx` held `expect(X).toEqual(X)` on a pure `TextEncoder` call, with a comment calling it "the whole claim". It cannot fail. | **Test bug** → **fixed**. |
+| 5 | **M** | `deep-p3b-render.test.tsx`'s Q-4 test was named `KNOWN DEFECT` for a defect Phase 3V had already fixed, and rendered `MessageList` twice from byte-identical props — so it asserted nothing *and* misreported the code. | **Test bug + doc error** → **replaced** with the assertion it should have been: a queued note has its own row and says so. |
+| 6 | **M** | `load-ggwave.ts` still claimed the vendored SHA-256 "is meant to stay upstream's" — a Phase 1 sentence the CSP patch invalidated. | **Doc error** → **fixed**. |
+| 7 | **M** | My own commit message said 14 drains in 3 shapes; measured **21 in 4–6**. | **Doc error** → **corrected here**. A claim about my own work, made without measuring it. |
+| 8 | **L** | `deep-p3b-machine.test.ts` had a `KNOWN DEFECT` title for a fixed defect whose body was already inverted. By that file's own rule such a title is a bug report that goes red when fixed. | **Doc error** → **retitled**. |
+| 9 | **L** | `playBlockAt` / `transmit` have no product caller. | **Dead code** (class 9) → **kept with the "kept because" lines the rule requires**, and the real reason recorded: they are the reference single-block form, asserted directly by `audio-io.test.ts`. Not deleted — `transmitAndPause`'s dependence on `encode` for the pause length is documented at its own header. |
+| 10 | **L** | The master plan's status line still said Phase 4 was in progress. | **Doc error** → **fixed**. |
+| 11 | **L** | "gauntlet-ux is 45 tests" is an `it(` **site** count; vitest collects **53**, because one site sits inside a nine-iteration loop. | **Doc error** → **recorded**, not edited in place; the log is append-only. |
+
+### Claims corrected this phase
+
+1. **"Phase 4 fixed the ACK/queued-note stacking"** — it did not, and the two pins
+   that should have caught it were asserting the defect.
+2. **"`#transmitPairFrame` gates on `#airIsOurs()`"** (Phase 4V's own first commit
+   message) — false; only `#transmitBlocks` did.
+3. **"Seven consecutive green full-suite runs"** (Phase 4) — does not reproduce;
+   measured 2 flakes in 7 at `86bb52c`.
+4. **"The wall-clock fix was applied where the flakes were"** — it went to the
+   condition-waits; the flakes were in the drains.
+5. **"Fourteen drains in three shapes"** — 21, in 4–6.
+6. **"A complete message is acked in ~1.95 s … 3.8x the fast path"** — 1.95 s is
+   when the ACK block starts sounding; it resolves at ~3.90 s, 1.9x the timeout.
+7. **"150 ms inside the closed window"** — ~100 ms against the constants the test
+   runs on.
+8. **`device-96000` decodes 1** — bistable, exactly as Phase 3V recorded. This run
+   measured 1; earlier runs measured 0 and 2. Nothing is asserted about it, and
+   `harness/matrix.ts` declares `expectation: "graceful"`, so 0, 1 or 2 all pass.
+9. **Contrast** — independently re-measured with the subagent's own WCAG 2.1 +
+   OKLab implementation: `text-ink-faint` on canvas **7.79:1**, worst real pair
+   (`--danger` on `--surface`) **6.56:1**, every pair ≥ 4.5:1. **Not a defect**,
+   and not re-reported as one.
+10. **Anti-slop is "at its ceiling"** — exactly true: **170 warnings, 0 errors**,
+    29 files carrying diagnostics, 85 scanned, 57 in the vendored artifact,
+    89 in the namespace. Zero net new diagnostics despite ~2900 lines of new code.
+
+### Verification battery — this session's own numbers, sequential, on `38d51ca`
+
+Nothing heavy was ever run in parallel.
+
+| Step | Result |
+| :-- | :-- |
+| `pnpm exec tsc --noEmit` (root) | **exit 0**, 0 diagnostics |
+| `pnpm exec tsc --noEmit` (`worker/`) | **exit 0**; `git status --short -- worker` and `git diff --stat -- worker` both **empty** |
+| `pnpm test` | **70 files / 1248 tests passed**, 0 failed. **Repeated 5× sequentially, 5/5 green.** Was 68 / 1215 at `86bb52c` (+2 files, +33 tests). The baseline measured **2 flakes in 7** before this phase. |
+| `pnpm exec vitest run src/lib/sound-chat src/components/sound-chat` | **56 files / 1127 tests passed**. **Repeated 3×, 3/3 green.** Was 54 / 1094 (+2 / +33). |
+| `pnpm run lint` | **exit 0** — 0 errors, **2 pre-existing** `react-refresh` warnings, both in `src/components/husk/**` (files this feature does not own) |
+| `pnpm run lint:anti-slop` | **exit 0** — **170 warnings, 0 errors**, 29 files with diagnostics, 85 files scanned, **57 in the vendored artifact, 89 in the namespace**. Ceiling held exactly. |
+| `pnpm run build` | **exit 0** |
+| entry chunk | `index-AvOHPuUc.js` **307779 B raw** — **byte-identical to the Phase 3V and Phase 4 baselines**; **94810 B gzip** (node zlib level 9) |
+| **`ggwave` in the entry chunk** | **no** — **0 occurrences**, by string search on the built file |
+| **`sound-chat-screen` in the entry chunk** | **no** — **0 occurrences** |
+| chain | `sound-chat-DiEOqvk5.js` **1278 B** / 636 B gzip → `sound-chat-screen-DeWWqJWk.js` **71661 B** / 22393 B gzip → `ggwave-Cm_DI0UB.js` **147139 B** / 58390 B gzip |
+| emitted codec vs vendored | **byte-identical by SHA-256** (`B097B329…577F`) |
+| `src/routeTree.gen.ts` | **clean** — regenerated by the build, never hand-edited |
+| `git diff HEAD -- src/server.ts` | **empty**; exactly one `'wasm-unsafe-eval'`, zero `'unsafe-eval'` |
+| harness `vite build` | **exit 0**; `ggwave-Cm_DI0UB.js` **147139 B**, byte-identical by hash; `index-CjLFmhPu.js` 9387 B — two separate files |
+| harness Playwright (real CSP) | **66 passed, 0 failed, 0 skipped** (4.1 m). `[harness] csp-mode=real server-csp-has-unsafe-eval=false`; `[csp] real-csp samples=92160 violations=0`; `[browser-tx] pass unique=1 firstMs=1938`; **55 `[matrix]` lines, 0 not `pass`**; 7 `[product]` lines |
+| self-reception contract | `self-transmit-live decodes=3` vs `self-transmit-pause-listening decodes=0 skipped=112` and `-noisy decodes=0 skipped=111` — the pause still prevents self-decode entirely |
+| two-block window | `[product] two-block decodes=0 pausedWindow=4.341s expected=4.34s skipped=203 (window=180)` — the second block is inside the window |
+| error split | `[product] error-split consumer consumerErrors=2 moduleErrors=0`; `error-split codec moduleErrors=1 consumerErrors=0` — measured, in real Chromium |
+| muted input | `decodes=0 paused=false errorKind=none` — returns on its own clock, no hang |
+| vendored artifact (last) | **147139 B**, `B097B3294D478B13C6693C33303C86F02BC9FFFD5DDE03698490A124E01E577F`, **0 CR bytes**, `node --check` exit 0 |
+| emoji sweep | **0** |
+| `TODO`/`FIXME`/`XXX`/`HACK` | **1**, a regex inside a test |
+| `git diff 21250d1..HEAD` scope | **52 paths, all** under `src/lib/sound-chat/**`, `src/components/sound-chat/**`, `prompts/sound-chat/**`. Forbidden paths: **0**. |
+| `git status --short` at the end | **empty** |
+
+**Bundle delta, stated honestly.** The entry chunk's **raw** size is
+**byte-identical at 307779 B** across Phase 3V, Phase 4 and this phase: a page
+that never opens Sound Chat pays exactly what it paid before. The gzip figure is
+94810 B against Phase 4's 94810 B on the same raw size — identical, not a delta.
+The lazily-fetched screen chunk grew **70980 → 71661 B (+681 B on demand)**, which
+is this phase's real work: the air-ownership fix, the PAIR-answer lifecycle, and
+two new suites.
+
+### Findings carried forward — do NOT fix without a human
+
+- **OFF LIMITS, needs a human (unchanged):** the composer textarea's and
+  pairing-code input's focus indicator at **1.13:1** (`src/styles.css`); white on
+  `.btn-tactile-danger`'s top gradient stop at **3.76:1** for a 15 px label
+  (`src/components/husk/primitives.tsx`); and the `PermissionPrompt` controlled
+  refactor with an `initialCode` prop. **Fifteen further accessibility findings**
+  (W-1, W-3 … W-13, listed in the Phase 3V entry) remain carried and unfixed.
+  **W-3 and W-7 interact with the polite live region Phase 4 added to
+  `NoticeList`** and are still worth re-reading.
+- **ACCEPTED WITH REASON:** the responder-side pairing freshness residual. Now
+  described accurately — it is a **full session man-in-the-middle for the
+  responder**, not a denial of one pairing. Closing it requires inverting the
+  handshake, which is a larger protocol change than a verification phase should
+  ship.
+- **REPORTED, not fixed:** `deep-crypto-replay.test.ts:300` uses
+  `frameBytes.includes(byte)` against 16 random HMAC bytes (measured 39.84 %
+  false-failure rate); `src/lib/husk/store.test.ts`'s `settle()` flakiness (off
+  limits); the harness `vite build` wiping the Playwright output dir (a config
+  change); `pnpm run preview` being broken (pre-existing, unrelated).
+- **CARRIED TO PHASE 5:** `sound-chat-screen` chunk growth is now +681 B on demand;
+  `restart()` does not re-arm the pair timer, so a restarted *unpaired* displayer
+  waits in `waiting-for-peer` until the 90 s timeout (latent — the product's
+  restart affordance builds a new session); `#onVisibility` bypasses
+  `#timers.backoff`, so a resume during a backoff spends one attempt early
+  (bounded, self-healing).
+
+### Handed to Phase 5 — do not redo, re-verify
+
+1. **The two inverted pins are the proof.** `gauntlet-timing.test.ts` now asserts
+   the ACK alone and our note on the *next held turn*, and asserts the end-to-end
+   behaviour (the peer receives both, answers, and the note resolves `sent`). That
+   is what the CRITICAL should have been pinned by from the start.
+2. **`#airIsOurs()` is the feature's new invariant** — one transmission of ours at
+   a time, deferred rather than dropped. Anything new that starts audio must go
+   through it, and anything that owes the air must be one of the things its
+   re-arm guard counts.
+3. **The two invariants the strand depended on are now pinned by tests**, so
+   breaking either is a red test rather than a latent strand.
+4. Anti-slop is at **170 warnings, 0 errors** — its ceiling, zero headroom.
+5. `drain.ts` is the one async barrier in the namespace; its floor is
+   unconditional and two suites opt out explicitly with the reason recorded.
+6. **Not deployed, and still not deployed.** The live site predates Sound Chat.
+   Phase 5 owns the first real `wrangler deploy`.
