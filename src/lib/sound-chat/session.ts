@@ -581,6 +581,12 @@ export class SoundChatSession {
     this.#stopped = false;
     this.#moduleFailureReported = false;
     this.#epoch += 1;
+    // `#pumping` is the one piece of state a module failure leaves behind that the
+    // epoch cannot reach: a pump parked in `buildMessageFrames` when the codec died
+    // set it true, and `#pump`'s first guard then refuses *every* later pump. So a
+    // restarted session accepted `send()`, published `queued`, and put nothing on
+    // the air for the rest of its life — measured (Phase 4V deep-dive, M1).
+    this.#pumping = false;
     this.#emit({ type: "RESTART" });
     return { ok: true };
   }
@@ -691,6 +697,23 @@ export class SoundChatSession {
   async #transmitPairFrame(): Promise<void> {
     const challenge = this.#pairChallenge;
     if (challenge === null) return;
+    // Same rule as every other block: one transmission of ours at a time, or the
+    // two sum at the speaker and neither decodes. Phase 4V: this gate was
+    // missing, so the only thing `#transmitPairFrame` did about our own audio was
+    // hold the turn *afterwards* — measured, a hide/show inside the PAIR window put
+    // two byte-identical PAIR blocks 1 s apart on the air, which sums them, and the
+    // enterer's confirmation timeout then fires against a peer 1.92 s away.
+    //
+    // A refusal is remembered as `#pendingPairReply` rather than dropped, because
+    // nothing else would ever re-send it: the displayer branch of `#onVisibility`
+    // is the enterer's alone, and `#onPairFrame` returns early once we are paired.
+    //
+    // The flag is raised *before* asking for the air, not after a refusal: the arm
+    // `#airIsOurs` may set is conditional on there being something worth a turn,
+    // and a flag raised after the check is invisible to it — so the deferred PAIR
+    // frame would hold the turn open and then nothing would ever walk into it.
+    this.#pendingPairReply = true;
+    if (!this.#airIsOurs()) return;
     this.#txBusy = true;
     let frame: Uint8Array;
     try {
@@ -699,8 +722,15 @@ export class SoundChatSession {
       this.#txBusy = false;
     }
     this.#emit({ type: "TRANSMIT_BEGIN" });
+    // The flag is consumed here rather than at the call site: every way this
+    // method can fail to play (the machine refused the turn, the module died) is a
+    // way the answer is still owed.
     if (this.#state !== "transmitting") return;
-    if (!this.#play(frame)) return;
+    this.#pendingPairReply = false;
+    if (!this.#play(frame)) {
+      this.#pendingPairReply = true;
+      return;
+    }
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
     // The answer is audible for another 1.92 s while the machine already says
     // `listening`, and the composer is live the instant pairing completes — so
@@ -854,7 +884,21 @@ export class SoundChatSession {
     // `#pumping` counts too: a pump that has claimed a submission has already
     // shifted it off `#pending` but has not yet built `#outbound`, and a note
     // stranded in exactly that gap is the defect this arm exists to prevent.
-    if (this.#outbound === null && this.#pending.length === 0 && !this.#pumping) return;
+    //
+    // The two owed *answers* count as well, and they are the ones with no second
+    // way back. A message also has the ACK deadline behind it and a PAIR frame its
+    // own 5.84 s / 90 s timeout, but `#pendingAck` and `#pendingPairReply` live in a
+    // slot nothing else ever revisits: if this arm skips while one is owed, that
+    // answer is never sent. Phase 4V deep-dive, finding M2.
+    if (
+      this.#outbound === null &&
+      this.#pending.length === 0 &&
+      !this.#pumping &&
+      this.#pendingAck === null &&
+      !this.#pendingPairReply
+    ) {
+      return;
+    }
     this.#clearTimer("quiet");
     const waitMs = Math.max(
       0,
@@ -885,7 +929,12 @@ export class SoundChatSession {
     // reply can never be refused for arriving a hair early.
     this.#emit({ type: "CHANNEL_QUIET" });
     if (this.#pendingPairReply) {
-      this.#pendingPairReply = false;
+      // The flag is only consumed once the answer is actually on its way. A PAIR
+      // frame deferred by `#airIsOurs()` has nothing else that would ever re-send
+      // it — the displayer branch of `#onVisibility` is the enterer's alone, and
+      // `#onPairFrame` returns early once we are paired — so dropping it here lost
+      // the answer outright while this device went on reporting itself paired
+      // (Phase 4V deep-dive, H2).
       void this.#transmitPairFrame();
       return;
     }
@@ -1046,8 +1095,24 @@ export class SoundChatSession {
       ackedMask: 0,
       status: "sending",
     };
-    this.#notify(outboundEvent(this.#outbound, "sending"));
-    await this.#transmitBlocks(pendingBlocks(this.#outbound));
+    // Held in a local, and re-checked after the event: a consumer is free to call
+    // `stop()` from inside its own `sending` event, which clears `#outbound`. The
+    // read below used to be a field access on `null` inside an async method every
+    // call site reaches with `void` — so the TypeError became an unhandled
+    // rejection attributed to nothing (Phase 4V deep-dive, F5).
+    const outbound: OutboundMessage = this.#outbound;
+    this.#notify(outboundEvent(outbound, "sending"));
+    if (this.#stopped || this.#outbound !== outbound) return;
+    // A handshake answer still owed outranks this note. The displayer is `paired`
+    // — and its composer is live — from the moment it adopts the enterer's salt,
+    // while the answer that lets the *enterer* confirm is still 700 ms from the
+    // air. A note sent in that window preempted the answer entirely, and the
+    // enterer never heard a PAIR frame at all, so it timed out and reported
+    // `failed` against a displayer that believed itself paired (Phase 4V deep-dive,
+    // H2). The note is not lost: `#outbound` holds it with no attempt spent, and
+    // `#onChannelQuiet` sends the answer first and then resumes this.
+    if (this.#pendingPairReply) return;
+    await this.#transmitBlocks(pendingBlocks(outbound));
   }
 
   async #transmitBlocks(indices: number[]): Promise<void> {
@@ -1414,6 +1479,11 @@ export class SoundChatSession {
     // back, and it checks the codec first.
     this.#stopped = true;
     this.#epoch += 1;
+    // Same reasoning as `restart()`, and for the same reason: a pump suspended in
+    // `buildMessageFrames` when the codec died holds this flag, and every later
+    // pump would be refused by it. `restart()` is what makes the session usable
+    // again, so it is the thing that has to clear it.
+    this.#pumping = false;
     this.#emit({ type: "MODULE_DIED" });
     // `pair` is cleared here as well as in `stop()`: a 90 s listen timer that
     // outlived a terminal module error later emitted `pairing: failed`.

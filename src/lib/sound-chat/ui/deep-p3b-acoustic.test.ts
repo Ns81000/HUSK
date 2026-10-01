@@ -535,7 +535,14 @@ describe("B-4 a module death with a send in flight", () => {
     ).toBe(false);
     // Read from the session, not hard-coded, so the terminal screen cannot
     // disagree with the transport about whether the dead session is still busy.
-    expect(state.busy).toBe(true);
+    //
+    // REPAIRED IN PHASE 4V. This asserted `busy === true`, which was only ever true
+    // because a pump parked in `buildMessageFrames` when the codec died left
+    // `#pumping` true — the state that stopped every later pump, and the very thing
+    // `#moduleFailed` now clears. So the assertion pinned the defect: with the fix
+    // in place a dead session has nothing in flight and says so, which is what the
+    // controller reads to decide the terminal screen's own honesty.
+    expect(state.busy, "a dead session holds nothing in flight").toBe(false);
     expect(state.phase).toBe("fatal");
     expect(state.progress, "a terminal screen shows no bar").toBeNull();
     expect(vi.getTimerCount(), "with a 10 Hz ticker behind a terminal screen").toBe(0);

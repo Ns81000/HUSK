@@ -85,7 +85,13 @@ export async function drainAsync(options: DrainOptions = {}): Promise<void> {
     }
     turn += 1;
   }
-  while (Date.now() - quietSince < quietMs) {
+  // Bounded exactly like the first loop, and for the same reason. A suite that
+  // installs vitest's *default* fake timers fakes `Date`, so `Date.now()` never
+  // reaches `quietSince + quietMs` and an unbounded loop here would spin until the
+  // test's own timeout fires — a hang reported as a timeout rather than as the
+  // clock problem it is. Phase 4V deep-dive, finding M3.
+  for (let turn = 0; turn < MAX_TURNS && Date.now() < quietSince + quietMs; turn += 1) {
+    if (Date.now() > deadline) break;
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
