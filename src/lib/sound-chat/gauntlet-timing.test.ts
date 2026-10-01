@@ -41,9 +41,11 @@ import {
   blocksForPlaintextBytes,
 } from "./protocol";
 import { derivePairingKeys } from "./crypto";
+import { DRAIN_QUIET_MS, drainAsync } from "./drain";
 import {
   ACK_TIMEOUT_MS,
   BACKOFF_MAX_MS,
+  BLOCK_DURATION_SECONDS,
   BLOCK_DURATION_MS,
   MAX_PENDING_MESSAGES,
   MAX_RE_ACKS_PER_MESSAGE,
@@ -61,6 +63,13 @@ const FRAME_SECONDS = SAMPLE_FRAME / RATE;
 const RX_TAIL_SECONDS = 0.5;
 /** The scheduling lead, from `session.ts`. */
 const LEAD_SECONDS = 0.05;
+/**
+ * How long our own speaker owns the air after an un-acknowledged transmission:
+ * one block plus the measured tail. This is the turn the driver has to hold
+ * open for itself, because the machine is already back in `listening` by then
+ * and our own audio produces no decodes that could re-arm anything.
+ */
+const OWN_AIR_HOLD_MS = (BLOCK_DURATION_SECONDS + RX_TAIL_SECONDS) * 1_000;
 
 /** One scheduled playback: the samples and the AudioContext time they start at. */
 type PlayEvent = { at: number; samples: Float32Array };
@@ -375,15 +384,7 @@ function activity(): string {
 
 /** Lets the async authentication/assembly chain finish. A drain, not a predicate. */
 async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+  await drainAsync({ activity, floorTurns: SETTLE_FLOOR_TURNS, quietMs: DRAIN_QUIET_MS });
 }
 
 /**
@@ -767,8 +768,28 @@ describe("G2-2 collision and backoff", () => {
     expect(displayer.states(), "collision-backoff was entered").toContain("backoff");
     expect(displayer.session.state).toBe("backoff");
 
+    // REPAIRED IN PHASE 4V. This read one schedule after `BACKOFF_MAX_MS + 1` and
+    // asserted a byte-identical retransmission was in it — and it passed
+    // **because of the stacking defect**: the quiet moment sent the owed ACK and
+    // then retransmitted our block on top of it, so the schedule held a copy of
+    // the first attempt and the assertion was satisfied by an overlapping pair.
+    //
+    // With the stacking fixed the two transmissions no longer land in the same
+    // window, so *which* window a given transmission falls into depends on the
+    // ordering of two independent timers (the backoff delay is `400 + random*800`
+    // and is not seeded, and the quiet moment is `TURN_GAP_MS` after the block).
+    // Reading one window is therefore the flaky part, not the fix. So every
+    // window up to the retry's air closing is drained and the assertion is made
+    // against the whole of the air — which is also the honest question: was any
+    // of it stacked, and does any of it repeat our first attempt byte for byte?
+    const retryAir: PlayEvent[] = [];
+    retryAir.push(...displayer.takeSchedule());
     await advanceClock(BACKOFF_MAX_MS + 1);
-    const retryAir = displayer.takeSchedule();
+    retryAir.push(...displayer.takeSchedule());
+    // Let the ACK's air window close — that is what hands the turn back.
+    await advanceClock(OWN_AIR_HOLD_MS + 1);
+    retryAir.push(...displayer.takeSchedule());
+    expect(overlaps(retryAir), "the owed ACK and our retry never share the air").toBe(false);
     expect(retryAir.length, "the collision costs a retry").toBeGreaterThan(0);
     expect(
       retryAir.some(
@@ -977,7 +998,6 @@ describe("G2-4 a decode in flight across transmitAndPause's window", () => {
     expect(peerSchedule).toHaveLength(1);
 
     const decodedBefore = displayer.session.stats.blocksDecoded;
-    displayer.session.send("mine at the same time");
     feedSchedule(displayer, peerSchedule);
     await settle();
 
@@ -987,15 +1007,48 @@ describe("G2-4 a decode in flight across transmitAndPause's window", () => {
     ).toBeGreaterThanOrEqual(1);
     expect(displayer.texts(), "and rendered exactly once").toEqual(["in flight"]);
     expect(displayer.session.stats.messagesDelivered).toBe(1);
+    expect(displayer.session.stats.acksSent, "and the ACK is owed, not yet sent").toBe(0);
+
+    // Our own note is queued while the ACK is still owed: exactly the state the
+    // stacking defect lived in.
+    expect(displayer.session.send("mine at the same time").ok).toBe(true);
+    await settle();
     await passQuiet();
+
+    // INVERTED IN PHASE 4V. This used to assert
+    // `expect(overlaps(ours)).toBe(true)` with the message "…and
+    // `#onChannelQuiet` schedules them on top of each other" — it pinned the
+    // Phase 4 CRITICAL as if it were the expected behaviour. The owed ACK plays
+    // at `start(0)`, i.e. now, and `TRANSMIT_DONE_UNACKED` puts the machine
+    // straight back in `listening`, so the guard that was supposed to hold the
+    // rest of the turn (`if (this.#currentState() !== "listening") return`) could
+    // never fire. Our own note was scheduled 50 ms behind the ACK, the two blocks
+    // summed at the speaker, and neither end decoded either one.
     const ours = displayer.takeSchedule();
-    expect(ours.length, "our own block and the owed ACK are both on the air").toBeGreaterThan(0);
-    expect(overlaps(ours), "…and `#onChannelQuiet` schedules them on top of each other").toBe(true);
+    expect(ours.length, "the owed ACK goes out, alone").toBe(1);
+    expect(overlaps(ours), "and nothing of ours is stacked behind it").toBe(false);
     expect(displayer.moduleErrors).toHaveLength(0);
     expect(displayer.listenerErrors).toHaveLength(0);
+
+    // …and the turn the ACK held open is handed back: our own note goes out as
+    // soon as our speaker is silent again, with no further traffic from the peer.
+    // That second half matters as much as the first — an early `return` that
+    // nobody re-entered would have traded a stacked block for a note that never
+    // leaves the queue at all.
+    await advanceClock(OWN_AIR_HOLD_MS + 1);
+    const resumed = displayer.takeSchedule();
+    expect(resumed.length, "our queued note goes out on the held turn").toBe(1);
+    expect(overlaps(resumed), "…as its own single block").toBe(false);
+    expect(displayer.session.state, "and the machine owns it while it plays").toBe("awaiting_ack");
   }, 90_000);
 
   it("stacks the owed ACK and our own queued note on the same block of air", async () => {
+    // INVERTED IN PHASE 4V — the test title above is the *defect* it used to pin,
+    // and the title is kept verbatim so the history stays greppable. It asserted
+    // two overlapping blocks and `expect(heard).toBeGreaterThan(0)` feeding that
+    // sum back to the peer; it now asserts the ACK alone, our note on the next
+    // held turn, and that the peer actually receives both and answers our note.
+    //
     // `#onChannelQuiet` calls `#attemptAck()` first and then `#pump()` /
     // `#transmitBlocks`. `#attemptAck` plays its block at `start(0)` — "now" —
     // and the machine is back in `listening` by the time the outbound block is
@@ -1007,35 +1060,120 @@ describe("G2-4 a decode in flight across transmitAndPause's window", () => {
     await transmitted(enterer);
     const peerSchedule = enterer.takeSchedule();
 
-    // We have a note of our own in the queue, exactly as if the person had hit
-    // Send while the peer's block was in the air.
-    displayer.session.send("yes, loud and clear");
+    // The peer's note lands first, so the ACK is owed before our note exists and
+    // the queued-note-plus-owed-ACK state is reached deterministically.
     feedSchedule(displayer, peerSchedule);
     await settle();
     expect(displayer.texts(), "the peer's note is on our screen").toEqual(["did you get this"]);
+    expect(displayer.session.stats.acksSent, "and the ACK is still owed").toBe(0);
+
+    // We have a note of our own in the queue, exactly as if the person had hit
+    // Send while the peer's block was in the air.
+    expect(displayer.session.send("yes, loud and clear").ok).toBe(true);
+    await settle();
     await passQuiet();
 
-    const air = displayer.takeSchedule();
-    expect(air.length, "an ACK block and our own note block").toBe(2);
-    expect(overlaps(air), "scheduled on top of each other").toBe(true);
-    const [first, second] = air;
-    if (first === undefined || second === undefined) throw new Error("expected two blocks");
-    expect(
-      second.at - first.at,
-      `the second block starts ${((second.at - first.at) * 1000).toFixed(0)}ms after the first`,
-    ).toBeLessThan(BLOCK_DURATION_MS / 1000);
+    // The ACK goes out alone.
+    const ack = displayer.takeSchedule();
+    expect(ack.length, "exactly one block: the owed ACK").toBe(1);
+    expect(overlaps(ack), "and it is not sharing the air with anything").toBe(false);
 
-    // Behaviour, not just arithmetic: what the peer makes of the summed air.
+    // The peer hears it, and nothing else is on the air to spoil it.
+    const heardAck = feedSchedule(enterer, ack);
+    await settle();
+    await passQuiet();
+    expect(heardAck, "the ACK reached the peer").toBeGreaterThan(0);
+    expect(displayer.session.stats.acksSent, "sent exactly once").toBe(1);
+
+    // Our own note goes out on the turn the ACK held open, with no further
+    // traffic from the peer: nothing else re-arms the quiet timer, because our
+    // own transmission pauses our own Rx feed and so produces no decodes.
+    await advanceClock(OWN_AIR_HOLD_MS + 1);
+    const air = displayer.takeSchedule();
+    expect(air.length, "our own note block").toBe(1);
+    expect(overlaps(air), "and it is its own single block, not a stack").toBe(false);
+
+    // Behaviour, not just arithmetic: the peer decodes the note and answers it.
     const heard = feedSchedule(enterer, air);
     await settle();
     await passQuiet();
-    expect(heard).toBeGreaterThan(0);
+    expect(heard, "the note reached the peer").toBeGreaterThan(0);
+    expect(enterer.texts(), "…and it is rendered once, intact").toEqual(["yes, loud and clear"]);
+    expect(enterer.session.stats.messagesDelivered, "…exactly once").toBe(1);
+    const answer = enterer.takeSchedule();
+    expect(answer.length, "the peer answers it").toBeGreaterThan(0);
+    feedSchedule(displayer, answer);
+    await settle();
+    await drain(displayer);
     expect(
       displayer.outbound().at(-1)?.status,
-      "the acknowledgement never came back, so our own note stays unsent",
-    ).not.toBe("sent");
+      "and the note resolves normally instead of being reported failed",
+    ).toBe("sent");
+    expect(displayer.session.stats.acksSent, "one ACK in total, not a stack of them").toBe(1);
     expect(displayer.moduleErrors).toHaveLength(0);
+    expect(displayer.listenerErrors).toHaveLength(0);
   }, 90_000);
+
+  it("holds the turn after a PAIR answer, so a note sent straight after pairing is not stacked on it", async () => {
+    // The same defect through a different door, and the one a person actually
+    // hits: the displayer adopts the enterer's salt, reports `paired`, the UI
+    // enables the composer, and the answer is still on the speaker for another
+    // 1.92 s. `#transmitPairFrame` also ends with `TRANSMIT_DONE_UNACKED`, so the
+    // machine is in `listening` while the answer is audible, and nothing armed a
+    // turn for the moment it stops sounding. A note sent inside that window used
+    // to be scheduled 50 ms behind the answer; the two summed, so the enterer
+    // decoded neither, timed out, and the note burned an attempt to say nothing.
+    flushReceiver(codecA, 140);
+    flushReceiver(codecB, 140);
+    const displayer = await createPeer({ label: "displayer", role: "displayer", codec: codecA });
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      codec: codecB,
+      pairingCode: displayer.session.pairingCode,
+    });
+    displayer.session.start();
+    enterer.session.start();
+    // `pairUp` drains the displayer's schedule, and the whole point here is the
+    // answer that is still on the air, so the exchange is driven by hand and the
+    // answer is captured rather than fed on.
+    await transmitted(enterer);
+    feedSchedule(displayer, enterer.takeSchedule());
+    await settle();
+    await passQuiet();
+    await transmitted(displayer);
+    expect(displayer.session.pairing.kind, "the displayer adopted the salt").toBe("paired");
+    expect(displayer.session.stats.acksSent, "the answer was an ACK-free frame").toBe(0);
+
+    // The answer is audible right now, and the UI has just enabled the composer.
+    const answer = displayer.takeSchedule();
+    expect(answer.length, "the PAIR answer is on the air").toBe(1);
+    const refused = displayer.session.send("right after pairing");
+    expect(refused.ok, "the composer is live the moment pairing completes").toBe(true);
+    await settle();
+
+    // Nothing goes on top of it. Before the fix this was the second block, 50 ms
+    // behind the answer, and the two summed.
+    const stacked = displayer.takeSchedule();
+    expect(stacked.length, "nothing of ours is scheduled behind our own answer").toBe(0);
+
+    // On the turn the answer held open, the note goes out alone.
+    await advanceClock(OWN_AIR_HOLD_MS + 1);
+    const note = displayer.takeSchedule();
+    expect(note.length, "exactly one block: our note").toBe(1);
+    expect(overlaps([...answer, ...note]), "…not stacked on top of the PAIR answer").toBe(false);
+
+    // The enterer hears the answer and the note as two separate blocks: it pairs,
+    // and it renders the note. The sum that used to spoil both is gone.
+    const heard = feedSchedule(enterer, [...answer, ...note]);
+    await settle();
+    await passQuiet();
+    expect(heard, "the air reached the peer").toBeGreaterThan(0);
+    expect(enterer.session.pairing.kind, "the answer still pairs the two devices").toBe("paired");
+    expect(enterer.texts(), "…and the note is intact").toEqual(["right after pairing"]);
+    expect(displayer.moduleErrors).toHaveLength(0);
+    expect(displayer.listenerErrors).toHaveLength(0);
+  }, 120_000);
 
   it("delivers nothing from a decode that was in flight when stop() ran", async () => {
     const { displayer, enterer } = await pairedPair();

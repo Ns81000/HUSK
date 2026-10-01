@@ -29,6 +29,7 @@ import {
   WIRE_BLOCK_BYTES,
 } from "./protocol";
 import { MAX_RE_ACKS_PER_MESSAGE, SoundChatSession, type SessionEvent } from "./session";
+import { drainAsync } from "./drain.ts";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -232,23 +233,8 @@ function activity(): string {
   return signature;
 }
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  // 32, not 4. A four-turn quiet streak is short enough that a libuv
-  // threadpool callback from real AEAD work can land between two of the
-  // samples, reset the streak, and leave this loop waiting out the cascade
-  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
-  // fails under parallel load. A longer streak makes settle() return later
-  // rather than earlier, which is the only safe direction: returning early
-  // leaks work into the next settle, and returning late only costs turns.
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 async function until(what: string, ready: () => boolean): Promise<void> {
@@ -271,7 +257,7 @@ function feedChunks(peer: Peer, count: number): void {
 async function air(): Promise<void> {
   roomClock += 3;
   await settle();
-  await vi.advanceTimersByTimeAsync(701);
+  await vi.advanceTimersByTimeAsync(3_000);
   await settle();
 }
 
@@ -587,6 +573,14 @@ describe("F4 — attempts are spent only on a real transmission", () => {
     await settle();
     expect(displayer.takeAir(), "nothing else went out while hidden").toEqual([]);
     setVisibility("visible");
+    await settle();
+    // The two-block transmission's own air window (2 x 1920 ms + the 500 ms
+    // measured tail = 4340 ms) is still open, so the resumed window waits for it
+    // rather than starting on top of it. Both clocks must move, and for the whole
+    // window — `air()`'s 3 s is not enough for a two-block message.
+    roomClock += 4.4;
+    await settle();
+    await vi.advanceTimersByTimeAsync(4_400);
     await settle();
     expect(
       displayer.session.stats.retries,

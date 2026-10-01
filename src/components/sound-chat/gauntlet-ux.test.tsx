@@ -54,6 +54,7 @@ import {
 } from "@/lib/sound-chat/session";
 import { deriveComposerBlock } from "@/components/sound-chat/use-sound-chat";
 import { openSoundChatCodec } from "@/lib/sound-chat/codec";
+import { DRAIN_QUIET_MS, drainAsync } from "@/lib/sound-chat/drain";
 import { SoundChatUiController } from "@/lib/sound-chat/ui/controller";
 import type { SoundChatUiState } from "@/lib/sound-chat/ui/controller";
 import type { TransportState } from "@/lib/sound-chat/transport-machine";
@@ -653,6 +654,39 @@ const MAX_TURNS = 4_000;
  */
 const MAX_WAIT_MS = 20_000;
 
+/**
+ * Everything a step of this simulation can change, as one comparable string.
+ *
+ * A drain that watches only a turn count cannot tell "nothing is happening" from
+ * "a `crypto.subtle` job is still queued on libuv's threadpool" — both leave the
+ * world unchanged. The turn counter and the wall clock together are what make the
+ * drain below mean what its callers assume it means.
+ */
+function activity(): string {
+  let signature = "";
+  for (const controller of liveControllers) {
+    const state = controller.getState();
+    signature += [
+      state.phase,
+      state.transport,
+      state.pairing.kind,
+      state.inbound.length,
+      state.outbound.length,
+      state.notices.length,
+      // The counts below are monotonic counters; formatting only the last two
+      // digits keeps the string short enough to compare cheaply without letting a
+      // counter roll over into a *matching* stale signature.
+      state.stats.blocksDecoded % 100,
+      state.stats.framesUnreadable % 100,
+      state.stats.acksSent % 100,
+      state.stats.retries % 100,
+    ].join(",");
+    signature += "|";
+  }
+  for (const context of contexts) signature += `${context.played.length};`;
+  return signature;
+}
+
 /** A completion condition, never a fixed turn count. */
 async function until(what: string, ready: () => boolean): Promise<void> {
   const deadline = Date.now() + MAX_WAIT_MS;
@@ -664,10 +698,13 @@ async function until(what: string, ready: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/**
+ * Lets the async authentication/assembly chain finish. A drain, not a predicate:
+ * it returns once nothing has moved for both a run of turns and a stretch of
+ * wall-clock time, and never earlier than either.
+ */
 async function settle(turns = 256): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await drainAsync({ activity, floorTurns: turns, quietMs: DRAIN_QUIET_MS });
 }
 
 /**
@@ -680,6 +717,13 @@ async function advanceUntil(what: string, ready: () => boolean, stepMs = 50): Pr
   for (let turn = 0; turn < MAX_TURNS; turn += 1) {
     if (ready()) return;
     if (Date.now() > deadline) break;
+    // Both clocks, always. The retry cycle is a race between a wall-clock
+    // `setTimeout` and the AudioContext-clock Rx pause our own transmission
+    // arms, so advancing only the fake timers leaves the session believing its
+    // speaker is still busy long after it has stopped — the note is then deferred
+    // for ever and the wait times out. This is the same rule the timing suite
+    // states at the top of its header.
+    advanceRoom(stepMs / 1_000);
     await vi.advanceTimersByTimeAsync(stepMs);
   }
   throw new Error(`timed out waiting for ${what}`);

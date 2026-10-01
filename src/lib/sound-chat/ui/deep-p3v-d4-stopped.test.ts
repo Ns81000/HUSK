@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SoundChatCodec } from "../codec";
 import { MAX_PENDING_MESSAGES, SoundChatSession, TURN_GAP_MS } from "../session";
 import type { SessionEvent } from "../session";
+import { drainAsync } from "../drain.ts";
 
 const SAMPLE_FRAME = 1024;
 const CODE = "ABCD2345";
@@ -216,16 +217,8 @@ function activity(peers: readonly Peer[]): string {
 
 const live: Peer[] = [];
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity(live);
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity(live) === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 /**
@@ -257,9 +250,17 @@ function feedChunk(peer: Peer): void {
 }
 
 async function air(): Promise<void> {
+  // Both clocks together, and for long enough to cover a whole exchange.
+  //
+  // `roomClock += 3` covers one block plus the measured tail, and the wall clock
+  // is advanced by the same 3 s rather than by one turn gap: an unacknowledged
+  // block now holds the turn for its own air window, so the quiet moment that
+  // follows it lands *after* a single `TURN_GAP_MS` of fake time has passed.
+  // Advancing only `TURN_GAP_MS` left the session convinced its speaker was still
+  // busy, so the next block was deferred and the exchange never completed.
   roomClock += 3;
   await settle();
-  await vi.advanceTimersByTimeAsync(TURN_GAP_MS + 1);
+  await vi.advanceTimersByTimeAsync(3_000);
   await settle();
 }
 
@@ -373,7 +374,15 @@ async function pairedPair(): Promise<{ readonly displayer: Peer; readonly entere
     await until("the warm-up note to be claimed", () => from.outboundEvents().length > 0);
     // Both sides must be back to `listening`: a session left in `awaiting_ack`
     // still owns `#outbound`, and `#pump` refuses to claim anything behind it.
-    for (let round = 0; round < 8; round += 1) {
+    //
+    // More rounds than the eight this used to allow, because a complete exchange
+    // is now three transmissions rather than two: the note, then the peer's ACK,
+    // and the ACK holds the turn for its own block plus the measured tail before
+    // anything else of ours may go out. Each round here moves one block in each
+    // direction, so the budget has to cover the whole cycle — an under-counted
+    // budget shows up as a warm-up that silently leaves a session mid-note, which
+    // is exactly the kind of wrong premise the rest of the file then measures.
+    for (let round = 0; round < 24; round += 1) {
       if (from.session.state === "listening" && to.session.state === "listening") break;
       await deliver(from, to);
       await air();

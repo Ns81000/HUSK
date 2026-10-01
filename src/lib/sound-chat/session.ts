@@ -702,6 +702,11 @@ export class SoundChatSession {
     if (this.#state !== "transmitting") return;
     if (!this.#play(frame)) return;
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
+    // The answer is audible for another 1.92 s while the machine already says
+    // `listening`, and the composer is live the instant pairing completes — so
+    // the turn has to be held explicitly, or the person's first note lands on
+    // top of the answer and neither of them is decoded.
+    this.#rearmQuietWhenOurSpeakerIsFree();
   }
 
   #onPairFrame(salt: Uint8Array, challenge: Uint8Array): void {
@@ -816,6 +821,62 @@ export class SoundChatSession {
     }, TURN_GAP_MS);
   }
 
+  /**
+   * True while our own speaker is still sounding.
+   *
+   * The Rx pause *is* that fact: `transmitAndPause` closed the feed for the whole
+   * transmit window plus the measured tail, on the AudioContext clock, so
+   * "the feed is paused" and "we are still talking" are the same question with
+   * two names. Reading it here rather than recomputing the window is what keeps
+   * a third copy of the pause arithmetic from existing.
+   */
+  #speakerBusy(): boolean {
+    return this.#listen?.paused ?? false;
+  }
+
+  /**
+   * Arms the quiet timer for the instant our own transmission stops sounding.
+   *
+   * Needed because nothing else asks again. Our own audio pauses our own Rx
+   * feed, so it produces no decodes for `#noteHeard` to hear, and the transport
+   * machine is already back in `listening` — `TRANSMIT_DONE_UNACKED` fires when
+   * a block is *scheduled*, not when it stops. Without this, the turn after an
+   * un-acknowledged transmission had to be assumed, and nothing ever assumed it
+   * correctly.
+   */
+  #rearmQuietWhenOurSpeakerIsFree(): void {
+    const listen = this.#listen;
+    if (listen === null || !listen.paused) return;
+    // Only when something is actually waiting for the turn. A timer armed for a
+    // turn nobody wants is a timer that sits there for the length of a block and
+    // then does nothing, and "nothing of ours is armed while we are idle" is a
+    // property worth being able to assert.
+    if (this.#outbound === null && this.#pending.length === 0) return;
+    this.#clearTimer("quiet");
+    const waitMs = Math.max(
+      0,
+      (listen.pausedUntilSeconds - this.#options.context.currentTime) * 1_000,
+    );
+    this.#timers.quiet = setTimeout(() => {
+      this.#timers.quiet = undefined;
+      if (this.#stopped) return;
+      this.#onChannelQuiet();
+    }, waitMs);
+  }
+
+  /**
+   * Whether the caller may put audio on the air now.
+   *
+   * If our own speaker is still talking, the turn is *deferred*, never dropped:
+   * the quiet timer is re-armed for the instant the feed reopens, which is the
+   * only "the air is clear" signal this transport has.
+   */
+  #airIsOurs(): boolean {
+    if (!this.#speakerBusy()) return true;
+    this.#rearmQuietWhenOurSpeakerIsFree();
+    return false;
+  }
+
   #onChannelQuiet(): void {
     // The machine goes back to `listening` *before* anything queued fires, so a
     // reply can never be refused for arriving a hair early.
@@ -829,16 +890,18 @@ export class SoundChatSession {
     // ACK is played at `start(0)` — now — and is a full 1.92 s block, so starting
     // our own queued note behind it stacked two waveforms at the destination,
     // which neither end can decode: measured, the sender then never resolved
-    // because its ACK landed inside the overlap. So the ACK goes first and
-    // returns; the pump is re-entered by the next quiet moment, which this very
-    // transmission will arm.
+    // because its ACK landed inside the overlap.
+    //
+    // The guard that was supposed to hold the rest of the turn back could never
+    // fire: `#attemptAck` ends in `TRANSMIT_DONE_UNACKED`, which puts the machine
+    // straight back in `listening`, so `state !== "listening"` was never true
+    // after a *successful* attempt. Only the air itself can answer that question,
+    // so the ACK goes out alone and `#attemptAck` re-arms the turn for the moment
+    // it stops sounding — which is the quiet moment that re-enters the pump.
     if (this.#pendingAck !== null) {
-      if (!this.#attemptAck()) {
-        // The channel was not ours after all. `#attemptAck` kept the ACK, and
-        // the next quiet moment will try again.
-        return;
-      }
-      if (this.#currentState() !== "listening") return;
+      // A refused attempt is kept, not dropped, and the next quiet moment retries.
+      void this.#attemptAck();
+      return;
     }
     if (this.#outbound !== null) {
       // A held or partially-sent message resumes now that the air is clear.
@@ -862,12 +925,18 @@ export class SoundChatSession {
   #attemptAck(): boolean {
     const frame = this.#pendingAck;
     if (frame === null || this.#heardRecently || this.#stopped) return false;
+    if (!this.#airIsOurs()) return false;
     this.#emit({ type: "TRANSMIT_BEGIN" });
     if (this.#currentState() !== "transmitting") return false;
     if (!this.#play(frame)) return false;
     this.#pendingAck = null;
     this.#stats.acksSent += 1;
     this.#emit({ type: "TRANSMIT_DONE_UNACKED" });
+    // Our own block is on the speaker now, so hold the turn open for it. The
+    // sender needs this ACK to resolve its note: if it sums with anything else
+    // of ours it never decodes, and the sender reports a failure for a note the
+    // user can see sitting on the peer's screen.
+    this.#rearmQuietWhenOurSpeakerIsFree();
     return true;
   }
 
@@ -985,6 +1054,11 @@ export class SoundChatSession {
       this.#failOutbound(outbound);
       return;
     }
+    // Our own speaker is still finishing an un-acknowledged block — an ACK, or a
+    // PAIR answer. Starting here would sum the two waveforms and neither end
+    // would decode either, so the turn is held, not spent: the attempt counter
+    // is only reached once the machine actually starts audio (P2V finding 4).
+    if (!this.#airIsOurs()) return;
     this.#emit({ type: "TRANSMIT_BEGIN" });
     if (this.#state !== "transmitting") {
       // Refused — held because the tab is hidden, or the peer owns the air. An

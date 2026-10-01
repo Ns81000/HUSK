@@ -16,6 +16,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { CodecModuleError, openSoundChatCodec } from "../codec";
 import { ACK_TIMEOUT_MS, TURN_GAP_MS } from "../session";
 import { MAX_NOTICES, MAX_TRANSCRIPT_ENTRIES, SoundChatUiController } from "./controller";
+import { drainAsync } from "../drain.ts";
 
 const SAMPLE_FRAME = 1024;
 
@@ -191,10 +192,11 @@ async function until(what: string, ready: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+const MAX_FLUSH_TURNS = 16_000;
+const SETTLE_QUIET_MS = 25;
+
 async function settle(turns = 256): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 function feedSchedule(to: FakeAudioContext, schedule: readonly PlayEvent[]): void {

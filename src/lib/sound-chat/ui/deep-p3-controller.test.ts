@@ -20,6 +20,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS, type SendRefusal } from "../session";
 import { SoundChatUiController } from "./controller";
+import { drainAsync } from "../drain.ts";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -225,9 +226,7 @@ async function until(what: string, ready: () => boolean): Promise<void> {
 }
 
 async function settle(turns = 256): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 /** `until`, but with the fake clock moving: session deadlines are `setTimeout`s. */

@@ -19,7 +19,8 @@ import type { SoundChatCodec } from "./codec";
 import type { RandomSource } from "./crypto";
 import { derivePairingKeys } from "./crypto";
 import { FrameCodec, MAX_SEND_ATTEMPTS } from "./protocol";
-import { SoundChatSession, type SessionEvent } from "./session";
+import { BLOCK_DURATION_MS, SoundChatSession, type SessionEvent } from "./session";
+import { drainAsync } from "./drain.ts";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -270,23 +271,8 @@ function activity(): string {
   return signature;
 }
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  // 32, not 4. A four-turn quiet streak is short enough that a libuv
-  // threadpool callback from real AEAD work can land between two of the
-  // samples, reset the streak, and leave this loop waiting out the cascade
-  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
-  // fails under parallel load. A longer streak makes settle() return later
-  // rather than earlier, which is the only safe direction: returning early
-  // leaks work into the next settle, and returning late only costs turns.
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 async function until(what: string, ready: () => boolean): Promise<void> {
@@ -307,7 +293,7 @@ function feedChunk(peer: Peer): void {
 async function air(): Promise<void> {
   roomClock += 3;
   await settle();
-  await vi.advanceTimersByTimeAsync(701);
+  await vi.advanceTimersByTimeAsync(3_000);
   await settle();
 }
 
@@ -849,9 +835,17 @@ describe("F4 — the attempt budget", () => {
     displayer.session.send("never answered");
     await settle();
     // Nobody ever hears it: the air is simply never delivered.
+    //
+    // Both clocks, every round. An ACK timeout and a backoff are wall-clock
+    // `setTimeout`s, but the turn each attempt then holds open is the Rx pause on
+    // the AudioContext clock, so advancing only the fake timers leaves the session
+    // convinced its speaker is still busy and the next attempt is deferred rather
+    // than spent — `attempts` stays 0 and this reads as "no more than the budget".
+    const attemptCycleMs = 5_540 + 1_200 + BLOCK_DURATION_MS + 500 + 1;
     for (let round = 0; round < MAX_SEND_ATTEMPTS + 2; round += 1) {
       displayer.takeAir();
-      await vi.advanceTimersByTimeAsync(5_540 + 1_200 + 1);
+      roomClock += attemptCycleMs / 1000;
+      await vi.advanceTimersByTimeAsync(attemptCycleMs);
       await settle();
     }
     const attempts = Math.max(

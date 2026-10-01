@@ -33,6 +33,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { SoundChatCodec } from "./codec";
 import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
+import { drainAsync } from "./drain.ts";
 import {
   FrameCodec,
   MAX_MESSAGE_PLAINTEXT_BYTES,
@@ -560,16 +561,8 @@ function activity(): string {
   return signature;
 }
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  while (turn < SETTLE_FLOOR || quiet < QUIET_STREAK) {
-    if (turn >= MAX_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 /** A cheaper drain for the bulk tests, where no threadpool work is racing. */
@@ -1095,7 +1088,13 @@ describe("R2 — teardown from every path leaves nothing running", () => {
       return realEncode(payload);
     });
     const rejections = await withRejectionWatch(async () => {
-      await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS + 1);
+      // Both clocks. The ACK deadline is wall-clock, but the retry it schedules
+      // cannot take the turn until our own block's air window has closed on the
+      // AudioContext clock — so the trap armed above fires on the *next* attempt,
+      // and advancing only the fake timers would defer that attempt for ever and
+      // leave the session healthy-looking instead of terminal.
+      roomClock += (ACK_TIMEOUT_MS + BLOCK_DURATION_MS + 500 + 1) / 1000;
+      await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS + BLOCK_DURATION_MS + 500 + 1);
       await settle();
     });
     expect(displayer.session.state).toBe("module_error");

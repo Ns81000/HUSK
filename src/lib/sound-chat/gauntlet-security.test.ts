@@ -53,6 +53,7 @@ import {
   type FrameRejection,
 } from "./protocol";
 import { SoundChatSession, TURN_GAP_MS, type SessionEvent } from "./session";
+import { drainAsync } from "./drain.ts";
 
 const CODE = "ABCD2345";
 const OTHER_CODE = "ABCD2346";
@@ -301,16 +302,8 @@ function activity(): string {
   return signature;
 }
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 /**
@@ -358,6 +351,25 @@ async function air(): Promise<void> {
   roomClock += 3;
   await settle();
   await vi.advanceTimersByTimeAsync(TURN_GAP_MS + 1);
+  await settle();
+}
+
+/**
+ * Waits out the air window an unacknowledged transmission of ours holds open: one
+ * block plus the measured tail.
+ *
+ * Separate from `air()` on purpose. `air()` moves exactly one turn gap, because
+ * the pairing fixture's own `PAIR_CONFIRM_TIMEOUT_MS` (5840 ms) is close enough
+ * to two of them that a larger step would expire the enterer's confirmation and
+ * fail a handshake that is supposed to succeed. This helper is for the places
+ * that genuinely need the longer window — a session that has just transmitted
+ * something nobody acknowledged cannot take its next turn until its speaker is
+ * silent again, and both clocks have to move for that.
+ */
+async function ownAir(): Promise<void> {
+  roomClock += 3;
+  await settle();
+  await vi.advanceTimersByTimeAsync(3_000);
   await settle();
 }
 
@@ -789,6 +801,12 @@ describe("the 16-bit message id space refuses to wrap", () => {
     await until("the first note to be sealed", () =>
       peer.outboundStatus(sendId).includes("sending"),
     );
+    // The displayer's PAIR answer is still on the speaker — its Rx pause is armed
+    // and its 1.92 s of audio has not finished — so the note is queued behind it
+    // and goes out when that turn reopens. That is the behaviour: one
+    // transmission of ours at a time, or the two sum at the speaker and neither
+    // decodes. Both clocks must move for the re-armed quiet timer to fire.
+    await ownAir();
     await until("the first note to reach the air", () => peer.codec.txLog.length > 0);
     const sealedMsgId = peer
       .outboundEvents()

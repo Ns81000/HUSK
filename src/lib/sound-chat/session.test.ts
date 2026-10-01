@@ -13,6 +13,7 @@ import { flushReceiver, openSoundChatCodec, type SoundChatCodec } from "./codec"
 import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
 import { FrameCodec, MAX_MESSAGE_BLOCKS, MAX_SEND_ATTEMPTS } from "./protocol";
+import { drainAsync } from "./drain.ts";
 import {
   ACK_TIMEOUT_MS,
   BACKOFF_MAX_MS,
@@ -379,25 +380,8 @@ async function transmitted(peer: Peer): Promise<void> {
  * `pairing.kind` wait for that. Kept generous because a threadpool callback
  * can land several turns after the last observable change.
  */
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  // 32, not 4. A four-turn quiet streak is short enough that a libuv
-  // threadpool callback from real AEAD work can land between two of the
-  // samples, reset the streak, and leave this loop waiting out the cascade
-  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
-  // fails under parallel load. A longer streak makes settle() return later
-  // rather than earlier, which is the only safe direction: returning early
-  // leaks work into the next settle, and returning late only costs turns.
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) {
-      throw new Error(`the async chain never settled after ${MAX_FLUSH_TURNS} turns`);
-    }
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 /** Everything a still-pending async chain would have to touch. */
@@ -717,12 +701,17 @@ describe("retry, hold and failure (P11, P12)", () => {
     const airings: Float32Array[] = [first];
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      // Both clocks, always: the ACK deadline and the backoff are wall-clock
+      // `setTimeout`s, while the Rx pause our own transmission arms is measured on
+      // the AudioContext clock. Advancing only the fake timers leaves the session
+      // believing its speaker is still busy, so the retry is deferred for ever and
+      // this wait times out.
+      advanceRoom((ACK_TIMEOUT_MS + BACKOFF_MAX_MS + 1) / 1000);
       await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS + BACKOFF_MAX_MS + 1);
       await settle();
       const again = displayer.takeAir()[0];
       expect(again, `retry ${attempt}`).toBeDefined();
       airings.push(again as Float32Array);
-      advanceRoom(BLOCK_DURATION_MS / 1000 + 0.5);
     }
     // A retry re-transmits the *same sealed frame*: same msgId, same nonce, same
     // plaintext — never a nonce reuse with different content.
@@ -731,6 +720,7 @@ describe("retry, hold and failure (P11, P12)", () => {
     }
 
     // The attempt budget is exhausted: the message fails, and nothing loops.
+    advanceRoom((ACK_TIMEOUT_MS + 1) / 1000);
     await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS + 1);
     await settle();
     const outbound = displayer.events.filter((event) => event.type === "outbound");
@@ -768,12 +758,22 @@ describe("retry, hold and failure (P11, P12)", () => {
       true,
     );
     // And the collision is handled by retrying the same message, not by lying:
-    // the same msgId, the same sealed frame, after a jittered backoff. (The ACK
-    // the displayer also owes the peer may be in the air first, so the retry is
-    // whichever airing matches the first attempt byte for byte.)
+    // the same msgId, the same sealed frame, after a jittered backoff.
+    //
+    // Both clocks again, and the retry's own air window with them: the ACK the
+    // displayer owes the peer holds the turn for a block plus the measured tail,
+    // and the retry follows it. Every window up to that point is drained, because
+    // which window a given transmission lands in depends on the ordering of two
+    // independent timers — the unseeded jittered backoff and the quiet moment.
+    const airings = displayer.takeAir();
+    await advanceRoom((BACKOFF_MAX_MS + 1) / 1000);
     await vi.advanceTimersByTimeAsync(BACKOFF_MAX_MS + 1);
     await settle();
-    const airings = displayer.takeAir();
+    airings.push(...displayer.takeAir());
+    advanceRoom(BLOCK_DURATION_MS / 1000 + 0.5);
+    await vi.advanceTimersByTimeAsync(BLOCK_DURATION_MS + 500 + 1);
+    await settle();
+    airings.push(...displayer.takeAir());
     expect(airings).not.toHaveLength(0);
     expect(
       airings.some((airing) => Array.from(airing).join(",") === Array.from(firstAttempt).join(",")),
@@ -1028,8 +1028,16 @@ describe("the timing contract the medium sets (10.2 P11, class 11)", () => {
     for (let index = 0; index < MAX_PENDING_MESSAGES + 6; index += 1) {
       displayer.session.send(`queued ${index}`);
     }
-    await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS * (MAX_SEND_ATTEMPTS + 1));
-    await settle();
+    // Both clocks, and *repeatedly*: every attempt is an ACK timeout plus a
+    // backoff plus the air window that retry then holds open, and all of it is
+    // measured on two different clocks. Advancing once by a multiple of the ACK
+    // timeout does not cover it, because a session whose speaker still believes
+    // it is talking simply defers the next attempt.
+    for (let round = 0; round < MAX_SEND_ATTEMPTS * (MAX_PENDING_MESSAGES + 2); round += 1) {
+      advanceRoom((ACK_TIMEOUT_MS + BACKOFF_MAX_MS + BLOCK_DURATION_MS + 500) / 1000);
+      await vi.advanceTimersByTimeAsync(ACK_TIMEOUT_MS + BACKOFF_MAX_MS + BLOCK_DURATION_MS + 500);
+      await settle();
+    }
     const failed = displayer.events.filter(
       (event: SessionEvent) => event.type === "outbound" && event.status === "failed",
     );

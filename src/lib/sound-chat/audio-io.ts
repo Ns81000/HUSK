@@ -170,6 +170,16 @@ export type ListenHandle = {
   readonly skippedWhilePaused: number;
   readonly paused: boolean;
   /**
+   * The AudioContext instant the pause set by our last transmission expires.
+   *
+   * This is the same number `paused` compares against, exposed so a caller that
+   * has to wait out its own transmission can read *when* instead of recomputing
+   * how long it lasts. `pause()` adds the measured tail; a second copy of that
+   * addition elsewhere is exactly how Phase 2V's pairwise double-count shut the
+   * sender's feed 0.5 s too long and broke every single-block message.
+   */
+  readonly pausedUntilSeconds: number;
+  /**
    * Pauses the Rx feed for `seconds` plus the measured tail. Time is taken
    * from the AudioContext clock, not wall-clock timers, so it survives
    * background-tab timer throttling.
@@ -253,6 +263,9 @@ export function startListening(options: ListenOptions): ListenHandle {
     },
     get paused() {
       return context.currentTime < state.pausedUntil;
+    },
+    get pausedUntilSeconds() {
+      return state.pausedUntil;
     },
     pause(seconds: number) {
       state.pausedUntil = Math.max(

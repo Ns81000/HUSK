@@ -17,6 +17,7 @@ import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS } from "../session";
 import { measureMessage } from "./budget";
 import { SoundChatUiController, type SoundChatUiState } from "./controller";
+import { drainAsync } from "../drain.ts";
 
 const SAMPLE_FRAME = 1024;
 
@@ -252,9 +253,7 @@ async function until(what: string, ready: () => boolean): Promise<void> {
 }
 
 async function settle(turns = 256): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 async function untilTimed(what: string, ready: () => boolean, stepMs = 100): Promise<void> {

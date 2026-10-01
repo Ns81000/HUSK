@@ -21,6 +21,7 @@ import {
   type SoundChatCodec,
 } from "./codec";
 import { REQUIRED_SAMPLE_RATE } from "./audio-io";
+import { drainAsync } from "./drain.ts";
 import {
   BLOCK_DURATION_SECONDS,
   MAX_PENDING_MESSAGES,
@@ -167,24 +168,8 @@ async function until(what: string, ready: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-/** A generous drain: a floor, then quiescence. */
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  // 32, not 4. A four-turn quiet streak is short enough that a libuv
-  // threadpool callback from real AEAD work can land between two of the
-  // samples, reset the streak, and leave this loop waiting out the cascade
-  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
-  // fails under parallel load. A longer streak makes settle() return later
-  // rather than earlier, which is the only safe direction: returning early
-  // leaks work into the next settle, and returning late only costs turns.
-  while (turn < 256 || quiet < 32) {
-    const before = createdPeers.map((peer) => peer.context.played.length).join(",");
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet =
-      createdPeers.map((peer) => peer.context.played.length).join(",") === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 async function createPeer(options: {

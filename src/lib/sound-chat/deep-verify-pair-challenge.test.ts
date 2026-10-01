@@ -25,6 +25,7 @@ import {
 } from "./crypto";
 import { FrameCodec, FRAME_KIND, PAIR_BODY_BYTES, PAIR_KEY_CHECK_OFFSET } from "./protocol";
 import { SoundChatSession, type SessionEvent } from "./session";
+import { drainAsync } from "./drain.ts";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -225,23 +226,8 @@ function activity(): string {
   return signature;
 }
 
-async function settle(): Promise<void> {
-  let quiet = 0;
-  let turn = 0;
-  // 32, not 4. A four-turn quiet streak is short enough that a libuv
-  // threadpool callback from real AEAD work can land between two of the
-  // samples, reset the streak, and leave this loop waiting out the cascade
-  // until it hits MAX_FLUSH_TURNS - which is how a test that passes alone
-  // fails under parallel load. A longer streak makes settle() return later
-  // rather than earlier, which is the only safe direction: returning early
-  // leaks work into the next settle, and returning late only costs turns.
-  while (turn < SETTLE_FLOOR_TURNS || quiet < 32) {
-    if (turn >= MAX_FLUSH_TURNS) throw new Error("the async chain never settled");
-    const before = activity();
-    await new Promise((resolve) => setImmediate(resolve));
-    quiet = activity() === before ? quiet + 1 : 0;
-    turn += 1;
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity, floorTurns: turns });
 }
 
 async function until(what: string, ready: () => boolean): Promise<void> {

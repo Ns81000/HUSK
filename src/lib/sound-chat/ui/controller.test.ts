@@ -22,6 +22,7 @@ import { CodecModuleError, CodecUsageError, openSoundChatCodec } from "../codec"
 import { PAIRING_CODE_ALPHABET, PAIRING_CODE_LENGTH } from "../crypto";
 import { TURN_GAP_MS, type SendRefusal } from "../session";
 import { classifyFatalError, SoundChatUiController } from "./controller";
+import { drainAsync } from "../drain.ts";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -196,11 +197,8 @@ async function until(what: string, ready: () => boolean): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-/** A generous drain floor for the `crypto.subtle` threadpool. */
-async function settle(): Promise<void> {
-  for (let turn = 0; turn < 256; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+async function settle(turns = 256): Promise<void> {
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 /** Lays a schedule onto the room the way a speaker and a room do. */

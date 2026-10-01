@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS } from "../session";
 import { MAX_TRANSCRIPT_ENTRIES, SoundChatUiController } from "./controller";
+import { drainAsync } from "../drain.ts";
 
 const SAMPLE_FRAME = 1024;
 
@@ -172,9 +173,7 @@ async function until(what: string, ready: () => boolean): Promise<void> {
 }
 
 async function settle(turns = 256): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await drainAsync({ activity: () => "", floorTurns: turns });
 }
 
 function feedSchedule(to: FakeAudioContext, schedule: readonly PlayEvent[]): void {
