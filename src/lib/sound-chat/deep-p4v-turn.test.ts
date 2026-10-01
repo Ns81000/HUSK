@@ -24,6 +24,7 @@
  * against the wrong window.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RX_PAUSE_TAIL_SECONDS } from "./audio-io";
 import type { SoundChatCodec } from "./codec";
 import { derivePairingKeys, type PairingKeys, type RandomSource } from "./crypto";
 import { drainAsync } from "./drain";
@@ -247,7 +248,13 @@ type PeerOptions = {
   pairingCode?: string;
   random?: RandomSource;
   onEvent?: (event: SessionEvent) => void;
+  onModuleError?: (error: unknown) => void;
   onEncode?: () => void;
+  /**
+   * Bypasses derivation, exactly as `SoundChatSessionOptions.keys` does. Only for
+   * the tests that are about the injection point itself.
+   */
+  keysOverride?: PairingKeys;
 };
 
 const createdPeers: Peer[] = [];
@@ -282,6 +289,7 @@ async function createPeer(options: PeerOptions): Promise<Peer> {
       events.push(event);
       options.onEvent?.(event);
     },
+    ...(options.onModuleError === undefined ? {} : { onModuleError: options.onModuleError }),
   };
   // One PBKDF2 derivation per distinct code, for the whole file.
   //
@@ -292,7 +300,8 @@ async function createPeer(options: PeerOptions): Promise<Peer> {
   // measured as one extra full-suite failure on 2 of 3 runs, against a baseline
   // without this file that was green every time.
   const code = options.pairingCode;
-  const keys = code === undefined ? undefined : await keysFor(code);
+  const derived = code === undefined ? undefined : await keysFor(code);
+  const keys = options.keysOverride ?? derived;
   const session = await SoundChatSession.create({
     ...base,
     ...(code === undefined ? {} : { pairingCode: code }),
@@ -375,6 +384,28 @@ async function air(): Promise<void> {
   roomClock += PAIR_AIR_MS / 1_000;
   await settle();
   await vi.advanceTimersByTimeAsync(PAIR_AIR_MS);
+  await settle();
+}
+
+/**
+ * Feeds frames into a peer with the **wall clock held still**.
+ *
+ * `deliver()` is the honest one — it waits out the receiver's turn gap, which is
+ * what a real block gets. Two of the tests below need the opposite: they exist
+ * precisely because `#heardRecently` is still true and the answer has *not* gone
+ * out, so advancing the wall clock would resolve the very race under test.
+ */
+async function feed(to: Peer, frames: Uint8Array[]): Promise<void> {
+  await settle();
+  if (frames.length === 0) return;
+  // The block only decodes after a real 1.92 s of audio, so the room clock moves
+  // by a whole block before the first chunk is fed.
+  roomClock += BLOCK_DURATION_SECONDS + 1;
+  to.codec.rxQueue.push(...frames);
+  for (let index = 0; index < frames.length; index += 1) {
+    roomClock += SAMPLE_FRAME / 48_000;
+    feedChunk(to);
+  }
   await settle();
 }
 
@@ -856,6 +887,381 @@ describe("F6 — a module death while the pump is sealing a note", () => {
       `#pumping was left true by the module death: state=${displayer.session.state} ` +
         `busy=${String(displayer.session.busy)} plays=${JSON.stringify(displayer.context.plays)}`,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("H8 — the second door into the same strand: the visibility flush", () => {
+  it("a resumed note may not take the turn ahead of an owed PAIR answer", async () => {
+    // The fix gave `#onChannelQuiet` an owed PAIR answer priority over a queued
+    // note, and gave `#pump` the same priority. It did *not* give
+    // `#onVisibility` either: its "resume a held message" branch runs before
+    // anything else and is not gated on `#pendingPairReply`, and it does not fire
+    // for a displayer at all (the enterer branch is the enterer's alone). So the
+    // one door that survives the fix is the hide.
+    //
+    // The shape below is entirely ordinary: the displayer's composer goes live on
+    // `pairing: paired`, a person sends their first note in the ~700 ms before the
+    // answer goes out, and they switch tabs while the note waits.
+    let sent = false;
+    const displayer = await createPeer({
+      label: "displayer",
+      role: "displayer",
+      onEvent: (event: SessionEvent): void => {
+        if (event.type !== "pairing" || event.state.kind !== "paired" || sent) return;
+        sent = true;
+        displayer.session.send("hi");
+      },
+    });
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      pairingCode: displayer.session.pairingCode,
+    });
+    displayer.session.start();
+    enterer.session.start();
+    await until("the enterer's PAIR frame", () => enterer.codec.txLog.length > 0);
+    await settle();
+    expect(enterer.airs()).toEqual(["pair"]);
+
+    // The block reaches the displayer. `#noteHeard` arms the turn gap and the
+    // answer is owed; the wall clock is held, so it stays owed.
+    await feed(displayer, enterer.takeAir());
+    expect(displayer.session.pairing.kind).toBe("paired");
+    expect(playsOfKind(displayer, "pair").length, "the answer went out early").toBe(0);
+    expect(
+      playsOfKind(displayer, "message").length,
+      "the note took the turn before the answer was owed",
+    ).toBe(0);
+    // The note is claimed and *yielded*: it has a rendered `sending` row, no
+    // attempt spent, and no ACK timer — its only way back is a quiet moment.
+    expect(displayer.outbound().at(-1)?.status).toBe("sending");
+    expect(displayer.session.busy).toBe(true);
+
+    // The tab goes away. The quiet timer that was already armed fires into
+    // `hidden_hold`, where `TRANSMIT_BEGIN` is refused: the answer is still owed
+    // and, correctly, nothing else re-sends it.
+    setVisibility("hidden");
+    await settle();
+    expect(displayer.session.state).toBe("hidden_hold");
+    await vi.advanceTimersByTimeAsync(TURN_GAP_MS + 1);
+    await settle();
+    expect(playsOfKind(displayer, "pair").length, "the answer went out while hidden").toBe(0);
+    expect(playsOfKind(displayer, "message").length, "the note went out while hidden").toBe(0);
+
+    // And now the tab comes back. This is the moment the fix exists for: the
+    // answer is owed, and nothing on the air is ours.
+    setVisibility("visible");
+    await settle();
+    const answer = playsOfKind(displayer, "pair")[0];
+    expect(
+      answer,
+      "the owed answer was never sent after the tab came back: " +
+        `state=${displayer.session.state} pairing=${displayer.session.pairing.kind} ` +
+        `plays=${JSON.stringify(displayer.context.plays.map((play) => play.kind))}`,
+    ).toBeDefined();
+    const note = playsOfKind(displayer, "message")[0];
+    if (answer !== undefined && note !== undefined) {
+      expect(answer.at, "the note went out ahead of the answer it preempts").toBeLessThanOrEqual(
+        note.at,
+      );
+    }
+    expect(
+      overlaps(displayer),
+      `our own audio stacked: ${JSON.stringify(displayer.context.plays)}`,
+    ).toEqual([]);
+
+    // The consequence, in the words the user sees: the enterer is waiting for a
+    // PAIR frame that never comes, so it times out against a displayer that
+    // believes itself paired.
+    for (let round = 0; round < 4 && enterer.session.pairing.kind !== "paired"; round += 1) {
+      await converse(displayer, enterer, 1);
+      await converse(enterer, displayer, 1);
+    }
+    expect(
+      enterer.session.pairing.kind,
+      "the enterer never heard the answer it was owed: " +
+        `${displayer
+          .outbound()
+          .map((event) => event.status)
+          .join(",")}`,
+    ).toBe("paired");
+  });
+});
+
+describe("H9 — one PAIR frame at a time, checked *after* the seal", () => {
+  it("two builds in flight must not put two blocks on the air", async () => {
+    // `#transmitPairFrame` asks for the air and *then* awaits the key check, and
+    // it never re-checks anything after that await. `#txBusy` is the flag that
+    // looks like it would, and it is not read anywhere as a guard. So two calls
+    // that overlap by one threadpool round trip — the visibility flush and the
+    // turn-gap timer, both of which reach this method with no other guard — put
+    // two *byte-identical* PAIR blocks on the air at `start(0)`. They sum at the
+    // peer, which is exactly the failure the `#airIsOurs` gate was added for, and
+    // it never becomes visible in `txLog.length` alone: the frames are equal.
+    const subtle = globalThis.crypto.subtle as unknown as Record<string, unknown>;
+    const realSign = (subtle["sign"] as (...args: unknown[]) => Promise<unknown>).bind(subtle);
+    // A gate, not a turn count: a turn count races the very thing under test,
+    // because the second build has to *finish* inside the first one's suspension.
+    let parked = false;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    subtle["sign"] = async (...args: unknown[]): Promise<unknown> => {
+      const mac = await realSign(...args);
+      if (!parked) {
+        parked = true;
+        await gate;
+      }
+      return mac;
+    };
+    try {
+      const enterer = await createPeer({
+        label: "enterer",
+        role: "enterer",
+        pairingCode: "F4TKQ2ZR",
+      });
+      enterer.session.start();
+      // The enterer's own PAIR frame is in flight, holding the flag it raised.
+      await until("the first PAIR seal to park", () => parked);
+      // Something in the room we cannot read: the turn gap is armed, and the
+      // still-unplayed answer is behind it.
+      await feed(enterer, [new Uint8Array(64)]);
+      expect(enterer.session.stats.framesUnreadable).toBe(1);
+      await vi.advanceTimersByTimeAsync(TURN_GAP_MS + 1);
+      await settle();
+      // The second build has now run to completion *inside* the first one's
+      // suspension, and put its block on the air: one transmission while another
+      // is still in flight, which is the overlap the gate exists to produce.
+      expect(enterer.codec.txLog.length, "the second build never landed").toBe(1);
+      release();
+      await settle();
+      await settle();
+
+      const first = enterer.codec.encoded[0] ?? new Uint8Array(0);
+      const second = enterer.codec.encoded[1] ?? new Uint8Array(0);
+      const identical =
+        first.length === second.length && first.every((byte, at) => byte === second[at]);
+      expect(
+        overlaps(enterer),
+        `two of our own PAIR blocks sounded at once (byte-identical: ${String(identical)}): ` +
+          `${JSON.stringify(enterer.context.plays)}`,
+      ).toEqual([]);
+      expect(
+        enterer.codec.txLog.length,
+        "two PAIR blocks went on the air: " + JSON.stringify(enterer.context.plays),
+      ).toBe(1);
+    } finally {
+      release();
+      subtle["sign"] = realSign;
+    }
+  });
+});
+
+describe("H10 — a PAIR reply raised on every call cannot re-arm for ever", () => {
+  it("a frozen room clock re-arms and never transmits, a bounded number of times", async () => {
+    // `#transmitPairFrame` raises `#pendingPairReply` on *every* call, before it
+    // asks for the air, and that flag is what `#onChannelQuiet` walks into it.
+    // A suspension, a paused AudioContext, or a room clock that has stopped is
+    // the case where `#airIsOurs()` is false every single time — so this is the
+    // loop the fix could have created, and this is the proof that it terminates:
+    // nothing goes on the air, and the re-arm count is one per air window in the
+    // window measured, not a spin.
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      pairingCode: "Q7WS3M4P",
+    });
+    enterer.session.start();
+    await until("the enterer's PAIR frame", () => enterer.codec.txLog.length > 0);
+    await settle();
+    const played = enterer.codec.txLog.length;
+    expect(played).toBe(1);
+    // The room clock stops inside the transmit window and never moves again, so
+    // `#speakerBusy()` is true for the rest of the session. Coming back to the
+    // tab is what re-enters `#transmitPairFrame` with the flag still owed: the
+    // enterer branch of `#onVisibility` is the one path that calls it.
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      setVisibility("hidden");
+      await settle();
+      setVisibility("visible");
+      await settle();
+      // Now owed and unsendable. A whole minute of wall clock, which is the
+      // worst case for the fix: every re-arm is another attempt at the answer.
+      for (let round = 0; round < 24; round += 1) {
+        await vi.advanceTimersByTimeAsync(2_500);
+        await settle();
+      }
+      expect(
+        enterer.codec.txLog.length,
+        "the frozen clock kept putting blocks on the air: " + JSON.stringify(enterer.context.plays),
+      ).toBe(played);
+      const reArms = setTimeoutSpy.mock.calls.filter((call) => {
+        const delay = call[1];
+        return typeof delay === "number" && delay > 2_000 && delay < 2_900;
+      }).length;
+      // 60 s / 2.42 s = 25 windows, plus the arm that created it. Bounded and
+      // small: this is a poll, not a loop that spins.
+      expect(reArms, "the re-arm is unbounded").toBeLessThan(40);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+});
+
+describe("K1 — the `keys` injection point is sound", () => {
+  it("a shared PairingKeys serves two sessions while its peers derive their own", async () => {
+    // The memo is keyed by `senderId`, so one object holds two cached keys — one
+    // per direction — and the separation P1 depends on is a property of the
+    // derivation (HKDF over `info = direction/<senderId>`), not of the object.
+    // What is asserted here is the behaviour a comment cannot carry: a session
+    // given the caller's keys, paired with a peer that derived its own, exchanges
+    // messages *both ways*, and a second session then reuses the same object with
+    // a second peer.
+    //
+    // Object identity is deliberately not asserted: two *concurrent*
+    // `directionKey` calls both derive, because the memo is written after the
+    // await, so two equal-material CryptoKey objects can exist. That is a wasted
+    // import, not a weakened key.
+    const shared = await keysFor("SHARED34");
+    const displayer = await createPeer({
+      label: "displayer",
+      role: "displayer",
+      pairingCode: "SHARED34",
+      keysOverride: shared,
+    });
+    const enterer = await createPeer({
+      label: "enterer",
+      role: "enterer",
+      pairingCode: "SHARED34",
+    });
+    await pairUp(displayer, enterer);
+    expect(displayer.session.pairing.kind).toBe("paired");
+    expect(enterer.session.pairing.kind).toBe("paired");
+    // Distinct session salts, so one shared key still means distinct nonces (P2).
+    expect(
+      Buffer.from(displayer.session.sessionSalt).equals(Buffer.from(enterer.session.sessionSalt)),
+      "two sessions on one key set shared a nonce prefix",
+    ).toBe(false);
+    expect(enterer.session.send("up").ok).toBe(true);
+    await converse(enterer, displayer, 4);
+    expect(displayer.texts()).toEqual(["up"]);
+    expect(displayer.session.send("down").ok).toBe(true);
+    await converse(displayer, enterer, 4);
+    expect(enterer.texts()).toEqual(["down"]);
+
+    // And the same object, a second time.
+    displayer.session.stop();
+    enterer.session.stop();
+    const again = await createPeer({
+      label: "displayer2",
+      role: "displayer",
+      pairingCode: "SHARED34",
+      keysOverride: shared,
+    });
+    const peer2 = await createPeer({ label: "enterer2", role: "enterer", pairingCode: "SHARED34" });
+    await pairUp(again, peer2);
+    expect(again.session.pairing.kind).toBe("paired");
+    expect(peer2.session.pairing.kind).toBe("paired");
+  });
+
+  it("DOCUMENTS: injected keys that match no displayed code still pair, silently", async () => {
+    // The guard question the injection point raises, answered honestly: there is
+    // none, and there cannot be one that is cheap — proving a key set belongs to a
+    // code means re-deriving it. So the failure is deferred to the first
+    // handshake, and what a caller gets is two devices that display *different*
+    // pairing codes and pair successfully anyway. Reachable only from a caller
+    // that sets `keys`; the product path (ui/controller.ts) never does.
+    const wrong = await keysFor("SECRETA2");
+    const a = await createPeer({
+      label: "a",
+      role: "displayer",
+      pairingCode: "CHANGED8",
+      keysOverride: wrong,
+    });
+    const b = await createPeer({ label: "b", role: "enterer", pairingCode: "SECRETA2" });
+    expect(a.session.pairingCode).toBe("CHANGED8");
+    await pairUp(a, b);
+    expect(
+      a.session.pairing.kind,
+      "documented behaviour changed: an injected key set no longer pairs with the code it does not match",
+    ).toBe("paired");
+    expect(b.session.pairing.kind).toBe("paired");
+  });
+});
+
+describe("K2 — a malformed `keys` has no owner", () => {
+  it("is a rejection nothing catches, on the one path with no catch at all", async () => {
+    // `SoundChatSession.create` accepts anything shaped like `PairingKeys` and
+    // stores it without touching it (FrameCodec keeps the reference and only
+    // dereferences it when a frame is built). So a caller's mistake surfaces
+    // inside `#transmitPairFrame`, which is `async` and reached with `void` at
+    // three call sites and has **no** try/catch — unlike `#pump`, which reports
+    // the same class of failure through `onListenerError`. The user sees
+    // nothing at all and node reports an unhandled rejection.
+    const rejections: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    const moduleErrors: unknown[] = [];
+    try {
+      const broken = await createPeer({
+        label: "broken",
+        role: "enterer",
+        pairingCode: "BRKENCDE",
+        keysOverride: {} as PairingKeys,
+        onModuleError: (error: unknown): void => {
+          moduleErrors.push(error);
+        },
+      });
+      broken.session.start();
+      await settle();
+      // FIXED IN PHASE 4V, second pass: the failure is now *reported* — on the
+      // module channel, once, terminal — rather than escaping a `void` call site.
+      expect(moduleErrors.length, "reported once, on the module channel").toBe(1);
+      expect(moduleErrors[0]).toBeInstanceOf(TypeError);
+      expect(broken.session.state, "and the session is terminal, not deaf-but-healthy").toBe(
+        "module_error",
+      );
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    expect(
+      rejections.map((reason) => String(reason)),
+      "a caller-supplied `keys` that is not PairingKeys became an unowned rejection",
+    ).toEqual([]);
+  });
+});
+
+describe("PIN — the enterer's confirmation window still covers the answer's turn", () => {
+  it("the arithmetic holds, from the enterer's own block to the answer decoding", () => {
+    // The fix changed *when* the answer goes out (never preempted, always at the
+    // first quiet moment after the block decodes), so this window now carries all
+    // of the traffic instead of some of it. Measured, from the enterer's
+    // transmission start:
+    //   our PAIR block out               1920
+    //   the turn gap before a reply       700
+    //   the displayer's answer block      1920
+    //   its Rx tail still closed           500  (conservative: the decoder slides,
+    //                                           so the answer's own 90 frames are
+    //                                           the first pure span and the tail is
+    //                                           slack — charged here anyway)
+    const chain =
+      BLOCK_DURATION_MS + TURN_GAP_MS + BLOCK_DURATION_MS + RX_PAUSE_TAIL_SECONDS * 1_000;
+    expect(
+      PAIR_CONFIRM_TIMEOUT_MS,
+      `the enterer now gives up at ${PAIR_CONFIRM_TIMEOUT_MS} ms while the answer it is ` +
+        `waiting for cannot decode before ${chain} ms`,
+    ).toBeGreaterThanOrEqual(chain);
+    // And the two clocks the fix compares are the ones this chain is built from:
+    // the wall-clock timers above, and the AudioContext pause, which is one block
+    // plus the measured tail and is what `#speakerBusy` reads.
+    expect(BLOCK_DURATION_SECONDS + RX_PAUSE_TAIL_SECONDS).toBeCloseTo(2.42, 5);
   });
 });
 

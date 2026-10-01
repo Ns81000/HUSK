@@ -198,7 +198,11 @@ async function until(what: string, ready: () => boolean): Promise<void> {
 }
 
 async function settle(turns = 256): Promise<void> {
-  await drainAsync({ activity: () => "", floorTurns: turns });
+  // Opts out of the shared drain's wall-clock floor, deliberately. This suite
+  // drains hundreds of times per test and 25 ms a call blew the 5 s per-test
+  // timeout; it is safe here because every wait it makes is on AEAD work its own
+  // fixture has already resolved, so nothing of ours is left on the threadpool.
+  await drainAsync({ activity: () => "", floorTurns: turns, quietMs: 0 });
 }
 
 /** Lays a schedule onto the room the way a speaker and a room do. */

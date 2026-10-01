@@ -199,31 +199,32 @@ describe("drainAsync — the one shared drain", () => {
     }
   });
 
-  it("a signature that never moves pays the turn floor and no wall-clock floor", async () => {
+  it("a signature that never moves still pays the wall-clock floor", async () => {
+    // REPAIRED IN PHASE 4V, second pass. This asserted the opposite, on the
+    // reasoning that a drain which saw nothing change had nothing outstanding on
+    // the threadpool. That is false of every `activity()` in this namespace: they
+    // count what a *completed* step changed, so a job already handed to libuv and
+    // not yet delivered is invisible to them. "Nothing has landed yet" is not
+    // "nothing is in flight" — the exact state the floor exists for.
     const immediate = vi.spyOn(globalThis, "setImmediate");
     const startedAt = Date.now();
     try {
       await drainAsync({ activity: () => "" });
-      // The floor is for work already outstanding on the threadpool. Nothing
-      // moved, so there was nothing outstanding, and paying 25 ms to prove it
-      // would make every drain in a render-only suite a fixed cost — which is what
-      // blew the 5 s per-test timeout when this was unconditional.
-      expect(immediate.mock.calls.length).toBe(256);
-      expect(Date.now() - startedAt).toBeLessThan(20);
+      expect(immediate.mock.calls.length).toBeGreaterThan(256);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS - 5);
     } finally {
       immediate.mockRestore();
     }
   });
 
-  it("a signature that moved once pays the wall-clock floor", async () => {
-    // Moves on the second observation only, so the drain's streak is reached and
-    // the floor has a real reason to be waited out.
-    let observations = 0;
-    const startedAt = Date.now();
-    await drainAsync({ activity: () => String(observations++ === 1 ? 1 : 0) });
-    // Something *was* outstanding — that is the case the floor exists for.
-    expect(observations).toBeGreaterThan(2);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS);
+  it("`quietMs: 0` opts out, for a suite that has proved nothing is on a threadpool", async () => {
+    const immediate = vi.spyOn(globalThis, "setImmediate");
+    try {
+      await drainAsync({ activity: () => "", quietMs: 0 });
+      expect(immediate.mock.calls.length).toBe(256);
+    } finally {
+      immediate.mockRestore();
+    }
   });
 
   it("still bounds a chain that never settles", async () => {
@@ -268,5 +269,53 @@ describe("drainAsync — the one shared drain", () => {
     await drainAsync({ activity: () => String(observations++ === 1 ? 1 : 0) });
     // Costs real time on purpose (the header says ~25 ms a call).
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS - 5);
+  });
+
+  it("SIGNS: a signature that has not moved YET is not evidence of nothing outstanding", async () => {
+    // The premise `7e50ad2` gives for skipping the floor is "a drain that watched
+    // its own signature and saw nothing move had nothing outstanding". That is
+    // false of every real `activity()` in this namespace: they are made of counts
+    // that a *completed* step moves (`blocksDecoded`, `events.length`,
+    // `txLog.length`, `plays.length`, the transport state), so a job already handed
+    // to libuv and not yet delivered is invisible. `moved === false` therefore
+    // means "nothing has landed yet", not "nothing is in flight" — and under
+    // exactly the contended threadpool the floor was added for, the drain returns
+    // early with the job still on the pool. That is the early return the whole
+    // file exists to prevent, and it is the flake class 7e50ad2 reported closing.
+    let landed = false;
+    const startedAt = Date.now();
+    await drainAsync({ activity: () => (landed ? "landed" : "") });
+    const elapsed = Date.now() - startedAt;
+    // The outstanding job lands here, long after the drain returned.
+    landed = true;
+    expect(
+      elapsed,
+      "the drain returned in its turn budget while work it cannot see was still on the threadpool",
+    ).toBeGreaterThanOrEqual(DRAIN_QUIET_MS);
+  });
+
+  it("with no activity signature the floor is paid unconditionally", async () => {
+    // The skip needs `activity !== undefined`, so the no-signature caller cannot
+    // detect movement and always pays. That is the right *behaviour* — the
+    // alternative is an early return for the one caller that knows least — but it
+    // is the opposite of the file header's "skipped when nothing moved", and a
+    // `drainAsync()` in a loop costs 25 ms a call. Pinned so the cost is visible
+    // to whoever adds the next such call.
+    const startedAt = Date.now();
+    await drainAsync();
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS - 5);
+  });
+
+  it("a signature that oscillates throws, and the message does not say who is at fault", async () => {
+    // Every turn differs from the last, so the streak can never reach 32 and the
+    // turn cap ends it. Throwing is right — it is the one failure direction that
+    // cannot be mistaken for a settled chain — but the message asserts a fact
+    // about *the chain* that may be false: an idle chain with a caller's signature
+    // that ticks produces exactly the same error. Recorded, not fixed: the
+    // alternative is a second exit condition nobody reads.
+    let spin = 0;
+    await expect(drainAsync({ activity: () => String(spin++ % 2) })).rejects.toThrow(
+      /never settled/,
+    );
   });
 });

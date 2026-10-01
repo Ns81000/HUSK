@@ -483,6 +483,13 @@ export class SoundChatSession {
       options.pairingCode === undefined
         ? generatePairingCode(options.random)
         : validatePairingCode(options.pairingCode);
+    // An injected `keys` is used as given and nothing dereferences it until a frame
+    // is built. A caller that got the shape wrong therefore fails at *that* point,
+    // inside `#transmitPairFrame` — which is `async` and reached with `void` at
+    // three sites, so the failure used to escape as an unowned rejection with no
+    // user-legible message anywhere (Phase 4V deep-dive, second pass, K2).
+    // `#transmitPairFrame` reports through the module channel instead, like every
+    // other place a misuse can surface: our own misuse, reported, never silent.
     const keys = options.keys ?? (await derivePairingKeys(code));
     return new SoundChatSession(options, code, keys);
   }
@@ -734,15 +741,35 @@ export class SoundChatSession {
     let frame: Uint8Array;
     try {
       frame = await this.#wire.buildPairFrame(challenge);
+    } catch (error) {
+      // A codec call that throws is a module death; a frame the *caller's* broken
+      // `keys` cannot produce is our own misuse. Both are reported once and neither
+      // is retried, and neither escapes into the void a `void` call site leaves.
+      this.#txBusy = false;
+      this.#pendingPairReply = false;
+      this.#moduleFailed(error);
+      return;
     } finally {
       this.#txBusy = false;
+    }
+    // Re-checked *after* the seal, not only before it: `buildPairFrame` is an HMAC
+    // on the threadpool, so two calls that overlap by one round trip both clear
+    // the first gate and both reach `#play`. Measured: two byte-identical PAIR
+    // blocks scheduled at the same room-clock instant, which sum at the peer
+    // (Phase 4V deep-dive, second pass, H9).
+    this.#pendingPairReply = false;
+    if (!this.#airIsOurs()) {
+      this.#pendingPairReply = true;
+      return;
     }
     this.#emit({ type: "TRANSMIT_BEGIN" });
     // The flag is consumed here rather than at the call site: every way this
     // method can fail to play (the machine refused the turn, the module died) is a
     // way the answer is still owed.
-    if (this.#state !== "transmitting") return;
-    this.#pendingPairReply = false;
+    if (this.#state !== "transmitting") {
+      this.#pendingPairReply = true;
+      return;
+    }
     if (!this.#play(frame)) {
       this.#pendingPairReply = true;
       return;
@@ -829,6 +856,17 @@ export class SoundChatSession {
     // sitting delivered on screen, with `acksSent` still 0.
     if (this.#pendingAck !== null && !this.#heardRecently) {
       if (this.#attemptAck()) return;
+    }
+    // A handshake answer still owed outranks the held message, exactly as it does in
+    // `#onChannelQuiet` and `#pump`. This is the third door into the turn, and
+    // leaving it ungated stranded the answer for good: the displayer resumed its
+    // note on `VISIBLE`, `#pendingPairReply` stayed set with nothing armed, and no
+    // path in the session re-sends a PAIR answer — so the enterer sat in
+    // `awaiting-confirmation` and timed out against a device that reported itself
+    // paired (Phase 4V deep-dive, second pass, H8).
+    if (this.#pendingPairReply) {
+      void this.#transmitPairFrame();
+      return;
     }
     // Coming back: resume a held message before starting anything new.
     if (this.#outbound !== null) {

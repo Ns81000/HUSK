@@ -17,16 +17,15 @@
  * in the *next* drain, where it reads as fresh activity, and the assertion in
  * between is made against a half-finished exchange.
  *
- * **Why the wall-clock floor is conditional rather than opt-in.** It costs real
- * time — 25 ms a call, measured — so making every caller pay it blew a 5 s
- * per-test timeout in the drain-heavy suites, and making it opt-in instead left
- * four suites still able to return early (measured: 3 flakes in 5 sequential
- * `pnpm test` runs, a different test each time). The resolution is that the floor
- * is for work that is *already outstanding* on the threadpool, and a drain that
- * watched its own signature and saw nothing move has nothing outstanding. So it
- * is the default, skipped when nothing moved. A suite whose problem is that it
- * asserts on a *specific* fact should still be using a condition-wait on that
- * fact; this is the barrier, not the assertion.
+ * **Why the wall-clock floor is unconditional.** It has been tried three ways and
+ * two of them were wrong. Opt-in left four suites able to return early (3 flakes
+ * in 5 sequential runs). Skipping it when the signature had not moved was worse,
+ * and subtly so: an `activity()` here counts what a *completed* step changed, so
+ * a job already on libuv and not yet delivered is invisible to it — "nothing has
+ * landed yet" is not "nothing is in flight", which is exactly the state the floor
+ * exists for. So it is paid every time. The cost is 25 ms a call and a suite that
+ * cannot afford it should keep its own cheaper drain rather than get a shared one
+ * whose behaviour depends on what happened to move.
  *
  * **Why yielding matters as much as the duration.** A pending libuv completion is
  * delivered on an event-loop turn. The fake timers these suites install do not
@@ -59,8 +58,8 @@ export type DrainOptions = {
   /** Override the turn floor. */
   readonly floorTurns?: number;
   /**
-   * Also wait out this many wall-clock milliseconds of no change. Costs real time;
-   * see the file header for who should ask for it.
+   * Override the wall-clock floor. Zero skips it, and only a suite that has proved
+   * the jobs it waits for are not on a threadpool should pass zero.
    */
   readonly quietMs?: number;
 };
@@ -70,7 +69,6 @@ export async function drainAsync(options: DrainOptions = {}): Promise<void> {
   const deadline = Date.now() + 20_000;
   let quiet = 0;
   let quietSince = Date.now();
-  let moved = false;
   let turn = 0;
   // With an activity signature, "finished" means unchanged for a streak of turns.
   // Without one there is nothing to detect change with, so the streak would be a
@@ -86,21 +84,25 @@ export async function drainAsync(options: DrainOptions = {}): Promise<void> {
       quiet += 1;
     } else {
       quiet = 0;
-      moved = true;
       quietSince = Date.now();
     }
     turn += 1;
   }
-  // The wall-clock floor, and only when there is something it is for.
+  // The wall-clock floor, paid unconditionally.
   //
-  // Its whole purpose is to let a job already handed to libuv's threadpool finish
-  // being delivered. A job is only outstanding if something *changed* — so a drain
-  // that watched its own signature and saw nothing move had nothing outstanding,
-  // and paying 25 ms to prove it turned every drain in a render-only suite into a
-  // fixed cost. That is what made this opt-in, and opt-in is what left four
-  // suites still able to return early. The default is now the floor, skipped when
-  // nothing moved.
-  if (!moved && activity !== undefined) return;
+  // An earlier version skipped it when the activity signature had not moved,
+  // reasoning that a drain which saw nothing change had nothing outstanding. That
+  // is false of every `activity()` in this namespace: they are counts a *completed*
+  // step moves, so a job already handed to libuv and not yet delivered is
+  // invisible to them. "Nothing has landed yet" is not "nothing is in flight" —
+  // which is precisely the state this floor exists for, so skipping it reopened the
+  // exact early return the file was written to prevent (Phase 4V deep-dive, second
+  // pass, SIGNS).
+  //
+  // The cost is real — 25 ms a call, measured — and it is paid honestly rather
+  // than paid sometimes: a drain that sometimes waits is a flake generator. A
+  // suite that drains hundreds of times and cannot afford it should keep its own
+  // cheaper drain, not get a shared one whose behaviour depends on what moved.
   // Bounded exactly like the first loop, and for the same reason. A suite that
   // installs vitest's *default* fake timers fakes `Date`, so `Date.now()` never
   // reaches `quietSince + quietMs` and an unbounded loop here would spin until the
