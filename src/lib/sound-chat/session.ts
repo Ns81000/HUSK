@@ -851,7 +851,10 @@ export class SoundChatSession {
     // turn nobody wants is a timer that sits there for the length of a block and
     // then does nothing, and "nothing of ours is armed while we are idle" is a
     // property worth being able to assert.
-    if (this.#outbound === null && this.#pending.length === 0) return;
+    // `#pumping` counts too: a pump that has claimed a submission has already
+    // shifted it off `#pending` but has not yet built `#outbound`, and a note
+    // stranded in exactly that gap is the defect this arm exists to prevent.
+    if (this.#outbound === null && this.#pending.length === 0 && !this.#pumping) return;
     this.#clearTimer("quiet");
     const waitMs = Math.max(
       0,

@@ -365,6 +365,16 @@ async function withRejectionWatch(body: () => Promise<void>): Promise<unknown[]>
   return rejections;
 }
 
+/**
+ * The air window an acknowledgement of ours holds the turn open: one block plus
+ * the measured 0.5 s tail, then the turn gap.
+ *
+ * Every loop in this file that waits for an ACK to go out has to advance both
+ * clocks by this much. Advancing only one turn gap of fake time is what made
+ * "the sender resolved" depend on how the loop landed.
+ */
+const reAckWindowMs = BLOCK_DURATION_MS + 500 + TURN_GAP_MS + 1;
+
 describe("F9 — the re-ACK budget is a real bound", () => {
   it("500 redeliveries of one block produce a bounded number of transmissions", async () => {
     const { displayer, enterer } = await pairedPair();
@@ -384,7 +394,6 @@ describe("F9 — the re-ACK budget is a real bound", () => {
     // ACK was deferred and the transmission count depended on how the loop landed.
     // That is the flake this loop had: one `pnpm test` run in four failed here.
     const rounds = 500;
-    const reAckWindowMs = BLOCK_DURATION_MS + 500 + TURN_GAP_MS + 1;
     for (let round = 0; round < rounds; round += 1) {
       displayer.codec.rxQueue.push(frame);
       roomClock += 3;
@@ -511,6 +520,18 @@ describe("F9 — the re-ACK budget is a real bound", () => {
       enterer.codec.rxQueue.push(...acks);
       roomClock += 3;
       feedChunks(enterer, acks.length);
+      await settle();
+
+      // FIXED IN PHASE 4V. The sender's *own* Rx feed is closed for its
+      // transmission, and the acknowledgement it is waiting for arrives while that
+      // window is still open, so the block is decoded but dropped rather than
+      // processed. This loop read the sender's state immediately after feeding and
+      // so reported whichever side of that window it happened to land on —
+      // measured `message 25: the sender resolved: expected 25 to be 26` in 1 of 3
+      // sequential full-suite runs. Both clocks now move out past the window, which
+      // is what production's own clock does.
+      roomClock += reAckWindowMs / 1000;
+      await vi.advanceTimersByTimeAsync(reAckWindowMs);
       await settle();
       expect
         .soft(
