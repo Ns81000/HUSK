@@ -25,7 +25,7 @@ import {
 } from "./crypto";
 import { FrameCodec, FRAME_KIND, PAIR_BODY_BYTES, PAIR_KEY_CHECK_OFFSET } from "./protocol";
 import { SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;

@@ -17,7 +17,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS } from "../session";
 import { MAX_TRANSCRIPT_ENTRIES, SoundChatUiController } from "./controller";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const SAMPLE_FRAME = 1024;
 

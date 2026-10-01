@@ -20,7 +20,7 @@ import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
 import { FrameCodec } from "./protocol";
 import { SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const SAMPLE_FRAME = 1024;
 let roomClock = 10;

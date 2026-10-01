@@ -28,8 +28,14 @@ import {
   TAG_BYTES,
   WIRE_BLOCK_BYTES,
 } from "./protocol";
-import { MAX_RE_ACKS_PER_MESSAGE, SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import {
+  BLOCK_DURATION_MS,
+  MAX_RE_ACKS_PER_MESSAGE,
+  SoundChatSession,
+  TURN_GAP_MS,
+  type SessionEvent,
+} from "./session";
+import { drainAsync } from "./drain";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;
@@ -371,13 +377,21 @@ describe("F9 — the re-ACK budget is a real bound", () => {
     const handshakePlays = displayer.plays();
     // A recording of a single message, played 500 times, one redelivery per turn
     // gap — the exact shape the budget exists for.
+    //
+    // Both clocks, and for the whole window an acknowledgement of ours holds the
+    // turn open (one block plus the measured tail). Advancing only one turn gap of
+    // fake time left the session believing its speaker was still busy, so the owed
+    // ACK was deferred and the transmission count depended on how the loop landed.
+    // That is the flake this loop had: one `pnpm test` run in four failed here.
     const rounds = 500;
+    const reAckWindowMs = BLOCK_DURATION_MS + 500 + TURN_GAP_MS + 1;
     for (let round = 0; round < rounds; round += 1) {
       displayer.codec.rxQueue.push(frame);
       roomClock += 3;
       feedChunks(displayer, 1);
       await settle();
-      await vi.advanceTimersByTimeAsync(701);
+      roomClock += reAckWindowMs / 1000;
+      await vi.advanceTimersByTimeAsync(reAckWindowMs);
       await settle();
       displayer.takeAir();
     }

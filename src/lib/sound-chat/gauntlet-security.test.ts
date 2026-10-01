@@ -53,7 +53,7 @@ import {
   type FrameRejection,
 } from "./protocol";
 import { SoundChatSession, TURN_GAP_MS, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const CODE = "ABCD2345";
 const OTHER_CODE = "ABCD2346";

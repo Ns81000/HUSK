@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SoundChatCodec } from "../codec";
 import { MAX_PENDING_MESSAGES, SoundChatSession, TURN_GAP_MS } from "../session";
 import type { SessionEvent } from "../session";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const SAMPLE_FRAME = 1024;
 const CODE = "ABCD2345";

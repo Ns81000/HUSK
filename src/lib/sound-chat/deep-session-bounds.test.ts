@@ -15,7 +15,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { flushReceiver, openSoundChatCodec, type SoundChatCodec } from "./codec";
 import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 import {
   FrameCodec,
   InboundAssembler,

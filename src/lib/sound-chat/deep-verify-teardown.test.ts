@@ -20,7 +20,7 @@ import type { RandomSource } from "./crypto";
 import { derivePairingKeys } from "./crypto";
 import { FrameCodec, MAX_SEND_ATTEMPTS } from "./protocol";
 import { BLOCK_DURATION_MS, SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;

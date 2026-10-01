@@ -17,7 +17,7 @@ import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS } from "../session";
 import { measureMessage } from "./budget";
 import { SoundChatUiController, type SoundChatUiState } from "./controller";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const SAMPLE_FRAME = 1024;
 

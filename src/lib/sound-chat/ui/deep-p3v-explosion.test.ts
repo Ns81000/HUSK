@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { CodecModuleError, openSoundChatCodec } from "../codec";
 import { ACK_TIMEOUT_MS, TURN_GAP_MS } from "../session";
 import { MAX_NOTICES, MAX_TRANSCRIPT_ENTRIES, SoundChatUiController } from "./controller";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const SAMPLE_FRAME = 1024;
 

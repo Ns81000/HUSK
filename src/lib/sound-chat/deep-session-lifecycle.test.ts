@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { flushReceiver, openSoundChatCodec, type SoundChatCodec } from "./codec";
 import type { PairingRole } from "./pairing";
 import { SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const SAMPLE_FRAME = 1024;
 let roomClock = 10;

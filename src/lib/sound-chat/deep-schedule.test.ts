@@ -21,7 +21,7 @@ import {
   type SoundChatCodec,
 } from "./codec";
 import { REQUIRED_SAMPLE_RATE } from "./audio-io";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 import {
   BLOCK_DURATION_SECONDS,
   MAX_PENDING_MESSAGES,

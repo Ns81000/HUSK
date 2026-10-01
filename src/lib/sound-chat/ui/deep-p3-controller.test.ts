@@ -20,7 +20,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { openSoundChatCodec } from "../codec";
 import { TURN_GAP_MS, type SendRefusal } from "../session";
 import { SoundChatUiController } from "./controller";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;

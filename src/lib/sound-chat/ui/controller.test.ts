@@ -22,7 +22,7 @@ import { CodecModuleError, CodecUsageError, openSoundChatCodec } from "../codec"
 import { PAIRING_CODE_ALPHABET, PAIRING_CODE_LENGTH } from "../crypto";
 import { TURN_GAP_MS, type SendRefusal } from "../session";
 import { classifyFatalError, SoundChatUiController } from "./controller";
-import { drainAsync } from "../drain.ts";
+import { drainAsync } from "../drain";
 
 const CODE = "ABCD2345";
 const SAMPLE_FRAME = 1024;

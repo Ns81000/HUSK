@@ -19,7 +19,7 @@ import type { SoundChatCodec } from "./codec";
 import type { RandomSource } from "./crypto";
 import { MessageIdExhaustedError } from "./protocol";
 import type { PairingRole } from "./pairing";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 import {
   ACK_TIMEOUT_MS,
   BACKOFF_MAX_MS,

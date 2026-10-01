@@ -13,7 +13,7 @@ import { flushReceiver, openSoundChatCodec, type SoundChatCodec } from "./codec"
 import { derivePairingKeys } from "./crypto";
 import type { PairingRole } from "./pairing";
 import { FrameCodec, MAX_MESSAGE_BLOCKS, MAX_SEND_ATTEMPTS } from "./protocol";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 import {
   ACK_TIMEOUT_MS,
   BACKOFF_MAX_MS,

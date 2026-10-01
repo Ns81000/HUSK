@@ -17,7 +17,7 @@ import type { RandomSource } from "./crypto";
 import { MessageIdExhaustedError } from "./protocol";
 import type { PairingRole } from "./pairing";
 import { ACK_TIMEOUT_MS, BACKOFF_MAX_MS, SoundChatSession, type SessionEvent } from "./session";
-import { drainAsync } from "./drain.ts";
+import { drainAsync } from "./drain";
 
 const SAMPLE_FRAME = 1024;
 let roomClock = 10;
