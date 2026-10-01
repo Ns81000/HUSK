@@ -25,7 +25,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SoundChatCodec } from "./codec";
-import type { RandomSource } from "./crypto";
+import { derivePairingKeys, type PairingKeys, type RandomSource } from "./crypto";
 import { drainAsync } from "./drain";
 import type { PairingRole } from "./pairing";
 import { MAX_SEND_ATTEMPTS } from "./protocol";
@@ -252,6 +252,23 @@ type PeerOptions = {
 
 const createdPeers: Peer[] = [];
 
+/**
+ * Derived keys per pairing code, for this file only.
+ *
+ * A test cache, not production: it exists because the tests below need the keys
+ * that `SoundChatSession.create` would otherwise derive 600 000 PBKDF2 iterations
+ * at a time, on a threadpool of four threads shared with every other suite.
+ */
+const keyCache = new Map<string, Promise<PairingKeys>>();
+
+function keysFor(code: string): Promise<PairingKeys> {
+  const cached = keyCache.get(code);
+  if (cached !== undefined) return cached;
+  const derived = derivePairingKeys(code);
+  keyCache.set(code, derived);
+  return derived;
+}
+
 async function createPeer(options: PeerOptions): Promise<Peer> {
   const context = new FakeAudioContext();
   const codec = loopCodec(options.onEncode);
@@ -266,9 +283,21 @@ async function createPeer(options: PeerOptions): Promise<Peer> {
       options.onEvent?.(event);
     },
   };
-  const session = await SoundChatSession.create(
-    options.pairingCode === undefined ? base : { ...base, pairingCode: options.pairingCode },
-  );
+  // One PBKDF2 derivation per distinct code, for the whole file.
+  //
+  // Derivation is 600 000 iterations, ~150 ms on the libuv threadpool, and this
+  // suite builds nineteen sessions across a handful of codes. Deriving per
+  // session spends seconds of the four shared threads re-deriving the same keys,
+  // which loads the pool hard enough to tip unrelated timing-sensitive suites -
+  // measured as one extra full-suite failure on 2 of 3 runs, against a baseline
+  // without this file that was green every time.
+  const code = options.pairingCode;
+  const keys = code === undefined ? undefined : await keysFor(code);
+  const session = await SoundChatSession.create({
+    ...base,
+    ...(code === undefined ? {} : { pairingCode: code }),
+    ...(keys === undefined ? {} : { keys }),
+  });
   context.codec = codec;
   const peer: Peer = {
     label: options.label,

@@ -201,6 +201,22 @@ export type SoundChatSessionOptions = {
   role: PairingRole;
   /** The displayer may omit this and have a code generated for it. */
   pairingCode?: string;
+  /**
+   * Pre-derived keys for `pairingCode`, when the caller already has them.
+   *
+   * Derivation is **600 000 PBKDF2 iterations**, measured at ~150 ms on the
+   * libuv threadpool, and it is a pure function of the code. A suite that builds
+   * twenty sessions therefore spends ~3 s of the four shared threads on
+   * re-deriving the same handful of codes, which loads the pool hard enough to
+   * tip unrelated timing-sensitive suites over their deadlines — measured: a new
+   * 19-session suite added one failure to the full run on 2 of 3 occasions, while
+   * the baseline without it was 54/54 green.
+   *
+   * This is an injection point, not a cache: nothing here retains a derived key,
+   * so the property P9 depends on — no key material held anywhere but the caller's
+   * own closure — is unchanged, and the production path still derives.
+   */
+  keys?: PairingKeys;
   random?: RandomSource;
   onEvent?: (event: SessionEvent) => void;
   /** A thrown consumer of `onEvent`: reported here, never fatal. */
@@ -467,7 +483,7 @@ export class SoundChatSession {
       options.pairingCode === undefined
         ? generatePairingCode(options.random)
         : validatePairingCode(options.pairingCode);
-    const keys = await derivePairingKeys(code);
+    const keys = options.keys ?? (await derivePairingKeys(code));
     return new SoundChatSession(options, code, keys);
   }
 
