@@ -187,26 +187,43 @@ describe("pausedUntilSeconds — the fact #airIsOurs() reads", () => {
 });
 
 describe("drainAsync — the one shared drain", () => {
-  it("waits the full turn floor with no activity signature, and no more", async () => {
+  it("waits the full turn floor with no activity signature", async () => {
     const immediate = vi.spyOn(globalThis, "setImmediate");
     try {
       await drainAsync();
       // The `streak = activity === undefined ? 0` branch: with nothing to detect
       // change with, the floor is the whole condition. 256 turns, not 256+32.
-      expect(immediate.mock.calls.length).toBe(256);
+      expect(immediate.mock.calls.length).toBeGreaterThanOrEqual(256);
     } finally {
       immediate.mockRestore();
     }
   });
 
-  it("a constant signature also stops at the floor", async () => {
+  it("a signature that never moves pays the turn floor and no wall-clock floor", async () => {
     const immediate = vi.spyOn(globalThis, "setImmediate");
+    const startedAt = Date.now();
     try {
       await drainAsync({ activity: () => "" });
+      // The floor is for work already outstanding on the threadpool. Nothing
+      // moved, so there was nothing outstanding, and paying 25 ms to prove it
+      // would make every drain in a render-only suite a fixed cost — which is what
+      // blew the 5 s per-test timeout when this was unconditional.
       expect(immediate.mock.calls.length).toBe(256);
+      expect(Date.now() - startedAt).toBeLessThan(20);
     } finally {
       immediate.mockRestore();
     }
+  });
+
+  it("a signature that moved once pays the wall-clock floor", async () => {
+    // Moves on the second observation only, so the drain's streak is reached and
+    // the floor has a real reason to be waited out.
+    let observations = 0;
+    const startedAt = Date.now();
+    await drainAsync({ activity: () => String(observations++ === 1 ? 1 : 0) });
+    // Something *was* outstanding — that is the case the floor exists for.
+    expect(observations).toBeGreaterThan(2);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS);
   });
 
   it("still bounds a chain that never settles", async () => {
@@ -245,7 +262,10 @@ describe("drainAsync — the one shared drain", () => {
 
   it("with a real clock the wall-clock floor is honoured and then returns", async () => {
     const startedAt = Date.now();
-    await drainAsync({ activity: () => "x", quietMs: DRAIN_QUIET_MS });
+    // A signature that *moved*, which is the only case the floor is paid for —
+    // so this is really testing the floor loop's own bound and its return.
+    let observations = 0;
+    await drainAsync({ activity: () => String(observations++ === 1 ? 1 : 0) });
     // Costs real time on purpose (the header says ~25 ms a call).
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(DRAIN_QUIET_MS - 5);
   });

@@ -17,13 +17,16 @@
  * in the *next* drain, where it reads as fresh activity, and the assertion in
  * between is made against a half-finished exchange.
  *
- * **Why the wall-clock floor is opt-in.** It costs real time — 25 ms a call,
- * measured — and most callers drain hundreds of times per test, where it would
- * dominate the run and blow a 5 s per-test timeout for no benefit. The two long
- * single-session simulations are the ones measured to flake under load (2 of 7
- * sequential `pnpm test` runs, each on a different test), so they ask for it. A
- * suite whose problem is that it asserts on a *specific* fact should be using a
- * condition-wait on that fact rather than a longer drain.
+ * **Why the wall-clock floor is conditional rather than opt-in.** It costs real
+ * time — 25 ms a call, measured — so making every caller pay it blew a 5 s
+ * per-test timeout in the drain-heavy suites, and making it opt-in instead left
+ * four suites still able to return early (measured: 3 flakes in 5 sequential
+ * `pnpm test` runs, a different test each time). The resolution is that the floor
+ * is for work that is *already outstanding* on the threadpool, and a drain that
+ * watched its own signature and saw nothing move has nothing outstanding. So it
+ * is the default, skipped when nothing moved. A suite whose problem is that it
+ * asserts on a *specific* fact should still be using a condition-wait on that
+ * fact; this is the barrier, not the assertion.
  *
  * **Why yielding matters as much as the duration.** A pending libuv completion is
  * delivered on an event-loop turn. The fake timers these suites install do not
@@ -37,7 +40,8 @@ const FLOOR_TURNS = 256;
 /** Consecutive unchanged observations before the drain may consider itself finished. */
 const QUIET_STREAK = 32;
 /**
- * The wall-clock floor, when a caller asks for one.
+ * The wall-clock floor, applied by default and skipped when the drain saw no
+ * activity at all (see `drainAsync`).
  *
  * Sized above the measured cost of the work being waited on: ~1 ms for one
  * uncontended AEAD call, so 25 ms covers a heavily contended threadpool several
@@ -62,10 +66,11 @@ export type DrainOptions = {
 };
 
 export async function drainAsync(options: DrainOptions = {}): Promise<void> {
-  const { activity, floorTurns = FLOOR_TURNS, quietMs = 0 } = options;
+  const { activity, floorTurns = FLOOR_TURNS, quietMs = DRAIN_QUIET_MS } = options;
   const deadline = Date.now() + 20_000;
   let quiet = 0;
   let quietSince = Date.now();
+  let moved = false;
   let turn = 0;
   // With an activity signature, "finished" means unchanged for a streak of turns.
   // Without one there is nothing to detect change with, so the streak would be a
@@ -81,10 +86,21 @@ export async function drainAsync(options: DrainOptions = {}): Promise<void> {
       quiet += 1;
     } else {
       quiet = 0;
+      moved = true;
       quietSince = Date.now();
     }
     turn += 1;
   }
+  // The wall-clock floor, and only when there is something it is for.
+  //
+  // Its whole purpose is to let a job already handed to libuv's threadpool finish
+  // being delivered. A job is only outstanding if something *changed* — so a drain
+  // that watched its own signature and saw nothing move had nothing outstanding,
+  // and paying 25 ms to prove it turned every drain in a render-only suite into a
+  // fixed cost. That is what made this opt-in, and opt-in is what left four
+  // suites still able to return early. The default is now the floor, skipped when
+  // nothing moved.
+  if (!moved && activity !== undefined) return;
   // Bounded exactly like the first loop, and for the same reason. A suite that
   // installs vitest's *default* fake timers fakes `Date`, so `Date.now()` never
   // reaches `quietSince + quietMs` and an unbounded loop here would spin until the
