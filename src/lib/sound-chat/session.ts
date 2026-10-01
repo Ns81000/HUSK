@@ -26,13 +26,14 @@
  * - ACK round trip: peer decodes at the end of our block (~0.03 s), pauses its
  *   own Rx for `BLOCK_DURATION_MS` + 0.5 s tail while it transmits the ACK
  *   (`BLOCK_DURATION_MS` of audio), and we decode at the end of that.
- *   A complete message is acked in ~1.95 s; a *partial* one waits
+ *   A complete message is acked at ~1.95 s — that is when the peer's ACK block
+ *   *begins* to sound — and resolved at ~3.90 s; a *partial* one waits
  *   `PARTIAL_ACK_DELAY_MS` (2220 ms, past the point where a second block would
- *   have been decoded) and is then acked, so ~4.15 s. `ACK_TIMEOUT_MS` is
- *   2 x 1920 + `TURN_GAP_MS` (700) + 1920 + 1000 = 7460 ms, sized for the
- *   *longest* message the cap allows: 3.8x the fast path and +3.3 s over the
- *   slow one. The turn gap is inside the window on purpose — a reply is only
- *   heard after the peer's Rx feed reopens.
+ *   have been decoded), so its answer sounds at ~4.17 s and resolves at ~6.12 s.
+ *   `ACK_TIMEOUT_MS` is 2 x 1920 + `TURN_GAP_MS` (700) + 1920 + 1000 = 7460 ms,
+ *   sized for the *longest* message the cap allows: 1.9x the complete round
+ *   trip and +1.3 s over the partial one. The turn gap is inside the window on
+ *   purpose — a reply is only heard after the peer's Rx feed reopens.
  * - pairing: the enterer's confirmation window is 2 blocks + 2 s, and the
  *   displayer's listen stays open for `PAIR_PEER_TIMEOUT_MS` because a human is
  *   typing a code into the other device.
@@ -120,10 +121,12 @@ export const ACK_TIMEOUT_MS =
  * A sender's own Rx feed is shut for its whole transmission plus the 0.5 s tail,
  * so an answer sent too early lands in a window that cannot decode: a one-block
  * sender reopens after 1920 + 500 = 2420 ms, and a two-block sender after
- * 3840 + 500 = 4340 ms. A single fixed delay cannot serve both — measured, the
- * 1-block delay put a two-block sender's answer 150 ms *inside* its closed
- * window, so it had to retransmit all 84 bytes. `#schedulePartialAck` therefore
- * scales this by the block count the answer is about.
+ * 3840 + 500 = 4340 ms. A single fixed delay cannot serve both — measured against
+ * the harness's own clock model, the 1-block delay put a two-block sender's answer
+ * ~100 ms *inside* its closed window, so it had to retransmit all 84 bytes.
+ * `#schedulePartialAck` therefore scales this by the block count the answer is
+ * about. (The earlier "150 ms" in this comment was never derived from these
+ * constants; Phase 4V re-derived the figure and corrected it here.)
  */
 export const PARTIAL_ACK_DELAY_MS = BLOCK_DURATION_MS + 300;
 export const BACKOFF_MIN_MS = 400;

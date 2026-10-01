@@ -338,12 +338,17 @@ describe("Q-3 honesty of every screen that renders", () => {
 });
 
 describe("Q-4 what a send the user cannot see says about itself", () => {
-  it("KNOWN DEFECT: an accepted note that is still queued is in no rendered list", () => {
-    // The composer clears the draft the moment `send()` returns `{ ok: true }`,
-    // and a transcript row only exists once the pump has *claimed* the message
-    // and published an `outbound` event. Everything behind the head of the
-    // session's private queue has no row, so with four notes sent in a row the
-    // screen says "Queued" once and shows one of the four.
+  it("an accepted note has a row from the tick it was accepted, queued or not", () => {
+    // REPLACED IN PHASE 4V. This was named `KNOWN DEFECT: an accepted note that
+    // is still queued is in no rendered list` and rendered `MessageList` twice
+    // from byte-identical props, so `expect(two).toBe(one)` could not fail. Worse,
+    // its premise was obsolete: Phase 3V finding 1 fixed the defect by having
+    // `session.send()` publish a `queued` row synchronously, so the state it
+    // described no longer existed. A defect-named test whose defect is gone is a
+    // lie about the state of the code, and one that asserts nothing is worse.
+    //
+    // What it should have said: a queued note is *rendered*, with its own row,
+    // distinguished from the note that is on the air.
     const one = render(
       <MessageList
         inbound={[]}
@@ -353,18 +358,27 @@ describe("Q-4 what a send the user cannot see says about itself", () => {
       />,
     );
     expect(one).toContain(SOUND_CHAT_COPY.outbound.sending);
-    const two = render(
+    // The same submission, not yet claimed: its own row, and not the sending one.
+    const queued = render(
       <MessageList
         inbound={[]}
         outbound={[
           { seq: 1, msgId: 1, sendId: 1, text: "first", status: "sending", attempts: 1, blocks: 1 },
+          {
+            seq: 2,
+            msgId: null,
+            sendId: 2,
+            text: "second",
+            status: "queued",
+            attempts: 0,
+            blocks: 1,
+          },
         ]}
       />,
     );
-    // The markup for the same state is byte-identical, so nothing anywhere in
-    // the screen names the three notes that are not in it.
-    expect(two).toBe(one);
-    expect(one).not.toContain("second");
+    expect(queued, "the queued note has its own row").toContain("second");
+    expect(queued, "…and it says so").toContain(SOUND_CHAT_COPY.outbound.queued);
+    expect(queued).not.toBe(one);
   });
 
   it("KNOWN DEAD COPY: a send before the controller exists says it stopped", () => {

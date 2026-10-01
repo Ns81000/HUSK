@@ -39,8 +39,8 @@ const FLOOR_TURNS = 256;
 /** Consecutive unchanged observations before the drain may consider itself finished. */
 const QUIET_STREAK = 32;
 /**
- * The wall-clock floor, applied by default and skipped when the drain saw no
- * activity at all (see `drainAsync`).
+ * The wall-clock floor, paid on every call — see `drainAsync` for why the skip
+ * that used to guard it was wrong.
  *
  * Sized above the measured cost of the work being waited on: ~1 ms for one
  * uncontended AEAD call, so 25 ms covers a heavily contended threadpool several

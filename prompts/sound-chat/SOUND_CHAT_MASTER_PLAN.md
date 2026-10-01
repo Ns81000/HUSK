@@ -1,8 +1,8 @@
 # HUSK — Sound Chat Feature: Master Plan (Rev. 2)
 
-Status: Rev. 2 — Phases 0, 1, 2, 2V, 3 and 3V are complete and logged. Phase 4
-(The Gauntlet) is in progress; the carried residuals and their decisions are in
-`SOUND_CHAT_LOG.md`.
+Status: Rev. 2 — Phases 0, 1, 2, 2V, 3, 3V and 4 are complete and logged.
+Phase 4V (deep verification of Phase 4) is in progress; the carried residuals and
+their decisions are in `SOUND_CHAT_LOG.md`.
 **Supersedes Rev. 1.** Rev. 2 incorporates the full ggwave deep-dive
 (`prompts/sound-chat/GGWAVE_DEEP_DIVE.md`) — every architecture decision below
 is backed by measured evidence from that document, not assumption. Read that

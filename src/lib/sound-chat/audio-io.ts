@@ -305,6 +305,14 @@ export type TransmitResult = {
  * audio). A caller transmitting several blocks schedules them at
  * `startAt + index * blockSeconds`.
  */
+/**
+ * Encodes one block and plays it at a scheduled AudioContext time.
+ *
+ * Exported for the same reason `transmit` is (Section 10.1 class 9: kept because
+ * …): it is the reference single-block form, and `audio-io.test.ts` asserts the
+ * schedule and sample count against it directly. The product's own send path is
+ * `transmitAndPause`, which deliberately does not compose this — see its header.
+ */
 export function playBlockAt(
   context: AudioContext,
   codec: SoundChatCodec,
@@ -332,7 +340,15 @@ export function playBlockAt(
   };
 }
 
-/** One block, started as soon as the context allows. */
+/**
+ * One block, started as soon as the context allows.
+ *
+ * Kept because `transmitAndPause` is the composed send the transport uses and
+ * this is the single-block primitive — but note that it does *not* pause the
+ * feed, so it is only correct for a caller that has already handled self-reception
+ * (Section 10.1 class 9: kept because it is the reference form, not because the
+ * product calls it).
+ */
 export function transmit(
   context: AudioContext,
   codec: SoundChatCodec,
@@ -351,6 +367,12 @@ export function transmit(
  * shut for the *whole* window in one call rather than once per block — otherwise
  * the last block's tail would be counted from the last block's start and the
  * sender would decode its own second block.
+ *
+ * Deliberately not expressed as `playBlockAt` plus a pause around it: the block is
+ * encoded *first* here so the pause can cover a window whose length is only known
+ * once the real sample count is, and `codec.encode` is what produces that count.
+ * Composing the two would either re-encode the block or split that dependency
+ * across two functions with an argument between them.
  */
 export function transmitAndPause(
   listen: ListenHandle,

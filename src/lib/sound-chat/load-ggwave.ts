@@ -16,10 +16,9 @@
  * factory is module-scoped there and unreachable by `import()`.
  *
  * Adding an `export` to the artifact would fix the browser and break Node
- * (`export` is a syntax error in a `"type": "commonjs"` file), and the vendored
- * file's SHA-256 is meant to stay upstream's. So the browser loads it exactly
- * the way upstream's own browser example does: as a classic `<script>`, which
- * puts the top-level `var` on `window`.
+ * (`export` is a syntax error in a `"type": "commonjs"` file). So the browser
+ * loads it exactly the way upstream's own browser example does: as a classic
+ * `<script>`, which puts the top-level `var` on `window`.
  *
  * `?url` (rather than a plain import) keeps the 147139-byte artifact out of the
  * JS module graph: Vite emits it as its own hashed file under `/assets/*` and

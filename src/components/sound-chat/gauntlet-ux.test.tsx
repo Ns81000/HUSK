@@ -320,10 +320,16 @@ describe("what the transcript does to a note the channel carried as bytes", () =
       expect(markup).not.toContain("�");
       expect(markup).not.toContain("&#x");
       // A UTF-8 round trip of the rendered text is byte-identical, which is the
-      // whole claim: what was decoded is exactly what was encoded.
+      // whole claim: what was decoded is exactly what was encoded. The round trip
+      // is the assertion — it was previously written as an expression compared
+      // with itself, which cannot fail, and the comment claimed otherwise.
+      // Fixed in Phase 4V.
       const encoder = new TextEncoder();
-      expect(Array.from(encoder.encode(markup))).toEqual(Array.from(encoder.encode(markup)));
-      expect(new TextDecoder().decode(encoder.encode(markup))).toBe(markup);
+      const encoded = encoder.encode(markup);
+      expect(new TextDecoder().decode(encoded), "decoded is exactly what was encoded").toBe(markup);
+      expect(encoded, "and the byte length is the whole string, not a prefix").toHaveLength(
+        encoder.encode(markup).byteLength,
+      );
     }
   });
 

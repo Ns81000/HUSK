@@ -383,7 +383,12 @@ describe("M-1 the phase table, derived rather than asserted", () => {
     ]);
   });
 
-  it("KNOWN DEFECT: `chat` has no in-app exit except the terminal one", async () => {
+  // Retitled in Phase 4V. The title read `KNOWN DEFECT: chat has no in-app exit
+  // except the terminal one`, which Phase 3V finding 2 fixed. The body had been
+  // inverted at the time but the title had not, and by this file's own rule a
+  // test named `KNOWN DEFECT` is a bug report that goes red the moment somebody
+  // fixes it — so the stale title misreported the state of the code.
+  it("chat can end the session in place, and returns to permission", async () => {
     const { controller, session } = await live();
     const trace = phaseTrace(controller);
     session.emit({ type: "pairing", state: PAIRED });
