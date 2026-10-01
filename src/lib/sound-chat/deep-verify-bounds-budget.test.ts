@@ -244,11 +244,38 @@ async function settle(turns = 256): Promise<void> {
 }
 
 async function until(what: string, ready: () => boolean): Promise<void> {
+  const deadline = Date.now() + 20_000;
   for (let turn = 0; turn < MAX_FLUSH_TURNS; turn += 1) {
     if (ready()) return;
+    if (Date.now() > deadline) break;
     await new Promise((resolve) => setImmediate(resolve));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Waits for `peer` to have resolved `count` of its notes, moving **both** clocks.
+ *
+ * A fixed advance cannot be both long enough and short enough here: long enough
+ * that the sender's own Rx pause has closed and the acknowledgement's `parse` has
+ * finished, short enough not to expire the sender's ACK deadline and start a retry
+ * that resolves the same message a second time. So the wait is a condition, and
+ * each turn gives the session one air window — which is exactly the granularity
+ * production moves at.
+ */
+async function untilSenderResolves(peer: Peer, count: number): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (peer.outbound().filter((event) => event.status === "sent").length < count) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `timed out waiting for ${peer.label} to resolve ${count} notes (it has ` +
+          `${peer.outbound().filter((event) => event.status === "sent").length})`,
+      );
+    }
+    roomClock += reAckWindowMs / 1_000;
+    await vi.advanceTimersByTimeAsync(reAckWindowMs);
+    await settle();
+  }
 }
 
 function feedChunks(peer: Peer, count: number): void {
@@ -522,17 +549,20 @@ describe("F9 — the re-ACK budget is a real bound", () => {
       feedChunks(enterer, acks.length);
       await settle();
 
-      // FIXED IN PHASE 4V. The sender's *own* Rx feed is closed for its
-      // transmission, and the acknowledgement it is waiting for arrives while that
-      // window is still open, so the block is decoded but dropped rather than
-      // processed. This loop read the sender's state immediately after feeding and
-      // so reported whichever side of that window it happened to land on —
-      // measured `message 25: the sender resolved: expected 25 to be 26` in 1 of 3
-      // sequential full-suite runs. Both clocks now move out past the window, which
-      // is what production's own clock does.
-      roomClock += reAckWindowMs / 1000;
-      await vi.advanceTimersByTimeAsync(reAckWindowMs);
-      await settle();
+      // FIXED IN PHASE 4V. Two things were wrong with reading the sender's state
+      // right after feeding it the acknowledgement.
+      //
+      // One: the sender's *own* Rx feed is closed for its transmission, so an ACK
+      // arriving inside that window is decoded and then dropped. Two: the ACK's
+      // `parse` runs on the libuv threadpool, so under full-suite load the read can
+      // happen before the chain has finished at all — measured as `message 25: the
+      // sender resolved: expected 25 to be 26` in 1 of 10 sequential full-suite
+      // runs while passing 6/6 in isolation.
+      //
+      // The honest form of "the sender resolved" is a condition on the sender's own
+      // state, with both clocks moved as the retries the condition depends on
+      // require. No fixed advance can be both long enough and short enough.
+      await untilSenderResolves(enterer, index + 1);
       expect
         .soft(
           enterer.outbound().filter((event) => event.status === "sent").length,

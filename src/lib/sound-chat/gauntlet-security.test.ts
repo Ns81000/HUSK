@@ -881,14 +881,30 @@ describe("P4 — a captured transmission renders once, and only the dedupe windo
       peer,
       rewritten.map((entry) => entry.frame),
     );
-    // Nothing at all was rendered, and nothing was acknowledged: an attacker
-    // cannot make this device emit a frame in reply to a re-pointed recording.
+    // Nothing at all was rendered: an attacker cannot make this device emit a
+    // frame in reply to a re-pointed recording.
     expect(peer.texts()).toEqual([]);
     expect(peer.session.stats.messagesDelivered).toBe(0);
-    expect(peer.takeAir().length, "no acknowledgement was sent").toBe(0);
     for (const { name } of rewritten) {
       expect(peer.unreadable().length, `${name} must be reported unreadable`).toBeGreaterThan(0);
     }
+    // The "nothing was acknowledged" half is asserted on a *condition*, not on a
+    // drain's luck. All five rewrites are now accounted for as unreadable, so the
+    // session has finished with every one of them; anything still on the air after
+    // that point is a reply to a frame this test did not send.
+    //
+    // FIXED IN PHASE 4V. This read `takeAir()` immediately after `deliverRaw`,
+    // which only waits a turn gap. Under full-suite load the five `parse` calls are
+    // still finishing when that read happens, and whatever a *previous* exchange
+    // left on the air had not yet been drained — measured as
+    // `no acknowledgement was sent: expected 1 to be 0` in 1 of 4 subset runs,
+    // while passing 24/24 in isolation. The condition below is what the assertion
+    // actually means.
+    await until(
+      "the session to finish with every rewritten block",
+      () => peer.session.stats.framesUnreadable >= rewritten.length,
+    );
+    expect(peer.takeAir().length, "no acknowledgement was sent").toBe(0);
     // And the genuine frame still works, so nothing above poisoned the session.
     await deliverRaw(peer, [multi[0] as Uint8Array, multi[1] as Uint8Array]);
     expect(peer.session.stats.messagesDelivered).toBe(1);
