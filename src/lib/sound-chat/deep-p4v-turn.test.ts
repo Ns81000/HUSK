@@ -854,10 +854,12 @@ describe("F6 — a module death while the pump is sealing a note", () => {
       // The pump that has to be parked is the *displayer's*: the same session
       // whose Rx feed is about to report the death.
       expect(displayer.session.send("one").ok).toBe(true);
-      for (let turn = 0; turn < 40 && !stalled; turn += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      expect(stalled, "the seal really was stalled").toBe(true);
+      // A condition with a deadline, not a fixed turn budget. The pump reaches
+      // `buildMessageFrames` through a microtask and then a real AEAD seal, so 40
+      // `setImmediate` turns is about a millisecond of no useful waiting — measured
+      // `the seal really was stalled` on 1 of 5 sequential full-suite runs while
+      // passing every time in isolation.
+      await until("the seal to be reached and stalled", () => stalled);
       expect(displayer.session.busy, "the pump claimed the note").toBe(true);
       armed = true;
       for (let turn = 0; turn < 40; turn += 1) {
