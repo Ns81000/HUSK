@@ -1076,10 +1076,26 @@ describe("FIXED — one crafted block no longer kills a pairing handshake", () =
 
   it("does not touch a session that is already paired", async () => {
     const { peer } = await displayerWithHostilePeer({ label: "already-paired" });
+    // The fixture has already drained the PAIR answer it sent (`takeAir()`), so the
+    // baseline is zero and this session's whole life under test is silence. The
+    // read waits for all five blocks to be *processed*, not merely fed — an
+    // unreadable block is a promise to stay silent, so the assertion belongs after
+    // the session has honoured it. Measured as `no transmission was triggered:
+    // expected 1 to be 0` on 1 of 5 sequential full-suite runs.
     const playsBefore = peer.codec.txLog.length;
+    expect(playsBefore, "the fixture drained its own handshake answer").toBe(0);
     for (let round = 0; round < 5; round += 1) {
       await deliverRaw(peer, [unauthenticatedBlock(1, FRAME_KIND.MESSAGE, 43)]);
     }
+    // …and the read waits for the frames to be *processed*, not merely fed: an
+    // unreadable block is a promise to stay silent, so the assertion belongs after
+    // the session has honoured it. `framesUnreadable` is the counter the session
+    // itself increments per block it could not read.
+    await until("every unreadable block to be counted", () => {
+      peer.codec.rxQueue.push(unauthenticatedBlock(1, FRAME_KIND.MESSAGE, 43));
+      feedChunk(peer);
+      return peer.session.stats.framesUnreadable >= 5;
+    });
     expect(peer.session.pairing.kind).toBe("paired");
     expect(peer.session.state).toBe("listening");
     expect(peer.texts()).toEqual([]);
