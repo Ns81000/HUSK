@@ -31,6 +31,27 @@ import {
 const TEST_CHALLENGE = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
 const CODE = "ABCD2345";
+
+/**
+ * Whether `needle` appears as a contiguous run inside `haystack`.
+ *
+ * A substring search, so a random 64-byte frame colliding with an 8-byte ASCII
+ * needle is ~57 * 2^-64 rather than the ~86.85% a byte-value search measures.
+ */
+function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  for (let start = 0; start <= haystack.length - needle.length; start += 1) {
+    let same = true;
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[start + offset] !== needle[offset]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return true;
+  }
+  return false;
+}
 const keys = await derivePairingKeys(CODE);
 
 function salt(byte: number): Uint8Array {
@@ -302,11 +323,19 @@ describe("P7 — the pairing code never goes on the air", () => {
     expect(pair.subarray(PAIR_KEY_CHECK_OFFSET + 16).every((byte) => byte === 0)).toBe(true);
 
     // The code itself, and the master key it derives, appear nowhere.
+    //
+    // This searches for the 8-byte SEQUENCE, not for any single code byte's
+    // value. The byte-wise form this replaced was a coin flip, not a property:
+    // the PAIR frame carries 16 HMAC bytes, and an 8-ASCII-byte code collides
+    // with one of them by chance a large fraction of the time — measured
+    // 86.85% against a fully random 64-byte frame over 200000 trials, and
+    // ~39.84% against the real frame's structured header. It would have failed
+    // roughly two runs in five, which is why Phases 4 and 4V both reported it
+    // without touching it. `gauntlet-security.test.ts` already asserts this
+    // property the right way; the false-positive rate of the real check is
+    // about 57 * 2^-64.
     const codeBytes = bytes(CODE);
-    const frameBytes = Array.from(pair);
-    for (const byte of codeBytes) {
-      expect(frameBytes.includes(byte), `PAIR frame leaks code byte ${byte}`).toBe(false);
-    }
+    expect(containsBytes(pair, codeBytes), "PAIR frame leaks the pairing code").toBe(false);
     const master = await keys.directionKey(0);
     expect(master.extractable).toBe(false);
 
