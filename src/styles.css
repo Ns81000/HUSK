@@ -725,6 +725,22 @@
     height: 1px;
     background: linear-gradient(90deg, transparent, oklch(0.4 0.04 136 / 0.4), transparent);
   }
+
+  /* Sound Chat's brand column on the permission screen. Desktop only: the
+     two-column split is `lg:grid-cols-[45fr_55fr]`, and below `lg` this column
+     is not rendered at all, so nothing here is load-bearing for the layout. */
+  .sc-brand-column {
+    background: oklch(0.21 0.028 136);
+    border-right: 1px solid oklch(0.3 0.04 136 / 0.3);
+  }
+
+  /* The copy button's success flash. The word "Copied" is the signal; this is
+     only the second cue, which is why it is a border colour and never the only
+     thing that changes. */
+  .btn-copy-success {
+    border-color: oklch(0.816 0.219 147.3 / 0.4) !important;
+    transition: border-color 200ms ease;
+  }
 }
 
 @utility safe-bottom {

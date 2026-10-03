@@ -111,6 +111,29 @@ export const SOUND_CHAT_COPY = {
     ] as const,
     displayAction: "Show a pairing code",
     enterAction: "Enter a pairing code",
+    /**
+     * The label on the pre-prompt's own disclosure.
+     *
+     * Why the limits, the microphone explanation and the attribution moved off
+     * the action column and in here: the pre-prompt's job is one decision, and
+     * everything that is *reading* rather than deciding belongs behind a control
+     * that says it is reading. The content is still in the document either way,
+     * so a screen reader is not made to open a disclosure to be told what the
+     * microphone is for.
+     */
+    learnMore: "Learn more",
+    /** The disclosure's own dismiss control. */
+    close: "Close",
+    /**
+     * Kept, and no longer rendered.
+     *
+     * "Not now" was a third quiet button beside "Enter a pairing code", doing
+     * exactly what the shell's own back control does — leaving Sound Chat — so
+     * the screen offered two controls for one exit and neither was the obvious
+     * one. The prop is still accepted by `PermissionPrompt` because callers and
+     * tests pass it; the label stays here because the wording is still the right
+     * wording for any future explicit dismiss.
+     */
     dismiss: "Not now",
   },
 
@@ -143,7 +166,21 @@ export const SOUND_CHAT_COPY = {
     waitingEnter: "Playing the handshake tone, then listening for an answer",
     hint: "Both devices in the same room, a few metres apart, volume up.",
     retry: "Start pairing again",
-    changeRole: "Use the other option instead",
+    /**
+     * The role switch, keyed by the role the control switches *to*.
+     *
+     * NOT "Use the other option instead": this is the only escape from a
+     * 90-second wait, and a label that says "the other option" makes the person
+     * work out which option that is from the screen they are already on — the
+     * one screen that cannot show them the other option. Keying the table by the
+     * destination role rather than writing a conditional means the label cannot
+     * drift from the branch that renders it, and a `PairingRole` added later is a
+     * compile error here rather than a button with the wrong sentence on it.
+     */
+    switchTo: {
+      displayer: "Show a code instead",
+      enterer: "Enter a code instead",
+    } satisfies Record<PairingRole, string>,
     roleLabel: {
       displayer: "You are showing a code",
       enterer: "You are entering a code",
@@ -236,6 +273,16 @@ export const SOUND_CHAT_COPY = {
     bytesHint:
       "Plain letters and digits cost one byte each. Anything else can cost more, so it reaches the limit sooner.",
     blockedByPairing: "Pairing has to finish before notes can be sent.",
+    /**
+     * The keyboard hint under the field.
+     *
+     * WHY this exists as copy at all: a `<textarea>` does not submit the form it
+     * sits in, so Enter is a key the field has to be *told* to accept — and a key
+     * shortcut nobody is told about is a key shortcut nobody uses. It says both
+     * halves, because "Enter to send" alone is the sentence that makes someone
+     * lose their line break.
+     */
+    enterHint: "Enter to send · Shift + Enter for new line",
   },
 
   /** What each `session.send()` refusal means to the person who pressed send. */

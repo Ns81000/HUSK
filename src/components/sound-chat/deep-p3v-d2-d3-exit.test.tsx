@@ -192,11 +192,14 @@ describe("D3 the retry keeps the typed code", () => {
     // *other* device — the only way out was the header anchor, a full page load.
     // The wait is 90 s for a displayer (`PAIR_PEER_TIMEOUT_MS`) and 5.84 s for an
     // enterer, so that was a 90-second dead end for the most common mistake the
-    // screen invites. `changeRole` now renders in the waiting branches too.
+    // screen invites. The switch control now renders in the waiting branches too.
     for (const state of [
       { kind: "waiting-for-peer", code: CODE, role: "displayer" },
       { kind: "awaiting-confirmation", code: CODE, role: "enterer" },
     ] as const) {
+      // The switch control is labelled for the role it leads *to*, so the string
+      // this iteration should find depends on which branch it is rendering.
+      const switchTo = state.role === "displayer" ? "enterer" : "displayer";
       const markup = render(
         <PairingPanel
           role={state.role}
@@ -218,12 +221,12 @@ describe("D3 the retry keeps the typed code", () => {
       // INVERTED IN PHASE 3V. The `expect(...).toBe(state.role === "displayer")`
       // line above is still true — a displayer has "Copy code" mid-handshake and
       // an enterer has none — but neither of them has an *escape*, which was the
-      // defect. `PairingPanel` now renders the existing `changeRole` control in the
+      // defect. `PairingPanel` now renders the existing switch control in the
       // waiting branches too, so the 90 seconds is a wait and not a dead end.
       expect(
         markup,
         `${state.kind} is a 90-second dead end with no escape wired to ui.cancel`,
-      ).toContain(SOUND_CHAT_COPY.pairing.changeRole);
+      ).toContain(SOUND_CHAT_COPY.pairing.switchTo[switchTo]);
       // The `failed` branch, by contrast, has both controls.
       const failed = render(
         <PairingPanel
@@ -237,7 +240,7 @@ describe("D3 the retry keeps the typed code", () => {
         />,
       );
       expect(failed, `${state.kind}'s own failure state has no escape`).toContain(
-        SOUND_CHAT_COPY.pairing.changeRole,
+        SOUND_CHAT_COPY.pairing.switchTo[switchTo],
       );
       expect(failed).toContain(SOUND_CHAT_COPY.pairing.retry);
     }

@@ -736,14 +736,26 @@ describe("A6 every action is a real control, and nothing is click-only", () => {
     expect(SOUND_CHAT_COPY.actions.exit.length).toBeGreaterThan(3);
   });
 
-  it("the composer's send is a submit in a form, so Enter and the button are one path", () => {
+  it("the composer's send is a submit in a form, and Enter takes the same path", () => {
     const markup = render(composer("hi"));
     expect(markup).toContain("<form");
     expect(markup).toMatch(/<button[^>]*type="submit"/);
-    // No key handler of the feature's own on the textarea: a form is the
-    // keyboard path, and inventing one is how Shift+Enter breaks.
+    // INVERTED. This used to assert that the composer had no key handler at all,
+    // on the grounds that a form is the keyboard path. That is true of `<input>`
+    // and false of `<textarea>`: a textarea inserts a newline on Enter and never
+    // submits the form it sits in, so the button was the only way to send and
+    // Enter — the first key anyone tries in a note field — silently added a line
+    // break instead. What is required now is that the handler is the app's shared
+    // predicate, which is the one place the IME rule lives, rather than a second
+    // copy of it that can get Shift + Enter or a composition wrong.
     const source = componentFile("composer.tsx");
-    expect(source).not.toMatch(/onKeyDown/);
+    expect(source).toMatch(/onKeyDown=\{\(event\) => \{/);
+    expect(source).toMatch(/shouldSubmitOnEnter\(event\)/);
+    expect(source).toMatch(/from "@\/components\/husk\/chat"/);
+    // And the handler is a precondition, never a second submit: the form's own
+    // guard is still what decides, so Enter and the button cannot diverge.
+    expect(source).toMatch(/function submit\(event: FormEvent<HTMLFormElement>\)/);
+    expect(source).toMatch(/onSubmit=\{submit\}/);
   });
 
   it("Escape from the pairing code step returns to the role step, and does not leave", () => {

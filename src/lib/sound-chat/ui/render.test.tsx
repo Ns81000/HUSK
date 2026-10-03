@@ -235,10 +235,16 @@ describe("the permission pre-prompt", () => {
     expect(markup).toMatch(/record/i);
   });
 
-  it("offers both roles and a way out", () => {
+  it("offers both roles, and the way out is the shell's own", () => {
     expect(markup).toContain(SOUND_CHAT_COPY.permission.displayAction);
     expect(markup).toContain(SOUND_CHAT_COPY.permission.enterAction);
-    expect(markup).toContain(SOUND_CHAT_COPY.permission.dismiss);
+    // INVERTED. A third quiet "Not now" used to sit under those two and did what
+    // the shell's back control already does — leave Sound Chat — so the screen
+    // offered two controls for one exit and neither was the obvious one. The
+    // pre-prompt renders no exit of its own now. What it renders instead is a door
+    // onto the prose that used to stand between the reader and the two buttons.
+    expect(markup).not.toContain(SOUND_CHAT_COPY.permission.dismiss);
+    expect(markup).toContain(SOUND_CHAT_COPY.permission.learnMore);
   });
 
   it("is reachable by keyboard: every action is a real button", () => {
@@ -332,7 +338,10 @@ describe("the pairing screen, one line per pairing state", () => {
     );
     expect(failed).toContain('role="alert"');
     expect(failed).toContain(SOUND_CHAT_COPY.pairing.retry);
-    expect(failed).toContain(SOUND_CHAT_COPY.pairing.changeRole);
+    // The failed render above is a displayer, so the control it offers switches to
+    // the enterer's branch. The label is keyed by the destination role, which is
+    // why it cannot be asserted as one constant any more.
+    expect(failed).toContain(SOUND_CHAT_COPY.pairing.switchTo.enterer);
   });
 
   it("shows the displayer's code as a large monospaced readout", () => {

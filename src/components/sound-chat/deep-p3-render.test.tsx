@@ -857,7 +857,13 @@ describe("R-I the pairing screen under hostile codes", () => {
     expect(markup).not.toContain("aria-invalid");
     expect(markup).toContain(SOUND_CHAT_COPY.permission.displayAction);
     expect(markup).toContain(SOUND_CHAT_COPY.permission.enterAction);
-    expect(markup).toContain(SOUND_CHAT_COPY.permission.dismiss);
+    // INVERTED. The role step used to carry a third quiet control, "Not now",
+    // which left Sound Chat — exactly what the shell's own back control does. Two
+    // exits for one exit, and neither of them the obvious one. The pre-prompt now
+    // renders no exit of its own; the prose it used to stack between the reader
+    // and these two buttons is behind a disclosure instead.
+    expect(markup).not.toContain(SOUND_CHAT_COPY.permission.dismiss);
+    expect(markup).toContain(SOUND_CHAT_COPY.permission.learnMore);
   });
 });
 

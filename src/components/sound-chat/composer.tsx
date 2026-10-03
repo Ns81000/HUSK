@@ -18,13 +18,48 @@
  * so the reason a note cannot be sent would be reachable from nowhere in the
  * form. `aria-disabled` keeps the control focusable and describable, which is the
  * only way the reason survives for someone who is not looking at the screen.
+ *
+ * WHY there is an `onKeyDown` here now, when this file used to argue that a form
+ * was the keyboard path and a handler was how Shift + Enter breaks. A `<textarea>`
+ * inserts a newline on Enter and never submits the form it sits in, so the button
+ * was the only way to send and Enter — the first key anyone tries in a note field
+ * — silently added a line break instead. The handler is the app's own
+ * `shouldSubmitOnEnter`, not a second predicate written here, because that
+ * function is where the IME rule lives: an Enter that merely commits a
+ * composition must not send half-converted text, and a copy of that rule is a
+ * second place for it to be wrong.
+ *
+ * WHY the field grows and starts at one row: it was a fixed `rows={2}` box for a
+ * note whose whole protocol budget is 84 bytes. It now starts at one row and
+ * grows to three, which is what a short note needs and what the main composer
+ * does.
+ *
+ * WHAT THE REDESIGN ASKED TO DELETE, AND WHY IT IS STILL HERE. The byte counter,
+ * the character counter, the timing line, the at-cap sentence and the empty
+ * sentence are all still rendered: this feature's accessibility suite requires
+ * each of them — the counter and the over-cap sentence must *both* describe the
+ * field while it is over the cap, the empty sentence must describe it while it is
+ * empty, and the at-cap and timing sentences are asserted by name. Deleting them
+ * would have been a tidy-up that removed behaviour four assertions depend on.
+ * What did move is the schooling: the per-byte cost sentence now lives in the
+ * info panel, where reading belongs. The `placeholder:text-ink-faint` the
+ * redesign specified is `placeholder:text-ink-muted` here, because the contrast
+ * suite forbids the `ink-faint` token in this feature's components outright.
  */
 
-import { useId, type FormEvent, type ReactElement } from "react";
+import { useId, useRef, type FormEvent, type ReactElement } from "react";
+import { shouldSubmitOnEnter } from "@/components/husk/chat";
 import { SendIcon } from "@/components/husk/icons";
 import { Button } from "@/components/husk/primitives";
 import { measureMessage } from "@/lib/sound-chat/ui/budget";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+
+/**
+ * Three lines of text plus the padding. Shorter than the main composer's, because
+ * a note here is capped at 84 bytes: a field that grew to five rows for a note of
+ * three would be a form pretending to be a document.
+ */
+const MAX_TEXTAREA_HEIGHT = 3 * 23 + 20;
 
 export function Composer({
   value,
@@ -45,8 +80,8 @@ export function Composer({
    * value for it.
    *
    * There is deliberately no "queued" prop: the queued state is stated once, by
-   * `TransmitStatus`, from a fact about the session rather than from what a past
-   * `send()` happened to return.
+   * the note's own row in the transcript, from a fact about the session rather
+   * than from what a past `send()` happened to return.
    */
   readonly refusal?: string | null;
 }): ReactElement {
@@ -55,6 +90,7 @@ export function Composer({
   const overCapId = useId();
   const emptyId = useId();
   const blockedId = useId();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const budget = measureMessage(value);
   const overCap = budget.bytes > 0 && !budget.fits;
   const empty = budget.bytes === 0;
@@ -82,10 +118,22 @@ export function Composer({
       ? SOUND_CHAT_COPY.composer.singleBlock
       : SOUND_CHAT_COPY.composer.twoBlocks;
 
+  // Grow with the text, up to three lines. Reset to `auto` first so the field can
+  // also *shrink*: the `scrollHeight` of a box that is already tall is the tall
+  // box, so measuring without the reset would ratchet upwards and never come back.
+  function autoGrow(): void {
+    const element = textareaRef.current;
+    if (element === null) {
+      return;
+    }
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+  }
+
   function submit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    // The control is `aria-disabled` rather than `disabled`, so Enter and a
-    // click both arrive here while the note cannot be sent. Nothing is sent.
+    // The form's own guard, and the backstop for an `aria-disabled` control: a
+    // click on one still fires, and so does Enter.
     if (unavailable) {
       return;
     }
@@ -93,9 +141,7 @@ export function Composer({
   }
 
   return (
-    <div className="composer-bar safe-bottom px-4 pt-3">
-      {/* A real form, so Enter submits and Shift+Enter inserts a newline with no
-          key handler of our own to get wrong. */}
+    <div className="composer-bar safe-bottom px-4 pt-2 pb-2 sm:px-6">
       <form noValidate onSubmit={submit} className="space-y-2">
         <label htmlFor={fieldId} className="sr-only">
           {SOUND_CHAT_COPY.composer.label}
@@ -103,10 +149,10 @@ export function Composer({
         <div className="flex items-end gap-2">
           <textarea
             id={fieldId}
+            ref={textareaRef}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
             disabled={disabled}
-            rows={2}
+            rows={1}
             wrap="soft"
             placeholder={SOUND_CHAT_COPY.composer.placeholder}
             // No maxLength: it counts UTF-16 code units while this budget counts
@@ -118,7 +164,19 @@ export function Composer({
             aria-describedby={
               overCap ? `${counterId} ${overCapId}` : empty ? `${counterId} ${emptyId}` : counterId
             }
-            className="composer-input min-h-[44px] flex-1 resize-none rounded-xl border border-line bg-surface px-4 py-2.5 text-[15px] text-ink placeholder:text-ink-muted"
+            onChange={(event) => {
+              onChange(event.target.value);
+              autoGrow();
+            }}
+            onKeyDown={(event) => {
+              if (shouldSubmitOnEnter(event)) {
+                event.preventDefault();
+                if (!unavailable) {
+                  onSubmit();
+                }
+              }
+            }}
+            className="composer-input max-h-[100px] min-h-[44px] flex-1 resize-none rounded-xl border border-line/50 bg-surface-sunken/50 px-4 py-2.5 text-[15px] text-ink transition-all placeholder:text-ink-muted"
           />
           <Button
             type="submit"
@@ -135,26 +193,31 @@ export function Composer({
               // guard is the backstop, and this keeps the pointer honest too.
               if (unavailable) event.preventDefault();
             }}
-            className="h-11 shrink-0 px-4 data-[unavailable]:cursor-not-allowed data-[unavailable]:opacity-50"
+            className="h-11 shrink-0 rounded-xl px-4 font-medium data-[unavailable]:cursor-not-allowed data-[unavailable]:opacity-50"
           >
             <SendIcon className="h-4 w-4" />
-            {SOUND_CHAT_COPY.composer.send}
+            {/* The icon is the whole label on a phone, where the field needs the
+                width, and the word is there from `sm` up. */}
+            <span className="hidden sm:inline">{SOUND_CHAT_COPY.composer.send}</span>
           </Button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <span id={counterId} className="tabular text-caption text-ink-muted">
-            {SOUND_CHAT_COPY.composer.byteCounter(budget.bytes)}
-          </span>
-          {/* Only when the two counts differ, which is only when the note is not
-              plain ASCII. `budget.characters` is `Array.from(text).length`, so a
-              combining mark or an emoji counts as the one character a person
-              typed, not as the two code units it is stored in. */}
-          {budget.characters === budget.bytes ? null : (
-            <span className="tabular text-caption text-ink-muted">
-              {SOUND_CHAT_COPY.composer.characterCounter(budget.characters)}
+          <span className="flex flex-wrap items-center gap-x-3">
+            <span id={counterId} className="tabular text-caption text-ink-muted">
+              {SOUND_CHAT_COPY.composer.byteCounter(budget.bytes)}
             </span>
-          )}
-          {timing === null ? null : <span className="text-caption text-ink-muted">{timing}</span>}
+            {/* Only when the two counts differ, which is only when the note is not
+                plain ASCII. `budget.characters` is `Array.from(text).length`, so a
+                combining mark or an emoji counts as the one character a person
+                typed, not as the two code units it is stored in. */}
+            {budget.characters === budget.bytes ? null : (
+              <span className="tabular text-caption text-ink-muted">
+                {SOUND_CHAT_COPY.composer.characterCounter(budget.characters)}
+              </span>
+            )}
+            {timing === null ? null : <span className="text-caption text-ink-muted">{timing}</span>}
+          </span>
+          <span className="text-caption text-ink-muted">{SOUND_CHAT_COPY.composer.enterHint}</span>
         </div>
         {overCap ? (
           // Reached through aria-describedby, deliberately not a live region:
@@ -171,7 +234,6 @@ export function Composer({
         {budget.atCap ? (
           <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.composer.atCap}</p>
         ) : null}
-        <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.composer.bytesHint}</p>
         {blocked ? (
           <p id={blockedId} className="text-caption text-warn">
             {sendReason}

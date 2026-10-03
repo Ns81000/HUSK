@@ -24,8 +24,8 @@
  * other device until the acknowledgement comes back.
  */
 
-import { memo, type ReactElement } from "react";
-import { CheckIcon, ErrorMark, InfoIcon } from "@/components/husk/icons";
+import { memo, useEffect, useRef, type ReactElement } from "react";
+import { CheckIcon, ErrorMark } from "@/components/husk/icons";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
 import { cn } from "@/lib/utils";
 import type { OutboundStatus } from "@/lib/sound-chat/protocol";
@@ -114,6 +114,13 @@ function InboundRow({ view }: { readonly view: Inbound }): ReactElement {
   );
 }
 
+/**
+ * Below this distance from the bottom, an arriving note keeps the view pinned.
+ * The same figure the main chat uses, for the same reason: it is roughly one
+ * bubble, so a reader who has deliberately scrolled up is never moved.
+ */
+const NEAR_BOTTOM_PX = 120;
+
 export const MessageList = memo(function MessageList({
   inbound,
   outbound,
@@ -122,6 +129,29 @@ export const MessageList = memo(function MessageList({
   readonly outbound: readonly Outbound[];
 }): ReactElement {
   const rows = mergeBySeq(inbound, outbound);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the view was at the bottom before the last addition. A note that
+   * arrives while the reader is looking at the top of the transcript must not
+   * yank them to the bottom of it — which is the same rule the main chat's
+   * transcript follows, and the reason this is a ref and not state: it is read
+   * inside an effect and never rendered.
+   */
+  const nearBottomRef = useRef(true);
+
+  function handleScroll(): void {
+    const el = scrollerRef.current;
+    if (el !== null) {
+      nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    }
+  }
+
+  useEffect(() => {
+    if (nearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
+  }, [rows.length]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -135,7 +165,9 @@ export const MessageList = memo(function MessageList({
         role="region"
         tabIndex={0}
         aria-label={SOUND_CHAT_COPY.transcript.scrollLabel}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-6"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-3 sm:px-6"
+        ref={scrollerRef}
+        onScroll={handleScroll}
       >
         {/* Mounted from the first frame, empty or not. A live region has to be in
             the document, and settled, before its content changes: a `role="log"`
@@ -151,15 +183,29 @@ export const MessageList = memo(function MessageList({
           // interrupting for.
           aria-relevant="additions"
           aria-label={SOUND_CHAT_COPY.transcript.logLabel}
-          className="space-y-4"
+          className="flex flex-1 flex-col space-y-4"
         >
           {rows.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-              <InfoIcon className="h-5 w-5 text-ink-muted" />
-              <p className="text-body text-ink">{SOUND_CHAT_COPY.transcript.emptyHeading}</p>
-              <p className="max-w-sm text-caption text-ink-muted">
-                {SOUND_CHAT_COPY.transcript.emptyBody}
-              </p>
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center">
+              {/* The same mark and the same shadow the main chat's empty
+                  transcript uses, so an empty Sound Chat and an empty room read
+                  as two empty rooms in one app rather than two empty rooms in
+                  two. */}
+              <img
+                src="/icons/husk-mark.svg"
+                alt="Husk"
+                width={56}
+                height={64}
+                className="mx-auto h-14 w-auto select-none drop-shadow-[0_4px_16px_rgba(60,231,103,0.3)]"
+              />
+              <div>
+                <p className="text-[17px] font-semibold text-ink">
+                  {SOUND_CHAT_COPY.transcript.emptyHeading}
+                </p>
+                <p className="mt-1 max-w-sm text-[13px] text-ink-muted">
+                  {SOUND_CHAT_COPY.transcript.emptyBody}
+                </p>
+              </div>
             </div>
           ) : (
             rows.map((row) =>
@@ -171,6 +217,9 @@ export const MessageList = memo(function MessageList({
             )
           )}
         </div>
+        {/* The scroll anchor, outside the log so the region's children stay the
+            rows themselves. */}
+        <div ref={bottomRef} />
       </div>
     </div>
   );

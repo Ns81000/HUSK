@@ -23,9 +23,10 @@
  */
 
 import { useEffect, useId, useState, type ReactElement } from "react";
-import { CheckIcon, ErrorMark, WaitingMark } from "@/components/husk/icons";
+import { CheckIcon, CopyIcon, ErrorMark } from "@/components/husk/icons";
 import { Button, Panel } from "@/components/husk/primitives";
 import { PAIRING_CONFIRMATION_COPY, SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
+import { cn } from "@/lib/utils";
 import type { PairingState } from "@/lib/sound-chat/pairing";
 
 export function PairingPanel({
@@ -48,6 +49,14 @@ export function PairingPanel({
   const headingId = useId();
   const [copied, setCopied] = useState(false);
   const [manual, setManual] = useState(false);
+  /**
+   * The label for the one control that leaves this branch, named for the role it
+   * switches *to* rather than for "the other option". This is the control a person
+   * needs the moment they realise the code was typed on the wrong device, and at
+   * that moment the screen cannot show them what the other option is.
+   */
+  const switchLabel =
+    SOUND_CHAT_COPY.pairing.switchTo[role === "displayer" ? "enterer" : "displayer"];
 
   useEffect(() => {
     if (!copied) {
@@ -87,14 +96,24 @@ export function PairingPanel({
       case "awaiting-confirmation":
         return (
           <>
-            <div role="status" className="fade-in mt-6 flex flex-col items-center text-center">
-              <WaitingMark className="waiting-glow h-24 w-24 text-accent" />
-              <p className="mt-2 text-body text-ink">
+            <div role="status" className="fade-in mt-4 flex flex-col items-center text-center">
+              {/* The waiting mark used to be a 96px drawing of two circles, one of
+                  them dashed, breathing at low opacity behind this sentence. The
+                  dashed circle read as a rendering fault rather than as a second
+                  device, and the whole thing was the largest object on a screen
+                  whose only job is to say "still waiting". It is now the same dot
+                  the chat's own status line uses, which is the pattern this app
+                  already has for "something is in motion". */}
+              <p className="flex items-center justify-center gap-2.5 text-body text-ink">
+                <span
+                  aria-hidden
+                  className="dot-pulse inline-block h-2.5 w-2.5 shrink-0 rounded-pill bg-accent"
+                />
                 {state.kind === "waiting-for-peer"
                   ? SOUND_CHAT_COPY.pairing.waitingDisplay
                   : SOUND_CHAT_COPY.pairing.waitingEnter}
               </p>
-              <p className="mt-1 text-caption text-ink-muted">{SOUND_CHAT_COPY.pairing.hint}</p>
+              <p className="mt-1.5 text-caption text-ink-muted">{SOUND_CHAT_COPY.pairing.hint}</p>
             </div>
             {/* WHY THE SWITCH CONTROL IS HERE AND NOT ONLY UNDER `failed`.
                 A handshake in progress waits up to 90 seconds
@@ -105,7 +124,7 @@ export function PairingPanel({
                 dead end for the most common mistake the screen invites. */}
             <div className="mt-4 space-y-2">
               <Button tone="quiet" full disabled={busy} onClick={onSwitchRole}>
-                {SOUND_CHAT_COPY.pairing.changeRole}
+                {switchLabel}
               </Button>
             </div>
           </>
@@ -137,7 +156,7 @@ export function PairingPanel({
                 {SOUND_CHAT_COPY.pairing.retry}
               </Button>
               <Button tone="quiet" full disabled={busy} onClick={onSwitchRole}>
-                {SOUND_CHAT_COPY.pairing.changeRole}
+                {switchLabel}
               </Button>
             </div>
           </div>
@@ -202,8 +221,18 @@ export function PairingPanel({
             {manual ? (
               <p className="mt-2 text-caption text-warn">{SOUND_CHAT_COPY.pairing.copyRefused}</p>
             ) : null}
-            <Button tone="quiet" full disabled={busy} onClick={() => void copy()} className="mt-3">
-              {copied ? <CheckIcon className="h-4 w-4 text-ok" /> : null}
+            <Button
+              tone="quiet"
+              full
+              disabled={busy}
+              onClick={() => void copy()}
+              className={cn("mt-3", copied && "btn-copy-success")}
+            >
+              {copied ? (
+                <CheckIcon className="swap-check h-4 w-4 text-ok" />
+              ) : (
+                <CopyIcon className="h-4 w-4" />
+              )}
               {copied ? SOUND_CHAT_COPY.pairing.copiedAction : SOUND_CHAT_COPY.pairing.copyAction}
             </Button>
           </>

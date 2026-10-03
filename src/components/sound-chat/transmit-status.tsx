@@ -1,5 +1,5 @@
 /**
- * What the channel is doing right now, and how far through our own note it is.
+ * What the channel is doing right now, split into the two places it is shown.
  *
  * WHY one sentence per transport state and a bar that is never inside the live
  * region: the sentence is the thing worth interrupting for, while the bar moves
@@ -13,6 +13,14 @@
  * device has actually understood. Every string under the bar therefore comes
  * from copy that says "about", and the bar is labelled as progress, never as
  * delivery.
+ *
+ * WHY this is three exports and used to be one block. The sentence belongs in the
+ * header beside the title, where the main chat keeps its own connection state,
+ * and the bar belongs under the header — so one component rendering both forced
+ * the header to carry a progress bar's worth of layout, and the transcript to be
+ * pushed down by a status block. `TransportStatusLine` is the sentence,
+ * `TransmitProgress` is everything that moves, and `TransmitStatus` is the two of
+ * them stacked, which is still what a caller that wants the old block gets.
  *
  * The dot pulses only in the two states where something is genuinely in motion.
  * A settled state with a pulsing dot would read as "waiting on something" after
@@ -59,25 +67,24 @@ function clampIndex(value: number | undefined, high: number): number {
   return Math.min(Math.max(1, Math.round(value)), high);
 }
 
+/** One note's own transmission progress, as the controller publishes it. */
+type Progress = {
+  readonly blocks: number;
+  readonly blockIndex: number;
+  readonly fraction: number;
+  readonly remainingMs: number;
+};
+
 /**
- * The sentence for the live state. Defined once, in the copy file, so the
- * component and every test read the same function rather than each
- * re-deriving the string with a conditional of its own.
+ * The sentence for the live state, and the only live region in this file.
+ * Defined from the copy file, so the component and every test read the same
+ * function rather than each re-deriving the string with a conditional of its own.
  */
-export function TransmitStatus({
+export function TransportStatusLine({
   transport,
-  transmitting,
-  progress,
   attempts,
 }: {
   readonly transport: TransportState;
-  readonly transmitting: boolean;
-  readonly progress: {
-    readonly blocks: number;
-    readonly blockIndex: number;
-    readonly fraction: number;
-    readonly remainingMs: number;
-  } | null;
   /**
    * How many times the note on the air has been transmitted, used only by
    * `transport.backoff`'s sentence.
@@ -85,11 +92,44 @@ export function TransmitStatus({
    * Optional, defaulting to 0, because it is one number about one of nine states:
    * a caller that does not care — a state preview, a test sweeping the other
    * eight — must not be made to invent it. The sentence degrades to a first
-   * attempt rather than to nothing.
+   * attempt rather than to nothing. `| undefined` is spelled out because the repo
+   * runs `exactOptionalPropertyTypes`.
    */
-  readonly attempts?: number;
+  readonly attempts?: number | undefined;
 }): ReactElement {
-  const tone = TONE[transport];
+  return (
+    <p
+      role="status"
+      aria-live="polite"
+      className={cn("flex items-center gap-2 text-caption", TONE[transport])}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "inline-block h-2 w-2 shrink-0 rounded-pill bg-current",
+          MOVING[transport] && "dot-pulse",
+        )}
+      />
+      {transportSentence(transport, attempts ?? 0)}
+    </p>
+  );
+}
+
+/**
+ * Everything under the sentence that moves, or `null` when nothing does.
+ *
+ * Separated from the sentence so the bar can live below the header while the
+ * sentence lives inside it, without either owning the other's layout.
+ */
+export function TransmitProgress({
+  transport,
+  transmitting,
+  progress,
+}: {
+  readonly transport: TransportState;
+  readonly transmitting: boolean;
+  readonly progress: Progress | null;
+}): ReactElement {
   // Clamped here as well as in the controller. The component is the last thing
   // between a number and `aria-valuenow`, and a value that is not finite would
   // render as `aria-valuenow="NaN"` — while "Block 2 of 1" would be a sentence
@@ -111,24 +151,7 @@ export function TransmitStatus({
     progress === null ? null : SOUND_CHAT_COPY.transmit.block(index, total, remaining);
 
   return (
-    <div className="space-y-2">
-      {/* First child and the only live region: the state sentence, nothing that
-          moves underneath it. */}
-      <p
-        role="status"
-        aria-live="polite"
-        className={cn("flex items-center gap-2 text-caption", tone)}
-      >
-        <span
-          aria-hidden="true"
-          className={cn(
-            "inline-block h-2 w-2 shrink-0 rounded-pill bg-current",
-            MOVING[transport] && "dot-pulse",
-          )}
-        />
-        {transportSentence(transport, attempts ?? 0)}
-      </p>
-
+    <>
       {progress === null ? null : (
         <>
           <div
@@ -165,24 +188,28 @@ export function TransmitStatus({
       {transport === "awaiting_ack" && progress === null ? (
         <p className="text-caption text-ink-muted">{SOUND_CHAT_COPY.transmit.acking}</p>
       ) : null}
+    </>
+  );
+}
 
-      {/* Neither of the two facts this component used to own survives here, and
-          both moved somewhere that can be the single owner of them.
-
-          There is no "is our own audio on the air" table. The controller owns
-          that rule (`ON_AIR` in `ui/controller.ts`) and it is the controller
-          that decides whether a `progress` record exists at all; this component
-          renders what it is handed, so a second table could only ever disagree
-          with the first. `transmitting` arrives already carrying it.
-
-          There is no global "queued" line. Before Phase 3V this component
-          rendered one for every busy-but-not-on-air state, which said the same
-          thing the per-note `outbound.queued` row says and did not say which
-          note — two sentences for one fact, one of them unattributed. That is
-          why the component no longer takes a `busy` prop at all: after the
-          change the transport block genuinely has no opinion about queued
-          work, so taking the number and discarding it would be a lie about what
-          it knows. The rows own it, attributed, once each. */}
+/** The two of them stacked, which is the block every earlier caller rendered. */
+export function TransmitStatus({
+  transport,
+  transmitting,
+  progress,
+  attempts,
+}: {
+  readonly transport: TransportState;
+  readonly transmitting: boolean;
+  readonly progress: Progress | null;
+  readonly attempts?: number | undefined;
+}): ReactElement {
+  return (
+    <div className="space-y-2">
+      {/* First child and the only live region: the state sentence, nothing that
+          moves underneath it. */}
+      <TransportStatusLine transport={transport} attempts={attempts} />
+      <TransmitProgress transport={transport} transmitting={transmitting} progress={progress} />
     </div>
   );
 }
