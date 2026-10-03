@@ -23,7 +23,7 @@ import type { ReactElement } from "react";
 import { BlockedPanel } from "@/components/sound-chat/blocked-panel";
 import { Composer } from "@/components/sound-chat/composer";
 import { FatalPanel } from "@/components/sound-chat/fatal-panel";
-import { InfoPanel } from "@/components/sound-chat/info-panel";
+import { AttributionLine, InfoPanel, LicenceText } from "@/components/sound-chat/info-panel";
 import { MessageList } from "@/components/sound-chat/message-list";
 import { PairingPanel } from "@/components/sound-chat/pairing-panel";
 import { PermissionPrompt } from "@/components/sound-chat/permission-prompt";
@@ -684,24 +684,26 @@ describe("the transcript", () => {
 
 describe("the info panel and the MIT attribution", () => {
   it("shows the one-line notice whether or not the panel is open", () => {
-    for (const open of [true, false]) {
-      const markup = render(<InfoPanel open={open} onToggle={noop} />);
-      expect(markup, `collapsed=${String(open)}`).toContain("ggwave");
-      expect(markup).toContain("MIT");
-      expect(markup).toContain("Georgi Gerganov");
-    }
+    const markup = render(<AttributionLine />);
+    expect(markup).toContain("ggwave");
+    expect(markup).toContain("MIT");
+    expect(markup).toContain("Georgi Gerganov");
   });
 
   it("is a real disclosure with aria-expanded and aria-controls", () => {
-    const markup = render(<InfoPanel open={false} onToggle={noop} />);
+    const markup = render(<LicenceText />);
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain("aria-controls=");
   });
 
   it("states the measured rate and the privacy boundary honestly", () => {
-    const markup = render(<InfoPanel open onToggle={noop} />);
-    expect(markup).toContain("84 bytes in 3.8 seconds");
-    expect(markup).toContain("AES-256-GCM");
+    const promptMarkup = render(
+      <PermissionPrompt onDisplay={noop} onEnter={noop} onDismiss={noop} />,
+    );
+    expect(promptMarkup).toContain("84 bytes in 3.8 seconds");
+    expect(promptMarkup).toContain("AES-256-GCM");
+    const infoMarkup = render(<InfoPanel open onToggle={noop} />);
+    expect(infoMarkup).toContain("AES-256-GCM");
   });
 });
 

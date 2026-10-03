@@ -46,7 +46,8 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { Drawer } from "vaul";
 import { BackIcon, InfoIcon } from "@/components/husk/icons";
-import { IconButton } from "@/components/husk/primitives";
+import { IconButton, Modal } from "@/components/husk/primitives";
+import { cn } from "@/lib/utils";
 import { BlockedPanel } from "./blocked-panel";
 import { Composer } from "./composer";
 import { FatalPanel } from "./fatal-panel";
@@ -62,14 +63,22 @@ import type { TransportState } from "@/lib/sound-chat/transport-machine";
 export function SoundChatScreen(): ReactElement {
   const ui = useSoundChat();
   const isDesktop = useIsDesktop();
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
   // The pre-prompt owns the whole viewport at `lg`: it draws its own brand column
   // and its own back control. Below `lg` it is a single column with no navigation
   // of its own, so the shell's header stays and is the way out.
   const headerless = isDesktop && ui.state.phase === "permission";
   const inChat = ui.state.phase === "chat";
 
+  function handleStartEndSession(): void {
+    if (ui.infoOpen) {
+      ui.toggleInfo();
+    }
+    setConfirmingLeave(true);
+  }
+
   return (
-    <div className="flex min-h-dvh flex-col bg-canvas">
+    <div className={cn("flex flex-col bg-canvas", inChat ? "h-dvh overflow-hidden" : "min-h-dvh")}>
       {headerless ? null : (
         <Header
           transport={inChat ? ui.state.transport : null}
@@ -78,8 +87,21 @@ export function SoundChatScreen(): ReactElement {
           onToggleInfo={inChat ? ui.toggleInfo : undefined}
         />
       )}
-      <main className="flex flex-1 flex-col">{renderPhase(ui)}</main>
-      <InfoDrawer ui={ui} isDesktop={isDesktop} />
+      <main className={cn("flex flex-1 flex-col", inChat && "min-h-0 overflow-hidden")}>
+        {renderPhase(ui)}
+      </main>
+      <InfoDrawer ui={ui} isDesktop={isDesktop} onStartEndSession={handleStartEndSession} />
+      <Modal
+        open={confirmingLeave}
+        title={SOUND_CHAT_COPY.modal.leaveTitle}
+        description={SOUND_CHAT_COPY.modal.leaveDescription}
+        confirmLabel={SOUND_CHAT_COPY.modal.leaveConfirm}
+        onConfirm={() => {
+          setConfirmingLeave(false);
+          ui.cancel();
+        }}
+        onCancel={() => setConfirmingLeave(false)}
+      />
     </div>
   );
 }
@@ -103,14 +125,8 @@ function attemptsOnAir(ui: SoundChatUi): number {
 }
 
 /**
- * The shell's title bar.
- *
- * The exit control is an icon with `sr-only` text rather than an icon with an
- * `aria-label`: the accessible name is the same either way, but the text keeps
- * the visible control an icon while the name stays part of the document.
- *
- * The right-hand slot is empty on every phase with no session to describe, which
- * is why the info control is opt-in rather than always rendered.
+ * The shell's title bar. Full width across desktop and mobile, with back control on the far left,
+ * live status in the center, and info icon on the far right.
  */
 function Header({
   transport,
@@ -124,31 +140,36 @@ function Header({
   readonly onToggleInfo?: (() => void) | undefined;
 }): ReactElement {
   return (
-    <header className="chat-header safe-top px-4 pb-3 sm:px-6">
-      <div className="mx-auto flex w-full max-w-2xl items-center gap-3">
-        <a
-          href="/"
-          className="press -ml-1 flex shrink-0 items-center justify-center rounded-xl p-2 text-ink-muted transition-colors hover:text-ink"
-        >
-          <BackIcon className="h-5 w-5" />
-          <span className="sr-only">{SOUND_CHAT_COPY.actions.exit}</span>
-        </a>
-        <div className="min-w-0 flex-1">
-          <h1 className="text-[15px] font-semibold text-ink">{SOUND_CHAT_COPY.shell.title}</h1>
-          {transport === null ? null : (
-            <TransportStatusLine transport={transport} attempts={attempts} />
-          )}
-        </div>
-        {onToggleInfo === undefined ? null : (
-          <IconButton
-            label={SOUND_CHAT_COPY.info.heading}
-            aria-expanded={infoOpen}
-            onClick={onToggleInfo}
-          >
-            <InfoIcon className="h-4 w-4" />
-          </IconButton>
+    <header className="chat-header safe-top shrink-0 flex items-center gap-3 px-4 pb-3 sm:px-6">
+      <a
+        href="/"
+        className="-ml-1 flex items-center justify-center p-1.5 transition-transform duration-200 hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3ce767] rounded-lg"
+      >
+        <BackIcon className="h-5 w-5 text-ink-muted hover:text-ink lg:hidden" />
+        <img
+          src="/icons/husk-mark.svg"
+          alt="Husk"
+          width={28}
+          height={32}
+          className="h-7 w-auto select-none hidden lg:block"
+        />
+        <span className="sr-only">{SOUND_CHAT_COPY.actions.exit}</span>
+      </a>
+      <div className="min-w-0 flex-1">
+        <h1 className="text-[15px] font-semibold text-ink">{SOUND_CHAT_COPY.shell.title}</h1>
+        {transport === null ? null : (
+          <TransportStatusLine transport={transport} attempts={attempts} />
         )}
       </div>
+      {onToggleInfo === undefined ? null : (
+        <IconButton
+          label={SOUND_CHAT_COPY.info.heading}
+          aria-expanded={infoOpen}
+          onClick={onToggleInfo}
+        >
+          <InfoIcon className="h-4 w-4" />
+        </IconButton>
+      )}
     </header>
   );
 }
@@ -182,7 +203,7 @@ function renderPhase(ui: SoundChatUi): ReactElement {
       );
     case "chat":
       return (
-        <>
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* The persistent watermark, the same mark at the same opacity the main
               chat paints behind an active transcript.
 
@@ -204,40 +225,45 @@ function renderPhase(ui: SoundChatUi): ReactElement {
                 alt=""
                 width={140}
                 height={160}
-                className="h-36 w-auto opacity-[0.06] drop-shadow-[0_8px_32px_rgba(60,231,103,0.15)]"
+                className="h-36 w-auto opacity-[0.05]"
               />
             </div>
           ) : null}
-          {/* The bar, in its own row under the header rather than inside the
-              transcript. `empty:hidden` is what makes a quiet channel free: when
-              nothing is on the air `TransmitProgress` renders no nodes at all, so
-              the row is `:empty` and costs neither height nor padding. Writing the
-              condition a second time here would be a second place to keep right. */}
-          <div className="px-4 pt-3 empty:hidden sm:px-6">
-            <TransmitProgress
-              transport={state.transport}
-              transmitting={state.transmitting}
-              progress={state.progress}
-            />
-          </div>
           {/* The notices are facts about the room, not about the transcript, so
               they sit above it instead of scrolling with it. The region has to be
               mounted even when it is empty, and an always-present margin would
               push the transcript down for the whole session — so the padding is
               conditional and the region is not. */}
-          <div className={state.notices.length > 0 ? "px-4 pt-2 sm:px-6" : undefined}>
+          <div
+            className={cn("shrink-0", state.notices.length > 0 ? "px-4 pt-2 sm:px-6" : undefined)}
+          >
             <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
           </div>
-          <MessageList inbound={state.inbound} outbound={state.outbound} />
-          <Composer
-            value={ui.draft}
-            onChange={ui.setDraft}
-            onSubmit={ui.submit}
-            disabled={ui.composerBlock !== null}
-            disabledReason={ui.composerBlock}
-            refusal={ui.refusal}
-          />
-        </>
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+            <MessageList inbound={state.inbound} outbound={state.outbound} />
+          </div>
+          {/* The transmission progress bar, positioned right above the composer input box.
+              empty:hidden collapses it completely when nothing is on the air. */}
+          <div className="empty:hidden shrink-0 px-4 pt-2 pb-1 sm:px-6">
+            <div className="mx-auto w-full max-w-2xl">
+              <TransmitProgress
+                transport={state.transport}
+                transmitting={state.transmitting}
+                progress={state.progress}
+              />
+            </div>
+          </div>
+          <div className="shrink-0">
+            <Composer
+              value={ui.draft}
+              onChange={ui.setDraft}
+              onSubmit={ui.submit}
+              disabled={ui.composerBlock !== null}
+              disabledReason={ui.composerBlock}
+              refusal={ui.refusal}
+            />
+          </div>
+        </div>
       );
     case "blocked":
       return (
@@ -428,9 +454,11 @@ function breakNever(value: never): ReactElement {
 function InfoDrawer({
   ui,
   isDesktop,
+  onStartEndSession,
 }: {
   readonly ui: SoundChatUi;
   readonly isDesktop: boolean;
+  readonly onStartEndSession: () => void;
 }): ReactElement | null {
   const open = ui.state.phase === "chat" && ui.infoOpen;
   const close = ui.toggleInfo;
@@ -456,16 +484,21 @@ function InfoDrawer({
     return null;
   }
 
-  const content = <InfoPanel stats={ui.state.stats} onEnd={ui.cancel} />;
+  const content = <InfoPanel stats={ui.state.stats} onEnd={onStartEndSession} onClose={close} />;
 
   if (isDesktop) {
     return open ? (
       <div className="fixed inset-0 z-40">
-        <div className="absolute inset-0 bg-scrim" />
+        <button
+          type="button"
+          aria-label={SOUND_CHAT_COPY.permission.close}
+          onClick={close}
+          className="absolute inset-0 bg-scrim cursor-default"
+        />
         <aside
           role="dialog"
           aria-label={SOUND_CHAT_COPY.info.heading}
-          className="drawer-panel absolute inset-y-0 right-0 flex w-88 max-w-[85vw] flex-col overflow-y-auto border-l border-line/30 p-6 shadow-panel"
+          className="drawer-panel relative z-10 ml-auto flex h-full w-88 max-w-[85vw] flex-col overflow-y-auto border-l border-line/30 p-6 shadow-panel"
         >
           {content}
         </aside>

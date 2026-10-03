@@ -177,7 +177,7 @@ export function PermissionPrompt({
           alt="Husk"
           width={80}
           height={91}
-          className="h-20 w-auto select-none drop-shadow-[0_8px_28px_rgba(60,231,103,0.35)]"
+          className="h-20 w-auto select-none"
         />
         <p className="text-display text-ink">{SOUND_CHAT_COPY.shell.title}</p>
         <p className="max-w-xs text-center text-body text-ink-muted">
@@ -221,7 +221,7 @@ export function PermissionPrompt({
                   alt="Husk"
                   width={80}
                   height={91}
-                  className="h-20 w-auto select-none drop-shadow-[0_10px_30px_rgba(60,231,103,0.38)]"
+                  className="h-20 w-auto select-none"
                 />
                 <p className="mt-4 text-[26px] font-bold tracking-tight text-ink">
                   {SOUND_CHAT_COPY.shell.title}
@@ -327,13 +327,24 @@ export function PermissionPrompt({
         aria-modal={learnOpen ? "true" : undefined}
         className={
           learnOpen
-            ? "fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/80 p-0 backdrop-blur-md transition-all duration-300 sm:items-center sm:p-4 lg:p-6"
+            ? "fixed inset-0 z-50 flex items-end justify-center overflow-y-auto p-0 transition-all duration-300 sm:items-center sm:p-4 lg:p-6"
             : undefined
         }
       >
-        <div className="no-scrollbar relative mt-auto flex max-h-[85dvh] w-full flex-col overflow-y-auto rounded-t-2xl rounded-b-none border-t border-line-strong/40 bg-surface shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom duration-300 ease-out sm:my-auto sm:max-h-[88dvh] sm:rounded-2xl sm:border sm:animate-none lg:max-w-4xl xl:max-w-5xl">
+        {learnOpen ? (
+          <button
+            type="button"
+            aria-label={SOUND_CHAT_COPY.permission.close}
+            onClick={() => setLearnOpen(false)}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md cursor-default"
+          />
+        ) : null}
+        <div className="no-scrollbar relative z-10 mt-auto flex max-h-[85dvh] w-full flex-col overflow-y-auto rounded-t-2xl rounded-b-none border-t border-line-strong/40 bg-surface shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom duration-300 ease-out sm:my-auto sm:max-h-[88dvh] sm:rounded-2xl sm:border sm:animate-none lg:max-w-4xl xl:max-w-5xl">
           {/* Mobile Sheet Grab Handle */}
-          <div className="mx-auto mt-2 h-1.5 w-12 shrink-0 rounded-full bg-line-strong/50 sm:hidden" aria-hidden="true" />
+          <div
+            className="mx-auto mt-2 h-1.5 w-12 shrink-0 rounded-full bg-line-strong/50 sm:hidden"
+            aria-hidden="true"
+          />
 
           {/* Header - Sticky */}
           <div className="sticky top-0 z-20 flex items-center justify-between border-b border-line/30 bg-surface/95 px-6 py-4 backdrop-blur-md">
@@ -345,33 +356,13 @@ export function PermissionPrompt({
                 {SOUND_CHAT_COPY.info.heading}
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={() => setLearnOpen(false)}
-              aria-label={SOUND_CHAT_COPY.permission.close}
-              className="press inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-surface-raised hover:text-ink"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-            </button>
           </div>
 
           {/* Body Content - Two columns on desktop */}
           <div className="flex flex-col lg:grid lg:grid-cols-[1.2fr_1fr] lg:items-stretch">
             {/* LEFT PART: Our Text (Overview, Mic & Volume, Limits & Privacy) */}
-            <div className="flex flex-col justify-between space-y-4 border-b border-line/30 p-6 lg:border-b-0 lg:border-r lg:border-line/30">
-              {/* Lead Summary filling top area */}
+            <div className="flex flex-col space-y-4 border-b border-line/30 p-6 lg:border-b-0 lg:border-r lg:border-line/30">
+              {/* Lead Summary */}
               <div className="space-y-1">
                 <h3 className="text-[14px] font-semibold text-ink">
                   {SOUND_CHAT_COPY.permission.title}
@@ -426,10 +417,37 @@ export function PermissionPrompt({
                   {SOUND_CHAT_COPY.info.privacy}
                 </p>
               </div>
+
+              {/* Cryptographic Specifications */}
+              <div className="rounded-xl border border-line/30 bg-surface-sunken/30 p-3.5 space-y-2">
+                <h3 className="text-caption font-semibold uppercase tracking-widest text-ink-muted">
+                  {SOUND_CHAT_COPY.info.cryptoHeading}
+                </h3>
+                <div className="space-y-1.5 text-caption text-ink-muted leading-relaxed">
+                  <p>
+                    <strong className="font-medium text-ink">
+                      {SOUND_CHAT_COPY.info.cryptoKeyScheduleLabel}
+                    </strong>{" "}
+                    {SOUND_CHAT_COPY.info.cryptoKeySchedule}
+                  </p>
+                  <p>
+                    <strong className="font-medium text-ink">
+                      {SOUND_CHAT_COPY.info.cryptoReplayLabel}
+                    </strong>{" "}
+                    {SOUND_CHAT_COPY.info.cryptoReplay}
+                  </p>
+                  <p>
+                    <strong className="font-medium text-ink">
+                      {SOUND_CHAT_COPY.info.cryptoZeroPersistenceLabel}
+                    </strong>{" "}
+                    {SOUND_CHAT_COPY.info.cryptoZeroPersistence}
+                  </p>
+                </div>
+              </div>
             </div>
 
             {/* RIGHT PART: Engine & Licence Console */}
-            <div className="flex flex-col justify-between bg-surface-sunken/60 p-6 space-y-4">
+            <div className="flex flex-col bg-surface-sunken/60 p-6 space-y-4">
               <div className="flex flex-1 flex-col space-y-3.5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-[14px] font-semibold text-ink">
@@ -444,18 +462,18 @@ export function PermissionPrompt({
                   <AttributionLine />
                 </div>
 
-                {/* Technical Protocol Notes filling vertical space */}
+                {/* Technical Protocol Notes */}
                 <div className="rounded-xl border border-line/30 bg-surface/50 p-3 text-caption text-ink-muted space-y-1.5">
                   <p className="leading-snug">{SOUND_CHAT_COPY.info.how}</p>
                   <p className="leading-snug">{SOUND_CHAT_COPY.info.rate}</p>
                 </div>
 
-                {/* Licence pre filling the remaining height */}
-                <div className="flex flex-1 flex-col min-h-[180px]">
+                {/* Licence pre */}
+                <div className="flex flex-1 flex-col min-h-0">
                   <pre
                     tabIndex={0}
                     aria-label="ggwave MIT Licence text"
-                    className="no-scrollbar flex-1 w-full overflow-auto whitespace-pre-wrap break-words rounded-xl border border-line/40 bg-canvas/90 p-3.5 font-mono text-[11px] leading-relaxed text-ink-muted focus:outline-none focus:ring-1 focus:ring-accent select-text"
+                    className="no-scrollbar h-64 w-full flex-1 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-line/40 bg-canvas/90 p-3.5 font-mono text-[11px] leading-relaxed text-ink-muted focus:outline-none focus:ring-1 focus:ring-accent select-text lg:h-full"
                   >
                     {ggwaveLicenceText}
                   </pre>
@@ -466,7 +484,7 @@ export function PermissionPrompt({
 
           {/* Bottom Close Action - appears only when scrolled down to the end */}
           <div className="border-t border-line/30 bg-surface/40 p-4">
-            <Button tone="quiet" full onClick={() => setLearnOpen(false)}>
+            <Button tone="danger" full onClick={() => setLearnOpen(false)}>
               {SOUND_CHAT_COPY.permission.close}
             </Button>
           </div>

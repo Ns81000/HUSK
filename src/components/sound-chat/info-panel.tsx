@@ -33,8 +33,8 @@
  */
 
 import { useId, useState, type ReactElement } from "react";
-import { LeaveIcon } from "@/components/husk/icons";
-import { Button, Modal } from "@/components/husk/primitives";
+import { InfoIcon, LeaveIcon } from "@/components/husk/icons";
+import { Button } from "@/components/husk/primitives";
 import type { SessionStats } from "@/lib/sound-chat/session";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
 import ggwaveLicenceText from "@/lib/sound-chat/vendor/LICENSE.ggwave?raw";
@@ -76,117 +76,116 @@ export function LicenceText(): ReactElement {
 export function InfoPanel({
   stats,
   onEnd,
+  onClose,
+  onLearnMore,
 }: {
   /** This session's own counters, shown because they explain what happened. */
-  readonly stats?: SessionStats;
-  /**
-   * Ends the session and returns to the pre-prompt. Optional, because the panel is
-   * rendered on its own by the accessibility suite and by the pre-prompt, where
-   * there is no session to end and no honest use for the control.
-   */
-  readonly onEnd?: () => void;
+  readonly stats?: SessionStats | undefined;
+  /** Ends the session and returns to the pre-prompt. */
+  readonly onEnd?: (() => void) | undefined;
+  /** Closes the side drawer or bottom sheet. */
+  readonly onClose?: (() => void) | undefined;
+  /** Opens the full Sound Chat protocol & licence modal. */
+  readonly onLearnMore?: (() => void) | undefined;
   /** Accepted and not read: see the file header. */
   readonly open?: boolean;
   readonly onToggle?: () => void;
 }): ReactElement {
-  const [confirming, setConfirming] = useState(false);
-
+  const headingId = useId();
   return (
-    <>
-      <div className="flex h-full flex-col justify-between">
-        <div className="space-y-5">
-          {stats === undefined ? null : <Stats stats={stats} />}
-
-          <div className="info-divider" />
-
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-widest text-ink-muted">
-              {SOUND_CHAT_COPY.info.heading}
-            </p>
-            <p className="mt-2 text-[13px] leading-snug text-ink-muted">
-              {SOUND_CHAT_COPY.info.how}
-            </p>
-            <p className="mt-2 text-[13px] leading-snug text-ink-muted">
-              {SOUND_CHAT_COPY.info.rate}
-            </p>
-            <p className="mt-2 text-[13px] leading-snug text-ink-muted">
-              {SOUND_CHAT_COPY.info.privacy}
-            </p>
+    <div className="flex h-full flex-col justify-between space-y-6">
+      <div className="space-y-5">
+        {/* Header row with title and close button */}
+        <div className="flex items-center justify-between border-b border-line/30 pb-3">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/15 text-accent">
+              <InfoIcon className="h-4 w-4" />
+            </div>
+            <h2 id={headingId} className="text-[16px] font-semibold text-ink">
+              {SOUND_CHAT_COPY.info.statsHeading}
+            </h2>
           </div>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={SOUND_CHAT_COPY.permission.close}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-white/10 hover:text-ink"
+            >
+              <span className="text-base font-medium leading-none">✕</span>
+            </button>
+          ) : null}
+        </div>
 
-          <div className="info-divider" />
-
-          {/* Moved out of the composer. What a byte costs is worth reading once,
-              and it was five lines of schooling under a field that takes one
-              short note. */}
-          <p className="text-[13px] leading-snug text-ink-muted">
-            {SOUND_CHAT_COPY.composer.bytesHint}
-          </p>
-
-          <div className="info-divider" />
-
-          <div>
-            <AttributionLine />
-            <LicenceText />
+        {/* Live Acoustic Link Status Card */}
+        <div className="flex items-center gap-2.5 rounded-xl border border-line/30 bg-surface-sunken/40 px-3.5 py-2.5">
+          <span className="relative flex h-2 w-2 shrink-0">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] font-medium text-ink">{SOUND_CHAT_COPY.info.channelActive}</p>
+            <p className="text-[11px] text-ink-muted">{SOUND_CHAT_COPY.info.channelSecurity}</p>
           </div>
         </div>
 
-        {onEnd === undefined ? null : (
-          <div className="pt-5">
-            <Button tone="danger" full onClick={() => setConfirming(true)}>
-              <LeaveIcon className="h-4 w-4" />
-              {SOUND_CHAT_COPY.actions.leave}
-            </Button>
-          </div>
-        )}
+        {/* Telemetry / Statistics Cards */}
+        {stats === undefined ? null : <Stats stats={stats} />}
+
+        {/* Quick Link to Protocol & Licences */}
+        {onLearnMore ? (
+          <button
+            type="button"
+            onClick={onLearnMore}
+            className="flex w-full items-center justify-between rounded-xl border border-line/30 bg-surface-sunken/30 px-3.5 py-2.5 text-left text-caption text-ink-muted transition-colors hover:border-line hover:text-ink"
+          >
+            <span>{SOUND_CHAT_COPY.permission.learnMore}</span>
+            <span className="text-accent font-medium">→</span>
+          </button>
+        ) : null}
       </div>
 
-      {/* A sibling of the content, never inside a live region: the same reason the
-          restart dialog is not nested inside its `role="alert"`. */}
-      <Modal
-        open={confirming}
-        title={SOUND_CHAT_COPY.modal.leaveTitle}
-        description={SOUND_CHAT_COPY.modal.leaveDescription}
-        confirmLabel={SOUND_CHAT_COPY.modal.leaveConfirm}
-        onConfirm={() => {
-          setConfirming(false);
-          onEnd?.();
-        }}
-        onCancel={() => setConfirming(false)}
-      />
-    </>
+      {/* End Session Button pinned at bottom */}
+      {onEnd === undefined ? null : (
+        <div className="border-t border-line/30 pt-4">
+          <Button tone="danger" full onClick={onEnd}>
+            <LeaveIcon className="h-4 w-4" />
+            {SOUND_CHAT_COPY.actions.leave}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
 /**
- * This session's counters.
- *
- * They are here because each one answers a question a user who just watched
- * something odd will ask anyway: how many blocks came off the air, how many were
- * unreadable, how many were the same block heard again. Nothing here is a
- * performance claim and nothing here is a success rate.
+ * This session's counters as styled metric cards.
  */
 function Stats({ stats }: { readonly stats: SessionStats }): ReactElement {
   const rows: readonly (readonly [string, number])[] = [
-    [SOUND_CHAT_COPY.info.statBlocksDecoded, stats.blocksDecoded],
     [SOUND_CHAT_COPY.info.statMessagesDelivered, stats.messagesDelivered],
+    [SOUND_CHAT_COPY.info.statBlocksDecoded, stats.blocksDecoded],
+    [SOUND_CHAT_COPY.info.statRetries, stats.retries],
     [SOUND_CHAT_COPY.info.statDuplicatesSuppressed, stats.duplicatesSuppressed],
     [SOUND_CHAT_COPY.info.statUnreadable, stats.framesUnreadable],
-    [SOUND_CHAT_COPY.info.statRetries, stats.retries],
   ];
+
   return (
-    <div>
-      <p className="text-[11px] font-medium uppercase tracking-widest text-ink-muted">
-        {SOUND_CHAT_COPY.info.statsHeading}
+    <div className="space-y-2.5">
+      <p className="text-[11px] font-semibold uppercase tracking-widest text-ink-muted">
+        {SOUND_CHAT_COPY.info.telemetryHeading}
       </p>
-      <dl className="tabular mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-caption text-ink-muted sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2.5">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-2">
-            <dt>{label}</dt>
-            <dd className="text-ink">{value}</dd>
+          <div
+            key={label}
+            className="flex flex-col justify-between rounded-xl border border-line/30 bg-surface-sunken/40 p-3"
+          >
+            <span className="text-[11px] font-medium leading-tight text-ink-muted">{label}</span>
+            <span className="mt-1 font-mono text-[20px] font-bold text-ink">{value}</span>
           </div>
         ))}
-      </dl>
+      </div>
     </div>
   );
 }

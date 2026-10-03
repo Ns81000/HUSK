@@ -398,6 +398,19 @@ export const SOUND_CHAT_COPY = {
     rate: `The channel carries ${MAX_MESSAGE_PLAINTEXT_BYTES} bytes in ${secondsLabel(2 * BLOCK_DURATION_MS)} at the cap, or ${secondsLabel(BLOCK_DURATION_MS)} for a short note - about ${Math.round(MAX_MESSAGE_PLAINTEXT_BYTES / ((2 * BLOCK_DURATION_MS) / 1000))} bytes a second of your own text. It is a short-notes channel, not a messenger.`,
     privacy:
       "Encryption is AES-256-GCM in the browser, derived from the pairing code with PBKDF2. Nothing is stored: reload the page and the session is gone, and a recording of an earlier session cannot be read in a new one.",
+    cryptoHeading: "Cryptographic Details",
+    cryptoKeyScheduleLabel: "Key schedule:",
+    cryptoKeySchedule:
+      "600,000 PBKDF2-SHA256 iterations derive a master key from your code. HKDF-SHA256 derives distinct directional AES-256 keys for each peer.",
+    cryptoReplayLabel: "Replay protection:",
+    cryptoReplay:
+      "12-byte nonces combine a fresh 16-byte session salt with monotonic message IDs. Every frame authenticates header metadata with a 128-bit tag.",
+    cryptoZeroPersistenceLabel: "Zero persistence:",
+    cryptoZeroPersistence:
+      "Transmissions flow purely over local acoustic waves. No relay servers, no telemetry, and keys are erased on tab reload.",
+    channelActive: "Acoustic channel active",
+    channelSecurity: "Encrypted locally - AES-256-GCM",
+    telemetryHeading: "Telemetry and counters",
     attribution: ATTRIBUTION_LINE,
     attributionLink: "Read the ggwave licence",
     statsHeading: "This session",
