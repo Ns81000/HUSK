@@ -1341,6 +1341,42 @@ describe("G7 the notice list is not a live region, and the one notice that matte
     // Still not an interruption, and never a log.
     expect(list).not.toMatch(/role="(alert|log)"/);
   });
+
+  it("FIXED IN PHASE 5 — the region is mounted BEFORE its first notice, not with it", () => {
+    // The assertion above is necessary and not sufficient, and this is what it
+    // could not see. `NoticeList` used to `return null` when the list was empty,
+    // so the region and its first `<li>` entered the document in the same commit.
+    // That is an *insertion*, and an insertion into a region that did not exist is
+    // not reliably announced — so the defect the pin above claims to close was
+    // only closed from the SECOND notice onward. The first notice of a session,
+    // and the first after every dismissal, were still silent.
+    //
+    // Both pins read the source because `NoticeList` is module-private. The rule
+    // this enforces is the same one `message-list.tsx:140-145` already states in
+    // this codebase: the region is always in the document and the empty state
+    // lives inside it.
+    const source = readFileSync(new URL("./sound-chat-screen.tsx", import.meta.url), "utf8");
+    const list = /function NoticeList\([\s\S]*?\n}\n/.exec(source)?.[0] ?? "";
+    expect(list, "the notice list was not found in the screen source").not.toBe("");
+
+    // The defect, named directly: an early return that unmounts the region.
+    expect(list, "NoticeList still unmounts itself when empty").not.toMatch(
+      /notices\.length === 0[\s\S]{0,80}return null/,
+    );
+    expect(list, "NoticeList must never return null").not.toMatch(/return null/);
+
+    // The region is the component's root, so it is always in the document.
+    const root =
+      /function NoticeList\([\s\S]*?\): ReactElement(?: \| null)? \{\s*return \(\s*<(\w+)/.exec(
+        list,
+      );
+    expect(root?.[1], "the live region must be the element NoticeList returns").toBe("ul");
+
+    // And the empty state is inside it rather than replacing it: the dismissal
+    // control — the only visible thing an empty list would otherwise lose — is
+    // rendered conditionally, not by unmounting the region.
+    expect(list).toContain("notices.length > 0");
+  });
 });
 
 describe("G8 every refusal a person can be handed has its own sentence", () => {

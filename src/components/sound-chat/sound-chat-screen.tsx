@@ -102,7 +102,14 @@ function renderPhase(ui: SoundChatUi): ReactElement {
               progress={state.progress}
               attempts={attemptCount}
             />
-            <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
+            {/* The `mt-3` that used to live on `NoticeList`'s own wrapper. It is
+                here rather than inside because the region has to be mounted even
+                when it is empty, and an always-present margin would push the
+                session-end control down for the whole session. A region that is
+                always in the document but has nothing in it takes no space. */}
+            <div className={state.notices.length > 0 ? "mt-3" : undefined}>
+              <NoticeList notices={state.notices} onDismiss={ui.dismissNotices} />
+            </div>
             <EndSessionButton onConfirm={ui.cancel} />
           </div>
           <MessageList inbound={state.inbound} outbound={state.outbound} />
@@ -255,6 +262,19 @@ function EndSessionButton({ onConfirm }: { readonly onConfirm: () => void }): Re
  * status line was byte-identical before and after. It is the one notice that
  * reports a fact about the room, and it is exactly the one a person would not
  * notice arriving.
+ *
+ * PHASE 5 CORRECTION TO THAT FIX. Adding the attributes was necessary but not
+ * sufficient: this function used to `return null` when the list was empty, so the
+ * region and its first `<li>` entered the document in the same commit. That is an
+ * *insertion*, and an insertion into a region that did not exist is not reliably
+ * announced at all — which is why the first notice of a session, and the first
+ * notice after every dismissal (dismissing unmounts the region), were still
+ * silent: the defect Phase 4 set out to close was only closed from the second
+ * notice onward. `MessageList` in this same directory documents the rule this
+ * was breaking, in its own comment (`message-list.tsx:140-145`), and follows it.
+ * So the region is now mounted from the first frame and the empty state lives
+ * inside it, exactly as there. The dismiss control is inside the region too, so
+ * an empty list renders no visible control.
  */
 function NoticeList({
   notices,
@@ -266,41 +286,40 @@ function NoticeList({
     readonly text: string;
   }[];
   readonly onDismiss: () => void;
-}): ReactElement | null {
-  if (notices.length === 0) {
-    return null;
-  }
+}): ReactElement {
   return (
-    <div className="mt-3">
-      <ul
-        className="space-y-1.5"
-        aria-label={SOUND_CHAT_COPY.shell.noticesLabel}
-        role="status"
-        aria-live="polite"
-      >
-        {notices.map((notice) => (
-          <li
-            key={notice.id}
-            className={
-              notice.tone === "danger"
-                ? "text-caption text-danger"
-                : notice.tone === "warn"
-                  ? "text-caption text-warn"
-                  : "text-caption text-ink-muted"
-            }
+    <ul
+      className="space-y-1.5"
+      aria-label={SOUND_CHAT_COPY.shell.noticesLabel}
+      role="status"
+      aria-live="polite"
+    >
+      {notices.map((notice) => (
+        <li
+          key={notice.id}
+          className={
+            notice.tone === "danger"
+              ? "text-caption text-danger"
+              : notice.tone === "warn"
+                ? "text-caption text-warn"
+                : "text-caption text-ink-muted"
+          }
+        >
+          {notice.text}
+        </li>
+      ))}
+      {notices.length > 0 ? (
+        <li>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="press mt-1.5 text-caption text-ink-muted underline underline-offset-2 hover:text-ink"
           >
-            {notice.text}
-          </li>
-        ))}
-      </ul>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="press mt-1.5 text-caption text-ink-muted underline underline-offset-2 hover:text-ink"
-      >
-        {SOUND_CHAT_COPY.actions.dismissNotices}
-      </button>
-    </div>
+            {SOUND_CHAT_COPY.actions.dismissNotices}
+          </button>
+        </li>
+      ) : null}
+    </ul>
   );
 }
 
