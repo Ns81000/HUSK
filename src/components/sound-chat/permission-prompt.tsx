@@ -52,7 +52,9 @@ import {
   validatePairingCode,
 } from "@/lib/sound-chat/crypto";
 import { SOUND_CHAT_COPY } from "@/lib/sound-chat/ui/copy";
-import { AttributionLine, LicenceText } from "./info-panel";
+import { cn } from "@/lib/utils";
+import ggwaveLicenceText from "@/lib/sound-chat/vendor/LICENSE.ggwave?raw";
+import { AttributionLine } from "./info-panel";
 
 type Step = "role" | "code";
 
@@ -164,7 +166,7 @@ export function PermissionPrompt({
   return (
     <section
       aria-labelledby={headingId}
-      className="enter grid w-full lg:min-h-dvh lg:grid-cols-[45fr_55fr]"
+      className="enter grid w-full min-h-dvh lg:grid-cols-[45fr_55fr]"
     >
       {/* The brand column: `lg` and up only. Below that the same prose is behind
           the disclosure, because on a phone this column would be the whole screen
@@ -197,7 +199,12 @@ export function PermissionPrompt({
         {isDesktop ? (
           <a
             href="/"
-            className="press absolute top-6 left-6 inline-flex h-10 items-center rounded-xl px-2 text-ink-muted transition-colors hover:text-ink"
+            aria-hidden={learnOpen}
+            tabIndex={learnOpen ? -1 : undefined}
+            className={cn(
+              "press absolute top-6 left-6 inline-flex h-10 items-center rounded-xl px-2 text-ink-muted transition-all duration-200 hover:text-ink",
+              learnOpen && "pointer-events-none opacity-0 invisible",
+            )}
           >
             <BackIcon className="h-5 w-5" />
             <span className="sr-only">{SOUND_CHAT_COPY.actions.exit}</span>
@@ -207,11 +214,30 @@ export function PermissionPrompt({
         <div className="mx-auto w-full max-w-md">
           {step === "role" ? (
             <div className="fade-in">
-              <h2 id={headingId} className="text-title text-ink">
+              {/* Mobile hero: Husk logo + Sound Chat title (mobile only) */}
+              <div className="flex flex-col items-center pb-8 lg:hidden">
+                <img
+                  src="/icons/husk-mark.svg"
+                  alt="Husk"
+                  width={80}
+                  height={91}
+                  className="h-20 w-auto select-none drop-shadow-[0_10px_30px_rgba(60,231,103,0.38)]"
+                />
+                <p className="mt-4 text-[26px] font-bold tracking-tight text-ink">
+                  {SOUND_CHAT_COPY.shell.title}
+                </p>
+              </div>
+
+              {/* Desktop heading and lead: hidden on mobile, visible on desktop */}
+              <h2 id={headingId} className="sr-only lg:not-sr-only text-title text-ink">
                 {SOUND_CHAT_COPY.permission.title}
               </h2>
-              <p className="mt-3 text-body text-ink-muted">{SOUND_CHAT_COPY.permission.lead}</p>
-              <div className="mt-8 space-y-2.5">
+              <p className="hidden lg:block mt-3 text-body text-ink-muted">
+                {SOUND_CHAT_COPY.permission.lead}
+              </p>
+
+              {/* Action buttons */}
+              <div className="space-y-3 lg:mt-8 lg:space-y-2.5">
                 <Button tone="primary" full onClick={onDisplay}>
                   {SOUND_CHAT_COPY.permission.displayAction}
                 </Button>
@@ -219,9 +245,9 @@ export function PermissionPrompt({
                   {SOUND_CHAT_COPY.permission.enterAction}
                 </Button>
               </div>
-              {/* Only where the brand column is not, so there is exactly one
-                  "Learn more" per screen rather than two with the same name. */}
-              <div className="mt-6 text-center lg:hidden">
+
+              {/* Mobile bottom: Learn more trigger button */}
+              <div className="mt-8 text-center lg:hidden">
                 {learnTrigger(
                   "press text-caption text-accent underline underline-offset-2 transition-colors hover:text-ink",
                 )}
@@ -287,61 +313,164 @@ export function PermissionPrompt({
         </div>
       </div>
 
-      {/* The disclosure's content. See the file header for why it is mounted
-          whether or not it is open, and why there is exactly one copy of it. One
-          node whose presentation changes at `lg`: a bottom sheet on the phone, a
-          centred overlay on the desktop, with the panel's own corners following.
+      {/* The disclosure's content. On desktop (lg), it renders as a grand, horizontal
+          two-part modal: the left part presents the protocol guarantees & limits in
+          structured cards, and the right part presents the engine specs & raw MIT licence in
+          an open-source console pane. On mobile (<lg), it stacks responsively as a bottom sheet.
           Clicking the scrim does not close it — nothing in this feature may put an
-          `onClick` on a `div`; Escape and the panel's own control are the two ways
-          out, and the control is inside the panel so it is reachable either way. */}
+          onClick on a div; Escape and the panel's own controls are the ways out. */}
       <div
         id={learnId}
         hidden={!learnOpen}
         role={learnOpen ? "dialog" : undefined}
         aria-labelledby={learnOpen ? learnHeadingId : undefined}
+        aria-modal={learnOpen ? "true" : undefined}
         className={
           learnOpen
-            ? "fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm lg:items-center lg:p-4"
+            ? "fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/80 p-0 backdrop-blur-md transition-all duration-300 sm:items-center sm:p-4 lg:p-6"
             : undefined
         }
       >
-        <Panel className="max-h-[85dvh] w-full overflow-y-auto rounded-t-2xl rounded-b-none lg:max-w-lg lg:rounded-2xl">
-          <h2 id={learnHeadingId} className="text-title text-ink">
-            {SOUND_CHAT_COPY.info.heading}
-          </h2>
-          <p className="mt-3 text-caption text-ink-muted">{SOUND_CHAT_COPY.permission.why}</p>
-          <p className="mt-2 text-caption text-ink-muted">{SOUND_CHAT_COPY.permission.whyVolume}</p>
-          <h3 className="mt-6 text-caption font-semibold uppercase tracking-widest text-ink-muted">
-            {SOUND_CHAT_COPY.permission.limitsHeading}
-          </h3>
-          <ul className="mt-3 space-y-2.5">
-            {SOUND_CHAT_COPY.permission.limits.map((limit, index) => (
-              <li key={limit} className="flex items-start gap-2.5 text-caption text-ink-muted">
-                {PROOF_LIMITS.includes(index) ? (
-                  <ShieldIcon className="mt-0.5 h-4 w-4 shrink-0 text-ok" />
-                ) : (
-                  <span
-                    aria-hidden
-                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-pill bg-ink-faint"
-                  />
-                )}
-                <span className="min-w-0">{limit}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="info-divider mt-6" />
-          <p className="mt-3 text-caption text-ink-muted">{SOUND_CHAT_COPY.info.privacy}</p>
-          <div className="info-divider mt-6" />
-          <div className="mt-3">
-            <AttributionLine />
-            <LicenceText />
+        <div className="no-scrollbar relative mt-auto flex max-h-[85dvh] w-full flex-col overflow-y-auto rounded-t-2xl rounded-b-none border-t border-line-strong/40 bg-surface shadow-2xl backdrop-blur-xl animate-in slide-in-from-bottom duration-300 ease-out sm:my-auto sm:max-h-[88dvh] sm:rounded-2xl sm:border sm:animate-none lg:max-w-4xl xl:max-w-5xl">
+          {/* Mobile Sheet Grab Handle */}
+          <div className="mx-auto mt-2 h-1.5 w-12 shrink-0 rounded-full bg-line-strong/50 sm:hidden" aria-hidden="true" />
+
+          {/* Header - Sticky */}
+          <div className="sticky top-0 z-20 flex items-center justify-between border-b border-line/30 bg-surface/95 px-6 py-4 backdrop-blur-md">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+                <InfoIcon className="h-4 w-4" />
+              </div>
+              <h2 id={learnHeadingId} className="text-[17px] font-semibold text-ink leading-tight">
+                {SOUND_CHAT_COPY.info.heading}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLearnOpen(false)}
+              aria-label={SOUND_CHAT_COPY.permission.close}
+              className="press inline-flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-surface-raised hover:text-ink"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          <div className="mt-5">
+
+          {/* Body Content - Two columns on desktop */}
+          <div className="flex flex-col lg:grid lg:grid-cols-[1.2fr_1fr] lg:items-stretch">
+            {/* LEFT PART: Our Text (Overview, Mic & Volume, Limits & Privacy) */}
+            <div className="flex flex-col justify-between space-y-4 border-b border-line/30 p-6 lg:border-b-0 lg:border-r lg:border-line/30">
+              {/* Lead Summary filling top area */}
+              <div className="space-y-1">
+                <h3 className="text-[14px] font-semibold text-ink">
+                  {SOUND_CHAT_COPY.permission.title}
+                </h3>
+                <p className="text-caption text-ink-muted leading-relaxed">
+                  {SOUND_CHAT_COPY.permission.lead}
+                </p>
+              </div>
+
+              {/* Audio & Environment Inset Card */}
+              <div className="rounded-xl border border-line/30 bg-surface-sunken/50 p-3.5 space-y-2">
+                <p className="text-caption text-ink-muted leading-relaxed">
+                  {SOUND_CHAT_COPY.permission.why}
+                </p>
+                <div className="info-divider" />
+                <p className="text-caption text-ink-muted leading-relaxed">
+                  {SOUND_CHAT_COPY.permission.whyVolume}
+                </p>
+              </div>
+
+              {/* Limits & Guarantees - Single cohesive card */}
+              <div className="rounded-xl border border-line/30 bg-surface-sunken/30 p-3.5">
+                <h3 className="text-caption font-semibold uppercase tracking-widest text-ink-muted">
+                  {SOUND_CHAT_COPY.permission.limitsHeading}
+                </h3>
+                <ul className="mt-2.5 space-y-2">
+                  {SOUND_CHAT_COPY.permission.limits.map((limit, index) => (
+                    <li
+                      key={limit}
+                      className={cn(
+                        "flex items-start gap-2 text-caption leading-relaxed",
+                        PROOF_LIMITS.includes(index) ? "text-ink" : "text-ink-muted",
+                      )}
+                    >
+                      {PROOF_LIMITS.includes(index) ? (
+                        <ShieldIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ok" />
+                      ) : (
+                        <span
+                          aria-hidden
+                          className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-pill bg-ink-faint"
+                        />
+                      )}
+                      <span className="min-w-0">{limit}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Privacy Architecture */}
+              <div className="rounded-xl border border-line/30 bg-surface-sunken/30 p-3.5">
+                <p className="text-caption text-ink-muted leading-relaxed">
+                  {SOUND_CHAT_COPY.info.privacy}
+                </p>
+              </div>
+            </div>
+
+            {/* RIGHT PART: Engine & Licence Console */}
+            <div className="flex flex-col justify-between bg-surface-sunken/60 p-6 space-y-4">
+              <div className="flex flex-1 flex-col space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-[14px] font-semibold text-ink">
+                    {SOUND_CHAT_COPY.info.attributionLink}
+                  </h3>
+                  <span className="inline-flex items-center rounded-md border border-line/40 bg-surface px-2 py-0.5 text-[11px] font-mono font-medium text-ink-muted">
+                    MIT License
+                  </span>
+                </div>
+
+                <div>
+                  <AttributionLine />
+                </div>
+
+                {/* Technical Protocol Notes filling vertical space */}
+                <div className="rounded-xl border border-line/30 bg-surface/50 p-3 text-caption text-ink-muted space-y-1.5">
+                  <p className="leading-snug">{SOUND_CHAT_COPY.info.how}</p>
+                  <p className="leading-snug">{SOUND_CHAT_COPY.info.rate}</p>
+                </div>
+
+                {/* Licence pre filling the remaining height */}
+                <div className="flex flex-1 flex-col min-h-[180px]">
+                  <pre
+                    tabIndex={0}
+                    aria-label="ggwave MIT Licence text"
+                    className="no-scrollbar flex-1 w-full overflow-auto whitespace-pre-wrap break-words rounded-xl border border-line/40 bg-canvas/90 p-3.5 font-mono text-[11px] leading-relaxed text-ink-muted focus:outline-none focus:ring-1 focus:ring-accent select-text"
+                  >
+                    {ggwaveLicenceText}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Close Action - appears only when scrolled down to the end */}
+          <div className="border-t border-line/30 bg-surface/40 p-4">
             <Button tone="quiet" full onClick={() => setLearnOpen(false)}>
               {SOUND_CHAT_COPY.permission.close}
             </Button>
           </div>
-        </Panel>
+        </div>
       </div>
     </section>
   );
